@@ -3,28 +3,28 @@ MuJoCo bookshelf scene generator, ported from ContactExplorer's Isaac Gym
 singulation task (src/tasks/allegro_singulation.py).
 
 What it builds
-  - A static shelf: base board, top board, back wall, two side walls
-    (same parts and frame convention as the Isaac Gym version).
-  - A row of free-moving books (boxes) with a target slot.
-  - Four scenario families: clear, tight, leaning, collapsed.
+  - A static bookcase standing on the floor: plinth, 3-5 shelf boards,
+    top board, side panels and back panel (the single cubby of the Isaac
+    Gym version, stacked into a full bookcase).
+  - A target level: a row of free-moving books (boxes) with a target slot,
+    in one of four scenario families: clear, tight, leaning, collapsed.
+  - Filler rows on the other levels (static by default, for speed).
   - Optional Franka Panda (from MuJoCo Menagerie) with a wrist camera
     and a 6-axis force/torque sensor, plus a fixed scene camera.
 
 Frame convention (same as the Isaac Gym task)
-  x = along the row, y = depth (back wall at -y, open front at +y), z = up.
+  x = along the row, y = depth (back panel at -y, open front at +y), z = up.
+  The shelf body's origin is on the floor, at the centre of the bookcase.
 
 Usage
   # 1) Just write the XML (no mujoco install needed for this step)
   python shelf_scene.py --scenario leaning --seed 3 --out scenes/
 
   # 2) Build, settle and check in Python (needs `pip install mujoco`)
-  from shelf_scene import ShelfConfig, sample_row, build_scene, settle
-  cfg = ShelfConfig()
-  row = sample_row(cfg, "collapsed", np.random.default_rng(0))
-  xml = build_scene(cfg, row, panda_xml="path/to/mujoco_menagerie/franka_emika_panda/panda.xml")
-  model = mujoco.MjModel.from_xml_string(xml)   # see note on paths in build_scene
-  data = mujoco.MjData(model)
-  report = settle(model, data, row)
+  from shelf_scene import ShelfConfig, make_episode
+  model, data, row, report = make_episode(
+      ShelfConfig(), "collapsed", np.random.default_rng(0),
+      panda_xml="mujoco_menagerie/franka_emika_panda/panda.xml")
 """
 
 from __future__ import annotations
@@ -48,15 +48,24 @@ SCENARIOS = ("clear", "tight", "leaning", "collapsed")
 # ---------------------------------------------------------------------------
 @dataclass
 class ShelfConfig:
-    # Shelf (inner dimensions, metres)
+    # Bookcase (inner dimensions, metres)
     width: tuple = (0.60, 1.00)          # repo: 0.344
     depth: tuple = (0.22, 0.32)          # repo: 0.26
-    clear_height: tuple = (0.33, 0.42)   # base top to top-board bottom (repo: 0.53)
     board_thickness: float = 0.02        # repo: _table_thickness
-    base_height: float = 0.50            # base-board centre z (repo: _table_pose z)
+    num_levels: tuple = (3, 5)           # shelf boards above the plinth (ints)
+    level_height: tuple = (0.25, 0.40)   # clear height of each level (repo: 0.53)
+    plinth_height: tuple = (0.05, 0.10)  # kick board under the bottom board
+    target_band: tuple = (0.40, 1.10)    # target board top must be this high off the floor
+    fill_other_levels: tuple = (0.5, 1.0)  # how full the non-target rows are
+    static_other_levels: bool = True     # freeze non-target books (fast); False = free bodies
     pose_jitter_xy: float = 0.01         # +-1 cm
     pose_jitter_yaw_deg: float = 2.0     # +-2 deg
-    base_friction: tuple = (0.3, 0.8)
+    base_friction: tuple = (0.3, 0.8)    # shelf-board friction
+
+    # Robot base: in front of the shelf; its height follows the target level
+    # (like a lift), so the arm always sees the same geometry relative to it.
+    robot_xy: tuple = (0.0, 0.62)
+    robot_z_offset: float = -0.21        # robot base z minus target board top
 
     # Books (repo boxes: 0.04 x 0.16 x 0.24, density 500-1000)
     thickness: tuple = (0.015, 0.06)
@@ -75,12 +84,13 @@ class ShelfConfig:
     tight_gap_factor: tuple = (0.6, 1.1)
     lean_angle_deg: tuple = (12.0, 35.0)     # leaning: how far the neighbour leans
     leaning_reserve: float = 0.18            # row space reserved for the leaning gap
-    collapsed_hole: tuple = (0.06, 0.12)     # hole width (m) next to the run
+    collapsed_reserve: float = 0.15          # row space reserved for the hole next to the run
     collapsed_run: tuple = (3, 6)            # books that topple into the hole
 
 
-REPO_DEFAULTS = ShelfConfig(
-    width=(0.344, 0.344), depth=(0.26, 0.26), clear_height=(0.53, 0.53),
+REPO_DEFAULTS = ShelfConfig(   # one cubby whose board sits 0.5 m up, as on the repo's table
+    width=(0.344, 0.344), depth=(0.26, 0.26), num_levels=(1, 1), level_height=(0.53, 0.53),
+    plinth_height=(0.49, 0.49), target_band=(0.0, 2.0),
     pose_jitter_xy=0.0, pose_jitter_yaw_deg=0.0, base_friction=(1.0, 1.0),
     thickness=(0.04, 0.04), book_depth=(0.16, 0.16), book_height=(0.24, 0.24),
     density=(500.0, 500.0), book_friction=(0.8, 0.8), spacing=(0.005, 0.005),
@@ -104,14 +114,24 @@ class Book:
 
 
 @dataclass
+class FillerLevel:
+    level: int                # which shelf board these books stand on
+    books: List[Book]
+
+
+@dataclass
 class Row:
     scenario: str
     shelf_width: float
     shelf_depth: float
-    clear_height: float
+    clear_height: float       # clear height of the target level
     base_friction: float
-    shelf_pos: tuple          # world position of the base-board centre
+    shelf_pos: tuple          # world position of the bookcase origin (on the floor)
     shelf_yaw: float          # radians
+    plinth_height: float
+    level_heights: List[float]  # clear height of each level, bottom to top
+    target_level: int         # index into level_heights
+    target_board_top: float   # height of the target board's top surface, from the floor
     solref_timeconst: float
     books: List[Book]
     target_index: int         # the new book goes between books[i-1] and books[i]
@@ -119,6 +139,7 @@ class Row:
     gap_left: float           # x of the gap's left edge (shelf frame)
     gap_right: float          # x of the gap's right edge
     nudges: List[dict] = field(default_factory=list)  # pushes applied while settling
+    filler_levels: List[FillerLevel] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
@@ -138,8 +159,54 @@ def _make_book(cfg, rng, name):
     return Book(name, t, d, h, rho * t * d * h, _u(rng, cfg.book_friction), 0.0, colour)
 
 
+def board_tops(cfg: ShelfConfig, plinth: float, level_heights: List[float]) -> List[float]:
+    """Height of each shelf board's top surface, from the floor."""
+    t, z, tops = cfg.board_thickness, plinth, []
+    for h in level_heights:
+        tops.append(z + t)
+        z += t + h
+    return tops
+
+
+def sample_levels(cfg: ShelfConfig, rng: np.random.Generator, tries: int = 50):
+    """Pick the number of levels, their heights, and a target level whose
+    board top lies in cfg.target_band (within the robot's reach)."""
+    for _ in range(tries):
+        n = int(rng.integers(cfg.num_levels[0], cfg.num_levels[1] + 1))
+        heights = [_u(rng, cfg.level_height) for _ in range(n)]
+        plinth = _u(rng, cfg.plinth_height)
+        tops = board_tops(cfg, plinth, heights)
+        ok = [k for k, z in enumerate(tops) if cfg.target_band[0] <= z <= cfg.target_band[1]]
+        if ok:
+            return plinth, heights, int(rng.choice(ok)), tops
+    raise ValueError("No level falls inside target_band; widen it or change level_height")
+
+
+def sample_filler(cfg: ShelfConfig, rng: np.random.Generator, level: int,
+                  H: float, W: float, D: float) -> FillerLevel:
+    """An ordinary upright row on a non-target level, packed against a random
+    side panel and filled to a random fraction of the width."""
+    fill = _u(rng, cfg.fill_other_levels)
+    books, used = [], 0.0
+    while True:
+        b = _make_book(cfg, rng, f"l{level}_book_{len(books)}")
+        b.height = min(b.height, H - 0.02)
+        b.depth = min(b.depth, D - 0.01)
+        s = _u(rng, cfg.spacing)
+        if used + b.thickness + s > fill * W:
+            break
+        books.append(b)
+        used += b.thickness + s
+    from_left = bool(rng.integers(0, 2))
+    x = -W / 2 if from_left else W / 2 - used
+    for b in books:
+        b.x = x + b.thickness / 2
+        x += b.thickness + _u(rng, cfg.spacing)
+    return FillerLevel(level, books)
+
+
 def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row:
-    """Sample one shelf + row of books for a scenario.
+    """Sample one bookcase + target row of books for a scenario.
 
     Books are laid out left to right. The gap for the target book is placed
     somewhere in the middle of the row. Leaning and collapsed rows are made
@@ -149,7 +216,8 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     assert scenario in SCENARIOS, scenario
     W = _u(rng, cfg.width)
     D = _u(rng, cfg.depth)
-    H = _u(rng, cfg.clear_height)
+    plinth, level_heights, target_level, tops = sample_levels(cfg, rng)
+    H = level_heights[target_level]
     target = _make_book(cfg, rng, "target_book")
     target.height = min(target.height, H - 0.03)
     target.depth = min(target.depth, D - 0.01)
@@ -163,7 +231,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
         gap = cfg.leaning_reserve          # final width is set below, from the lean angle
     else:  # collapsed: the slot is closed, but a hole opens next to the run
         gap = 0.0
-    hole = _u(rng, cfg.collapsed_hole) if scenario == "collapsed" else 0.0
+    hole = cfg.collapsed_reserve if scenario == "collapsed" else 0.0   # final width set below
 
     # Fill the row with books until the shelf is (nearly) full.
     # Any space left over ends up as extra room at the far end of the row.
@@ -187,7 +255,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     # Target slot roughly in the middle third of the row.
     ti = int(rng.integers(max(1, n // 3), max(2, 2 * n // 3) + 1))
     run = int(rng.integers(cfg.collapsed_run[0], cfg.collapsed_run[1] + 1)) if scenario == "collapsed" else 0
-    run = min(run, n - ti)
+    run = max(1, min(run, n - ti - 2))   # keep >= 2 books after the hole to catch the run
 
     # Leaning: size the gap so the neighbour comes to rest at the chosen angle.
     # A book only stays leaning if its centre of mass passes the bottom edge it
@@ -213,8 +281,28 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
             sides = [-sides[0]]
         gap = min(lean_gap(sides[0]), cfg.leaning_reserve)
 
-    # Lay books out. Slack goes to whichever row end is chosen.
-    slack_left = bool(rng.integers(0, 2))
+    # Collapsed: the same rule sizes the hole the run falls into. Every book in
+    # the run must lean far enough not to spring back, and the last one must
+    # land on the book across the hole below that book's top (or the side panel).
+    if scenario == "collapsed":
+        angle = math.radians(_u(rng, cfg.lean_angle_deg))
+        run_books = books[ti:ti + run]
+        last = run_books[-1]
+        a_min = max(math.atan(1.5 * b.thickness / b.height) for b in run_books)
+        if ti + run < n:
+            far = books[ti + run]
+            a_min = max(a_min, math.acos(min(1.0, 0.95 * far.height / last.height)))
+        hole = min(last.height * math.sin(max(angle, a_min)), cfg.collapsed_reserve)
+
+    # Lay books out. Slack (spare row space) goes to one row end. When books
+    # are tipped over, it goes to the end away from where they fall, so the
+    # books that catch them are packed against a side panel and can't slide away.
+    if scenario == "collapsed":
+        slack_left = True                  # run falls toward +x
+    elif scenario == "leaning":
+        slack_left = sides[0] == -1        # left neighbour leans right -> keep the right side packed
+    else:
+        slack_left = bool(rng.integers(0, 2))
     x = -W / 2 + (slack if slack_left else 0.0)
     gap_left = gap_right = None
     for i, b in enumerate(books):
@@ -230,7 +318,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     jitter = cfg.pose_jitter_xy
     pos = (float(rng.uniform(-jitter, jitter)) if jitter else 0.0,
            float(rng.uniform(-jitter, jitter)) if jitter else 0.0,
-           cfg.base_height)
+           0.0)                                    # bookcase stands on the floor
     yaw = math.radians(float(rng.uniform(-cfg.pose_jitter_yaw_deg, cfg.pose_jitter_yaw_deg))) \
         if cfg.pose_jitter_yaw_deg else 0.0
 
@@ -253,9 +341,13 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
         for k in range(run):        # domino: the run tips toward the hole (+x)
             nudges.append(nudge(ti + k, +1, 0.35))
 
+    fillers = [sample_filler(cfg, rng, k, h, W, D)
+               for k, h in enumerate(level_heights) if k != target_level]
+
     return Row(scenario, W, D, H, _u(rng, cfg.base_friction), pos, yaw,
+               plinth, level_heights, target_level, tops[target_level],
                _u(rng, cfg.solref_timeconst), books, ti, target,
-               float(gap_left), float(gap_right), nudges)
+               float(gap_left), float(gap_right), nudges, fillers)
 
 
 # ---------------------------------------------------------------------------
@@ -300,16 +392,17 @@ def _f(*v):
     return " ".join(f"{x:.6g}" for x in v)
 
 
-def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None,
-                robot_pos=(0.0, 0.62, 0.30)) -> str:
+def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> str:
     """Return a complete MJCF string. If `panda_xml` (Menagerie's panda.xml)
     is given, the Panda is attached in front of the shelf facing -y.
     The XML uses an absolute path for the robot, so it can be loaded from
     any directory with mujoco.MjModel.from_xml_string / from_xml_path."""
     t = cfg.board_thickness
     W, D, H = row.shelf_width, row.shelf_depth, row.clear_height
-    base_top = t / 2                                  # in shelf-body frame
+    tops = board_tops(cfg, row.plinth_height, row.level_heights)
+    target_top = tops[row.target_level]               # in shelf-body frame (= from the floor)
     tr = row.solref_timeconst
+    robot_pos = (cfg.robot_xy[0], cfg.robot_xy[1], target_top + cfg.robot_z_offset)
 
     m = ET.Element("mujoco", model=f"bookshelf_{row.scenario}")
     ET.SubElement(m, "compiler", angle="radian", autolimits="true")
@@ -345,54 +438,74 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None,
         rb = ET.SubElement(wb, "body", name="robot_mount", pos=_f(*robot_pos),
                            euler=_f(0, 0, -math.pi / 2))      # face -y, toward the shelf
         ET.SubElement(rb, "geom", type="cylinder", size=_f(0.09, robot_pos[2] / 2),
-                      pos=_f(0, 0, -robot_pos[2] / 2), rgba="0.3 0.3 0.3 1")
+                      pos=_f(0, 0, -robot_pos[2] / 2), rgba="0.3 0.3 0.3 1",
+                      group="2")                       # same visual group as the Panda's meshes
         ET.SubElement(rb, "attach", model="panda", body="link0", prefix="panda/")
 
-    # Shelf: one static body; geoms mirror the Isaac Gym actors.
+    # Shelf: one static body standing on the floor. The boards are the repo's
+    # table/upper shelf stacked into levels; the panels are its walls, made
+    # full height.
     sp = row.shelf_pos
     shelf = ET.SubElement(wb, "body", name="shelf", pos=_f(*sp), euler=_f(0, 0, row.shelf_yaw))
     fric = _f(row.base_friction, 0.005, 0.0001)
-    wall_h = H + 2 * t
-    wall_zc = base_top + H / 2
-    ET.SubElement(shelf, "geom", name="base_board", **{"class": "shelf"},
-                  size=_f(W / 2 + t, D / 2, t / 2), friction=fric)                   # _define_table
+    for k, top in enumerate(tops):                     # shelf boards, bottom to top
+        ET.SubElement(shelf, "geom", name=f"board_{k}", **{"class": "shelf"},
+                      size=_f(W / 2, D / 2, t / 2), pos=_f(0, 0, top - t / 2), friction=fric)
+    total_h = tops[-1] + row.level_heights[-1] + t     # top surface of the top board
     ET.SubElement(shelf, "geom", name="top_board", **{"class": "shelf"},
-                  size=_f(W / 2 + t, D / 2, t / 2), pos=_f(0, 0, base_top + H + t / 2))  # _define_upper_shelf
-    ET.SubElement(shelf, "geom", name="back_wall", **{"class": "shelf"},
-                  size=_f(W / 2 + t, t / 2, wall_h / 2), pos=_f(0, -D / 2 - t / 2, wall_zc),
-                  friction="1.0 0.005 0.0001")                                    # _define_back_wall
-    for side, name in ((1, "side_wall_pos_x"), (-1, "side_wall_neg_x")):          # _define_side_wall
+                  size=_f(W / 2 + t, D / 2, t / 2), pos=_f(0, 0, total_h - t / 2))
+    for side, name in ((1, "side_panel_pos_x"), (-1, "side_panel_neg_x")):
         ET.SubElement(shelf, "geom", name=name, **{"class": "shelf"},
-                      size=_f(t / 2, D / 2, wall_h / 2), pos=_f(side * (W / 2 + t / 2), 0, wall_zc),
+                      size=_f(t / 2, D / 2, (total_h - t) / 2),
+                      pos=_f(side * (W / 2 + t / 2), 0, (total_h - t) / 2),
                       friction="1.0 0.005 0.0001")
+    ET.SubElement(shelf, "geom", name="back_panel", **{"class": "shelf"},
+                  size=_f(W / 2 + t, t / 2, total_h / 2), pos=_f(0, -D / 2 - t / 2, total_h / 2),
+                  friction="1.0 0.005 0.0001")
+    ET.SubElement(shelf, "geom", name="plinth", **{"class": "shelf"},
+                  size=_f(W / 2, t / 2, row.plinth_height / 2),
+                  pos=_f(0, D / 2 - t / 2, row.plinth_height / 2))
     # Fiducial marker: a flat, non-colliding plate on the front edge of the
-    # base board. Swap rgba for an AprilTag texture when you add perception.
+    # target board. Swap rgba for an AprilTag texture when you add perception.
     ET.SubElement(shelf, "geom", name="fiducial", type="box", contype="0", conaffinity="0",
-                  size="0.025 0.0005 0.025", pos=_f(-W / 2 + 0.04, D / 2 + 0.0006, -0.0),
+                  size="0.025 0.0005 0.025", pos=_f(-W / 2 + 0.04, D / 2 + 0.0006, target_top - t / 2),
                   rgba="0 0 0 1")
-    ET.SubElement(shelf, "site", name="shelf_frame", pos=_f(0, 0, base_top), size="0.01", group="4")
+    # Sites mark the target level: the row frame and the centre of the gap.
+    ET.SubElement(shelf, "site", name="shelf_frame", pos=_f(0, 0, target_top), size="0.01", group="4")
     ET.SubElement(shelf, "site", name="target_slot",
-                  pos=_f((row.gap_left + row.gap_right) / 2, 0, base_top), size="0.008", rgba="0 1 0 0.6")
+                  pos=_f((row.gap_left + row.gap_right) / 2, 0, target_top), size="0.008", rgba="0 1 0 0.6")
     # Fixed scene camera (RealSense D435-like): in front of the shelf and off
-    # to one side, so the robot never blocks it. It aims at the middle of the row.
-    ET.SubElement(shelf, "body", name="view_target", pos=_f(0, 0, base_top + H / 3))
+    # to one side, so the robot never blocks it. It aims at the target row.
+    ET.SubElement(shelf, "body", name="view_target", pos=_f(0, 0, target_top + H / 3))
     ET.SubElement(wb, "camera", name="scene_cam", mode="targetbody", target="view_target",
-                  pos=_f(sp[0] + 0.6, sp[1] + 0.9, sp[2] + H + 0.5), fovy="45")
+                  pos=_f(sp[0] + 0.6, sp[1] + 0.9, sp[2] + target_top + H + 0.5), fovy="45")
 
-    # Books: free bodies, back face 5 mm from the back wall (like the repo's
+    # Books: back face 5 mm from the back panel (like the repo's
     # object_near_edge=False layout, pushed back for a realistic shelf).
     c, s = math.cos(row.shelf_yaw), math.sin(row.shelf_yaw)
-    book_bodies = []
-    for b in row.books:
-        lx, ly, lz = b.x, -D / 2 + b.depth / 2 + 0.005, base_top + b.height / 2 + 0.0005
-        wx, wy, wz = sp[0] + c * lx - s * ly, sp[1] + s * lx + c * ly, sp[2] + lz
-        body = ET.SubElement(wb, "body", name=b.name, pos=_f(wx, wy, wz), euler=_f(0, 0, row.shelf_yaw))
-        ET.SubElement(body, "freejoint", name=b.name + "_joint")
-        ET.SubElement(body, "geom", name=b.name + "_geom", **{"class": "book"},
-                      size=_f(b.thickness / 2, b.depth / 2, b.height / 2), mass=f"{b.mass:.5g}",
-                      friction=_f(b.friction, 0.005, 0.0001), rgba=_f(*b.rgba))
-        ET.SubElement(body, "site", name=b.name + "_top", pos=_f(0, 0, b.height / 2), size="0.003", group="4")
-        book_bodies.append((wx, wy, wz))
+
+    def add_books(books, z_base, free):
+        """Place books standing on the board whose top is at z_base. Free books
+        get a freejoint and are returned (they need keyframe entries); books
+        without a joint are welded in place and cost almost nothing to simulate."""
+        placed = []
+        for b in books:
+            lx, ly, lz = b.x, -D / 2 + b.depth / 2 + 0.005, z_base + b.height / 2 + 0.0005
+            wx, wy, wz = sp[0] + c * lx - s * ly, sp[1] + s * lx + c * ly, sp[2] + lz
+            body = ET.SubElement(wb, "body", name=b.name, pos=_f(wx, wy, wz), euler=_f(0, 0, row.shelf_yaw))
+            if free:
+                ET.SubElement(body, "freejoint", name=b.name + "_joint")
+                placed.append((wx, wy, wz))
+            ET.SubElement(body, "geom", name=b.name + "_geom", **{"class": "book"},
+                          size=_f(b.thickness / 2, b.depth / 2, b.height / 2), mass=f"{b.mass:.5g}",
+                          friction=_f(b.friction, 0.005, 0.0001), rgba=_f(*b.rgba))
+            ET.SubElement(body, "site", name=b.name + "_top", pos=_f(0, 0, b.height / 2), size="0.003", group="4")
+        return placed
+
+    # Target-level books first, so their qpos entries come right after the robot's.
+    book_bodies = add_books(row.books, target_top, free=True)
+    for fl in row.filler_levels:
+        book_bodies += add_books(fl.books, tops[fl.level], free=not cfg.static_other_levels)
 
     # Keyframe "init": robot at home, books where we placed them.
     qpos = list(PANDA_HOME) if panda_xml else []
@@ -425,7 +538,9 @@ def settle(model, data, row: Row, settle_time=1.5, check_time=5.0):
     Returns a dict with per-book tilt and the largest drift during the check."""
     import mujoco
     mujoco.mj_resetDataKeyframe(model, data, model.key("init").id)
-    ids = [model.body(b.name).id for b in row.books]
+    ids = [model.body(b.name).id for b in row.books]          # target row (nudges index these)
+    others = [model.body(b.name).id for fl in row.filler_levels for b in fl.books]
+    check = ids + [i for i in others if model.body_jntnum[i] > 0]   # every book that can move
     dt = model.opt.timestep
     for step in range(int(settle_time / dt)):
         tnow = step * dt
@@ -437,12 +552,12 @@ def settle(model, data, row: Row, settle_time=1.5, check_time=5.0):
         mujoco.mj_step(model, data)
     data.xfrc_applied[:] = 0
     data.qvel[:] = 0                       # start the check from rest
-    p0 = data.xpos[ids].copy()
+    p0 = data.xpos[check].copy()
     drift = 0.0
     for _ in range(int(check_time / dt)):
         mujoco.mj_step(model, data)
-        drift = max(drift, float(np.abs(data.xpos[ids] - p0).max()))
-    tilts = [book_tilt_deg(data.xquat[i]) for i in ids]
+        drift = max(drift, float(np.abs(data.xpos[check] - p0).max()))
+    tilts = [book_tilt_deg(data.xquat[i]) for i in check]
     return {"stable": drift < 2e-3 and max(tilts) < 60, "max_drift_m": drift,
             "tilts_deg": tilts, "max_tilt_deg": max(tilts)}
 
@@ -489,7 +604,9 @@ def main():
             fh.write(xml)
         with open(base + ".json", "w") as fh:
             fh.write(row.to_json())
-        print(f"{sc:9s} {len(row.books):2d} books, shelf {row.shelf_width:.2f} m, "
+        print(f"{sc:9s} {len(row.level_heights)} levels, target level {row.target_level} "
+              f"(board top {row.target_board_top:.2f} m), "
+              f"{len(row.books):2d} books, shelf {row.shelf_width:.2f} m, "
               f"gap {1000*(row.gap_right-row.gap_left):.0f} mm (target {1000*row.target_book.thickness:.0f} mm) -> {base}.xml")
         try:
             import mujoco
