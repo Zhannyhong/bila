@@ -68,9 +68,10 @@ The bookcase is built from the floor up:
 
 3. **Look at a scene**
    ```bash
-   uv run python -m mujoco.viewer --mjcf scenes/leaning_seed0.xml
+   uv run python view_scene.py --scenario leaning --seed 0       # add --no-robot for the bookcase only
    ```
-   Note: the viewer shows the start state, before settling. Leaning and collapsed books only fall into place once `settle()` runs (step 5).
+   This settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
+   (Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
 
 4. **How the target row is made (the key idea)**
    Books are placed upright, then the leaning and collapsed scenarios push some of them over during a short
