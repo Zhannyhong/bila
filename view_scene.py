@@ -41,9 +41,14 @@ def main():
         tilt = book_tilt_deg(data.xquat[model.body(b.name).id])
         if tilt > 3:
             print(f"  {b.name} leans {tilt:.0f} deg")
-    print("Tip: in the viewer's left panel, Rendering > Camera > scene_cam shows the target row.")
+    print("The camera starts on the gap. Rendering > Camera > scene_cam in the left panel shows the whole target row.")
 
-    mujoco.viewer.launch(model, data)   # opens on the settled state and keeps simulating
+    # Opens on the settled state and keeps simulating. Handed over through a
+    # loader with a name, the model counts as a newly opened file, which is
+    # when the viewer aims its camera with the scene's defaults (at the gap).
+    # Passed directly, it would keep its own default camera instead.
+    name = f"{a.scenario} seed {a.seed}"
+    mujoco.viewer.launch(loader=lambda: (model, data, name))
 
 
 if __name__ == "__main__":

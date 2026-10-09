@@ -29,6 +29,9 @@ The bookcase is built from the floor up:
 - **3 to 5 levels**, each 0.25 to 0.40 m tall, on a 5 to 10 cm plinth. Side panels and the back panel run from the floor to the top board.
 - **One target level** is chosen per episode, from the levels whose board top is 0.40 to 1.10 m off the floor (within the Panda's reach).
   It holds the scenario row: clear, tight, leaning or collapsed.
+- **Books line up at the front**, as on a library shelf: each spine sits 10 to 30 mm behind the shelf's front edge,
+  and every book is at least 30 mm shallower than the shelf, so no back goes past the back panel (the deepest
+  book, set furthest in, just touches it).
 - **Every other level** holds an ordinary upright row, 50 to 100% full, packed against a random side panel.
   These books are **static** by default (no joint), so they add almost no simulation cost. Set
   `ShelfConfig(static_other_levels=False)` to make them free, e.g. to check in evaluation that nothing gets knocked off.
@@ -74,6 +77,10 @@ The bookcase is built from the floor up:
    ```
    This settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
    (Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
+   Either way the camera starts on the gap, from the front and to one side, so the robot isn't in the way.
+   The scene sets this as MuJoCo's default free camera (`<statistic>` and `<visual><global>`), so you can still
+   orbit, and the viewer's Align button brings you back to it. MuJoCo's viewer only applies it by itself when it
+   opens a file, so `view_scene.py` and `insert_book.py --view` apply it themselves.
 
 4. **How the target row is made (the key idea)**
    Books are placed upright, then the leaning and collapsed scenarios push some of them over during a short
@@ -103,33 +110,60 @@ The bookcase is built from the floor up:
    `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
    then 7 per filler book only if `static_other_levels=False`.
 
-6. **Scripted insertion (clear scenario)**
+6. **Scripted insertion (clear and tight scenarios)**
    ```bash
-   uv run python insert_book.py --seed 0                # one episode: prints each step and the score
-   uv run python insert_book.py --seed 0 --trials 100   # success rate over seeds 0 to 99
-   uv run mjpython insert_book.py --seed 0 --view       # watch it (the macOS viewer needs mjpython)
+   uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
+   uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
+   uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
    ```
-   A hand-written baseline. The target book starts pinched in the gripper at a pre-insertion pose in front of the
-   gap. The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
+   A hand-written baseline. The target book is held in the gripper at a pre-insertion pose in front of the gap.
+   The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
    fingers reach the neighbours' spines (each finger is wider than the clearance beside the book), turns its hand
-   90°, and pushes the spine low down with the lower fingertip until the back is 5 mm off the back panel.
-   It scores the result as the proposal does: upright within 5°, seated (back within 10 mm of the panel), released,
-   plus how far the neighbours moved.
+   90°, and pushes the spine low down with the lower fingertip until the book is in place (no push if the slide
+   already got it there). It scores the result as the proposal does: upright within 5°, in place, released, plus
+   how far the other books moved. In place means:
+   - spine within 10 mm of the spine of the neighbour that sticks out more, or
+   - if the book is deeper than that neighbour, so it can't line up without its back passing the back panel:
+     at least 10 mm behind the shelf's front edge. With the default rows that's rare (about 1 row in 400: a book
+     near the maximum depth beside neighbours set more than 25 mm in, as the inserted book stops 5 mm short of
+     the back panel), but it also covers other layouts such as `--repo-defaults`.
    - Control: Menagerie's position actuators, fed by differential IK along min-jerk paths, with gravity compensation.
-     The arm configuration is chosen so the whole sequence stays clear of the joint limits.
+     The arm configuration is chosen so the whole sequence stays clear of the joint limits and doesn't run into
+     the shelf. The slide and the final push stop when the wrist force sensor feels the book stop giving way.
    - The script adds the target book to the scene, and gives the gripper the real Franka Hand's 70 N (Menagerie's
      squeezes a book with 1 to 2 N). It only changes its own copy of the model.
    - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
      while it slides.
-   - Seeds 0 to 99: 86 succeed. The other 14 have a neighbour much deeper than the target book, so the hand reaches
-     that neighbour's spine first and the book stops 1.5 to 10 cm short of the back panel. No episode moved a
-     neighbour more than 0.3 mm.
+   - Clear, seeds 0 to 99: all 100 succeed, in place after 10 s on average. No episode moved another book more
+     than 0.2 mm.
+
+   **Tight**: the gap is first widened to the book's thickness plus 6 mm.
+   - Fingertip: the empty hand puts its fingers (stacked vertically, 21 mm wide) into the gap and pushes a
+     neighbour aside, by default one side only, the one with more free space if it can (`--strategy one-sided`;
+     `split` pushes each neighbour half as far). Then the book is handed over (not modelled) and inserted as
+     above. Used when the fingers fit the gap, reach at least
+     1 cm past a neighbour's spine (the 63 mm palm stops 46 mm behind the fingertips, at the most protruding spine
+     nearby), and the books that must move need under 35 N (the wrist joints top out at 12 N m).
+   - Book wedge, otherwise: the held book goes in turned, its back corner first, and straightens as it goes.
+   - Seeds 0 to 49, default `one-sided`: 26 succeed (one needed no widening). The fingertip handles 31 rows and
+     places 25. The wedge gets 18 rows and places none: in 4 the turned hand would run into the row, and most of
+     the rest jam at the slot's entrance.
+   - One side versus splitting, on the same 31 fingertip rows: one side places more, 25 vs 19 (20/50 overall
+     with `split`). Splitting swivels both neighbours, so the book's back corners catch on both sides and it
+     jams at the entrance more often. Where both worked, the most-moved book moved about the same (4.8 vs 4.1 mm,
+     one side vs split) and one side was 1.4 s faster (17.7 vs 19.1 s). Splitting needs much less force, as
+     fewer books must slide at once.
+   - Books have room behind them, so a book sliding in tightly can also drag its neighbours back.
+   - Why it's hard: the fingertips push a neighbour only near its spine, so it swivels instead of sliding. The gap
+     opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
+     contact-rich part the proposal's residual policy is meant to learn.
 
 7. **Next pieces to build on top** (from the design doc)
    - Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.
    - Spawn the target book in the gripper for other code too (`insert_book.py` does it for its own runs;
      `build_scene` still leaves `row.target_book` out).
-   - Add the gap-creation moves and insertion on top of that controller.
+   - Add the gap-creation moves and insertion on top of that controller (`insert_book.py` scripts them with
+     position control, as a baseline).
    - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
    - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
 
@@ -143,6 +177,8 @@ The bookcase is built from the floor up:
 | `target_band` | 0.40 to 1.10 m | Allowed height of the target board's top surface |
 | `fill_other_levels` | 50 to 100% | How full the non-target rows are |
 | `static_other_levels` | `True` | Weld non-target books in place, for speed |
+| `spine_inset` | 10 to 30 mm | How far each spine sits behind the shelf's front edge |
+| `depth_clearance` | 30 mm | Every book is at least this much shallower than the shelf |
 | `robot_xy`, `robot_z_offset` | (0, 0.80), −0.40 m | Robot base position; its height follows the target board |
 | `lean_angle_deg` | 12° to 35° | Lean for leaning and collapsed rows (raised when a book needs more to stay down) |
 
@@ -152,15 +188,15 @@ The bookcase is built from the floor up:
 | --- | --- | --- |
 | clear | 40/40 | Nothing moves (< 0.2 mm) |
 | tight | 40/40 | Nothing moves (< 0.2 mm) |
-| leaning | 134/140 | Leans of 14° to 67°; failures are re-sampled by `make_episode` |
-| collapsed | 136/140 | Runs lean 17° to 52°; failures re-sampled |
-| all four, free filler books | 60/60 | Nothing on the other levels moves (< 0.5 mm) |
+| leaning | 132/140 | Leans of 14° to 56°; failures are re-sampled by `make_episode` |
+| collapsed | 136/140 | Runs lean 15° to 49°; failures re-sampled |
+| all four, free filler books | 60/60 | Stable with the other levels' books free too |
 
 - Bookcases came out 0.96 to 1.99 m tall, with the target on levels 1 to 3 and its board top between 0.40 and 1.10 m.
-- The robot touched nothing at the start in 160/160 scenes.
+- The robot touched nothing at the start in 360/360 scenes.
 
-The physics tests ran against MuJoCo's C library with the same steps as `settle()`, because the Python package
-could not be installed in the build environment. Run step 2 once on your machine to confirm the Python path.
+Run with the Python package, with the books front-aligned (seeds 0 to 39, or 0 to 139 for leaning and collapsed,
+and 0 to 14 per scenario with free filler books).
 
 ## Things to know
 

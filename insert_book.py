@@ -1,24 +1,54 @@
 """
-Scripted insertion of the target book for the clear scenario.
+Scripted insertion of the target book, for the clear and tight scenarios.
 
-    uv run python insert_book.py --seed 0               # one episode, headless
-    uv run python insert_book.py --seed 0 --trials 50   # success rate over seeds 0..49
-    uv run mjpython insert_book.py --seed 0 --view      # watch it (macOS needs mjpython)
+    uv run python insert_book.py --scenario clear --seed 0              # one episode, headless
+    uv run python insert_book.py --scenario tight --seed 0 --trials 50  # success rate over seeds 0..49
+    uv run mjpython insert_book.py --scenario tight --seed 0 --view     # watch it (macOS needs mjpython)
 
-The sequence (shelf frame: x along the row, y out of the shelf, z up)
-  1. Start already grasped at the pre-insertion pose: the book is lined up with
-     the gap, its back 1 cm over the board's front edge and 3 mm above it. The
-     fingers pinch its thickness near the spine, 11.5 cm above its bottom.
+Insertion (shelf frame: x along the row, y out of the shelf, z up)
+  1. Hold the book at the pre-insertion pose: lined up with the gap, its back
+     1 cm over the board's front edge and 3 mm above it. The fingers pinch its
+     thickness near the spine, 11.5 cm above its bottom.
   2. Rest its back on the board's edge, then slide it in along the board while
      holding it, until the hand would come within 5 mm of another book's spine.
      Each finger reaches 2.6 cm out from its pad, more than the clearance
      beside the book, so the fingers can't follow it in.
   3. Open the gripper.
   4. Back off, turn the hand 90 deg so the fingers are stacked vertically, and
-     push the spine low down with the lower fingertip, until the book's back is
-     5 mm off the back panel like every other book. If deeper neighbours block
-     the hand first, it stops there and the episode counts as not seated.
-  5. Back out and score it: upright within 5 deg, seated, and released.
+     push the spine low down with the lower fingertip until the book is in
+     place (skipped if the slide already got it there). In place means:
+       - flush with the spine of the neighbour that sticks out more, within
+         ALIGN_TOL, if the book can get there without its back reaching the
+         back panel;
+       - otherwise (it is deeper than that neighbour), at least EDGE_IN behind
+         the shelf's front edge.
+  5. Back out and score it: upright within 5 deg, in place, and released.
+
+Clear scenario: the book starts already grasped at the pre-insertion pose.
+
+Tight scenario: the gap is narrower than the book, so it is widened first, to
+the book's thickness plus GAP_MARGIN.
+  - Fingertip (when the fingers fit the gap, reach a neighbour, and the books
+    to shove need no more than MAX_PUSH_FORCE): the empty hand puts its
+    vertically stacked fingers into the gap and pushes the neighbours apart,
+    re-pushing by whatever the arm's give left short. By default it pushes one
+    side only (--strategy one-sided), the side with more free space if it can:
+    on front-aligned rows that placed more books than splitting and was faster,
+    for about the same displacement. --strategy split pushes each neighbour
+    half as far (fewer books must move at once) but swivels both, so the book
+    catches on both sides more often. Then the book is handed over at the
+    pre-insertion pose (not modelled) and inserted.
+    The fingers only reach ~4 cm past the spines, so the neighbours swivel
+    rather than slide: the gap widens at the spines but hardly at the back,
+    and the book itself has to widen the rest as it slides in.
+  - Book wedge (otherwise): the book starts grasped and turned, so its back
+    corner fits the gap. That corner runs along one neighbour while the book
+    straightens as it goes in, and the book's other side shoves the other
+    neighbour toward the free space. It moves books much more than needed,
+    and often can't be done at all: turned far, the hand runs into the row.
+
+The slide and the final push stop if the wrist force sensor feels the book
+stop giving way, rather than forcing a jammed book.
 
 Control: Menagerie's position actuators, fed joint targets by differential IK
 along a min-jerk Cartesian path, with gravity compensation on the arm. The
@@ -61,8 +91,11 @@ PAD_HEIGHT = 0.115          # ... and this high above the book's bottom. Low, so
 PRE_OVERLAP = 0.01          # pre-insertion: the book's back is this far over the board's front edge
 HOVER = 0.003               # ... and this high above the board
 CLEAR = 0.005               # gap kept between the hand and any other book or panel
-BACK_GAP = 0.005            # seated: back face this far off the back panel (as the generator places books)
+BACK_GAP = 0.005            # deepest a book goes: back face this far off the back panel (as the generator places books)
 PUSH_LIFT = 0.01            # pushing: bottom of the turned hand this far above the board
+SLIDE_STOP_FORCE = 35.0     # N change at the wrist that stops the slide (the book has run into a neighbour);
+                            # above the board's drag on the heaviest book (~0.8 x 35 N)
+PUSH_STOP_FORCE = 40.0      # N change at the wrist that stops the final push (the book is stuck)
 TRANSIT_SPEED = 0.10        # m/s, peak of each min-jerk move
 INSERT_SPEED = 0.06
 PUSH_SPEED = 0.05
@@ -71,8 +104,22 @@ IK_SEEDS = 20               # random starts per round when choosing the arm conf
 IK_ROUNDS = 3               # rounds tried before giving up (most scenes need only the first)
 MIN_MARGIN = 0.05           # rad: the chosen path must keep every joint this far from its limits
 
+# Gap creation (tight scenario)
+GAP_MARGIN = 0.006          # widen the gap to the book's thickness plus this
+FIT_CLEAR = 0.001           # fingers need this much room each side to enter the gap
+MIN_REACH = 0.010           # fingertips must get this far behind a neighbour's spine to push it
+ROOM_KEEP = 0.002           # leave this much of a side's free space unused
+MAX_PUSH_FORCE = 35.0       # N the fingertip can push sideways: the wrist joints top out at 12 N m
+                            # around 45-50 N (measured), less some headroom
+GAP_PUSH_SPEED = 0.03
+WEDGE_MIN_YAW = np.radians(35)   # wedge: steeper than book-on-book friction (up to 0.7), or it jams
+WEDGE_EPS = 0.002           # wedge: guide corner this far off the guide neighbour
+WEDGE_SPEED = 0.08          # of the hand, which swings a long arc while the book's corner barely moves
+
 # Scoring
-SEAT_TOL = 0.005            # seated if the back is within BACK_GAP + SEAT_TOL of the back panel
+ALIGN_TOL = 0.010           # in place: spine within this of the more protruding neighbour's spine, or
+EDGE_IN = 0.010             # ... if the book is deeper than that neighbour, at least this behind the front edge
+EDGE_AIM = 0.005            # push a deeper book this much further in than EDGE_IN needs
 UPRIGHT_DEG = 5.0           # upright within 5 deg (project proposal)
 
 
@@ -120,6 +167,11 @@ class ShelfFrame:
         c, s = math.cos(row.shelf_yaw), math.sin(row.shelf_yaw)
         self.R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
         self.p = np.array(row.shelf_pos, dtype=float)
+
+    def rot(self, yaw=0.0):
+        """World rotation of something turned by `yaw` about z in the shelf frame."""
+        c, s = math.cos(yaw), math.sin(yaw)
+        return self.R @ np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
     def to_world(self, p):
         return self.p + self.R @ p
@@ -199,6 +251,27 @@ class ArmIK:
         self.lo, self.hi = model.jnt_range[jids].T
         self.q_rest = np.array(q_rest, dtype=float)
         self.jacp, self.jacr = np.zeros((3, model.nv)), np.zeros((3, model.nv))
+        body = lambda g: model.body(model.geom_bodyid[g]).name
+        self.robot = {g for g in range(model.ngeom) if body(g).startswith("panda/")}
+        self.fingers = {g for g in self.robot if body(g) in ("panda/left_finger", "panda/right_finger")}
+        self.ignore = set()                 # geoms the arm may touch anywhere (the book it handles)
+
+    def sync(self, data):
+        """Copy the scene (books, fingers) from the simulation, for collision checks."""
+        self.d.qpos[:] = data.qpos
+
+    def collides(self, q, allowed=()):
+        """Whether the arm at q is more than 1 mm into anything, other than
+        the geoms in `allowed`, which its fingers may press on."""
+        self.d.qpos[self.qadr] = q
+        mujoco.mj_fwdPosition(self.m, self.d)
+        for c in self.d.contact[:self.d.ncon]:
+            if (c.geom1 in self.robot) == (c.geom2 in self.robot) or c.dist > -0.001:
+                continue
+            arm, other = (c.geom1, c.geom2) if c.geom1 in self.robot else (c.geom2, c.geom1)
+            if other not in self.ignore and not (arm in self.fingers and other in allowed):
+                return True
+        return False
 
     def fk(self, q):
         self.d.qpos[self.qadr] = q
@@ -244,13 +317,19 @@ class ArmIK:
         e = self.error(q, pos, rot)
         return q, bool(np.linalg.norm(e[:3]) < 1e-4 and np.linalg.norm(e[3:]) < 1e-3)
 
-    def follow(self, q, poses):
+    def follow(self, q, poses, floor=-np.inf, allowed=None):
         """Track a list of (pos, rot) hand poses from q, warm-started like the
-        runner does. Returns (end q, worst joint-limit margin on the way, reached the end)."""
+        runner does. Returns (end q, worst joint-limit margin on the way, reached
+        the end). Gives up early once the margin drops below `floor`, or, if
+        `allowed` is given, once the arm runs into something else."""
         worst = self.margin(q)
-        for pos, rot in poses:
+        if allowed is not None and self.collides(q, allowed):
+            return q, worst, False
+        for k, (pos, rot) in enumerate(poses):
             q = self.solve(q, pos, rot, iters=4)
             worst = min(worst, self.margin(q))
+            if worst < floor or (allowed is not None and k % 3 == 2 and self.collides(q, allowed)):
+                return q, worst, False
         e = self.error(q, *poses[-1])
         return q, worst, bool(np.linalg.norm(e[:3]) < 1e-3 and np.linalg.norm(e[3:]) < 1e-2)
 
@@ -266,6 +345,16 @@ class Runner:
         self.viewer, self.log = viewer, log
         self.t0 = data.time
         self.wall0, self.next_frame = time.perf_counter(), 0.0
+        self.ft = int(model.sensor("panda/ft_force").adr[0])       # wrist force sensor (hand frame)
+
+    def wrist_force(self):
+        return self.d.sensordata[self.ft:self.ft + 3].copy()
+
+    def halt(self):
+        """Hold the hand where it actually is, so the arm stops pressing on
+        whatever it ran into."""
+        self.q_cmd = self.d.qpos[self.ik.qadr].copy()
+        self.pos, self.rot = self.ik.fk(self.q_cmd)
 
     @property
     def t(self):
@@ -284,9 +373,15 @@ class Runner:
             if lag > 0:
                 time.sleep(lag)
 
-    def move(self, name, pos, rot=None, speed=TRANSIT_SPEED, grip=None):
+    def move(self, name, pos, rot=None, speed=TRANSIT_SPEED, grip=None, stop_force=None):
         """Move the hand frame to (pos, rot) in a straight line, with a slerp
-        on its orientation. Peak speeds are `speed` and TURN_SPEED."""
+        on its orientation. Peak speeds are `speed` and TURN_SPEED. With
+        `stop_force`, stop and hold as soon as the wrist force along the hand's
+        approach axis changes by more than that (N): what it pushes has stopped
+        giving way. (The other components change as the board takes over the
+        weight of a held book.) The force is smoothed over ~50 ms first, as a
+        book chattering on the board's edge gives short spikes of 20-30 N.
+        Returns False then."""
         self.log(f"  {self.t:5.2f} s  {name}")
         if grip is not None:
             self.grip = grip
@@ -295,9 +390,34 @@ class Runner:
         dist, ang = np.linalg.norm(pos - p0), np.linalg.norm(rotation_between(R0, rot))
         T = max(0.3, 1.875 * max(dist / speed, ang / TURN_SPEED))   # min-jerk peak = 1.875 x mean
         n = int(round(T / self.m.opt.timestep))
+        f0 = smooth = self.wrist_force()[2]
+        blend = self.m.opt.timestep / 0.05
         for k in range(1, n + 1):
             u = k / n
             self.pos, self.rot = interpolate(p0, R0, pos, rot, u ** 3 * (10 - 15 * u + 6 * u * u))
+            self.q_cmd = self.ik.solve(self.q_cmd, self.pos, self.rot)
+            self.step()
+            smooth += blend * (self.wrist_force()[2] - smooth)
+            if stop_force is not None and abs(smooth - f0) > stop_force:
+                self.halt()
+                self.log(f"  {self.t:5.2f} s    stopped: the wrist feels over {stop_force:.0f} N")
+                return False
+        return True
+
+    def move_path(self, name, poses, speed=TRANSIT_SPEED):
+        """Move the hand through a list of (pos, rot) poses, starting from the
+        current one, with one min-jerk timing over the whole path."""
+        self.log(f"  {self.t:5.2f} s  {name}")
+        pts = [(self.pos.copy(), self.rot.copy())] + list(poses)
+        dist = sum(np.linalg.norm(b[0] - a[0]) for a, b in zip(pts, pts[1:]))
+        ang = sum(np.linalg.norm(rotation_between(a[1], b[1])) for a, b in zip(pts, pts[1:]))
+        T = max(0.3, 1.875 * max(dist / speed, ang / TURN_SPEED))
+        n = int(round(T / self.m.opt.timestep))
+        for k in range(1, n + 1):
+            u = k / n
+            s = u ** 3 * (10 - 15 * u + 6 * u * u) * (len(pts) - 1)
+            i = min(int(s), len(pts) - 2)
+            self.pos, self.rot = interpolate(*pts[i], *pts[i + 1], s - i)
             self.q_cmd = self.ik.solve(self.q_cmd, self.pos, self.rot)
             self.step()
 
@@ -310,7 +430,7 @@ class Runner:
 
 
 # ---------------------------------------------------------------------------
-# 3. The scripted sequence
+# 3. The scripted sequences
 # ---------------------------------------------------------------------------
 GRIP_CLOSED, GRIP_OPEN = 0.0, 255.0
 
@@ -320,219 +440,505 @@ def hand_pose_for_point(point_hand, point_world, rot):
     return point_world - rot @ point_hand
 
 
-def insert_book(model, data, row, viewer=None, log=print) -> dict:
-    """Run the scripted insertion from the settled scene. Returns the score."""
-    shelf = ShelfFrame(row)
-    xs, ys, zs = shelf.R.T                                    # shelf axes in world
-    b = row.target_book
-    t, d, h = b.thickness, b.depth, b.height
-    D, H, z0 = row.shelf_depth, row.clear_height, row.target_board_top
-    x_gap = (row.gap_left + row.gap_right) / 2
-    spine_seated = -D / 2 + BACK_GAP + d                      # spine y once seated
-    if 2 * HAND_HALF_L + PUSH_LIFT + CLEAR > H:
-        raise ValueError(f"Level is {H:.2f} m tall: too low to turn the hand for the push")
+def segment(a, b, n):
+    """n poses from just after pose a up to pose b (straight line, slerp)."""
+    return [interpolate(*a, *b, s) for s in np.linspace(0, 1, n + 1)[1:]]
 
-    book_geom = model.geom(b.name + "_geom").id
-    book_body = model.body(b.name).id
-    book_q = model.jnt_qposadr[model.joint(b.name + "_joint").id]
-    others = [model.body(bk.name).id for bk in row.books]
-    start_pos = data.xpos[others].copy()
-    start_tilt = np.array([book_tilt_deg(data.xquat[i]) for i in others])
-    obs = obstacles(model, data, shelf, row)
 
-    # Hand poses. Holding: the fingers close across the book's thickness (along
-    # the row), approaching along -y. Pushing: the hand is turned 90 deg about
-    # the approach axis so the fingers are stacked vertically, and pushes the
-    # spine low down with the lower finger, so the push can't tip the book
-    # over backwards. Both work with the hand either way up (sign).
-    pad_in_book = np.array([0, d / 2 - PAD_INSET, PAD_HEIGHT - h / 2])
-    hand_z = z0 + HAND_HALF_L + PUSH_LIFT                     # hand axis height while pushing
+class Episode:
+    """One insertion attempt in a settled scene: geometry, hand poses, the
+    steps of each sequence, and the score."""
 
-    def grasp_pose(sign, book_shelf):
-        rot = np.column_stack([np.cross(sign * xs, -ys), sign * xs, -ys])
-        return hand_pose_for_point([0, 0, PAD_Z], shelf.to_world(book_shelf + pad_in_book), rot), rot
+    def __init__(self, model, data, row, viewer=None, log=print):
+        self.m, self.d, self.row, self.viewer, self.log = model, data, row, viewer, log
+        self.shelf = ShelfFrame(row)
+        self.xs, self.ys, self.zs = self.shelf.R.T                   # shelf axes in world
+        b = row.target_book
+        self.t, self.depth, self.h = b.thickness, b.depth, b.height
+        self.D, self.H, self.z0 = row.shelf_depth, row.clear_height, row.target_board_top
+        if 2 * HAND_HALF_L + PUSH_LIFT + CLEAR > self.H:
+            raise ValueError(f"Level is {self.H:.2f} m tall: too low to turn the hand for the push")
+        self.book_geom = model.geom(b.name + "_geom").id
+        self.book_body = model.body(b.name).id
+        self.book_joint = model.joint(b.name + "_joint").id
+        self.row_geoms = [model.geom(bk.name + "_geom").id for bk in row.books]
+        self.row_bodies = [model.body(bk.name).id for bk in row.books]
+        self.start_pos = data.xpos[self.row_bodies].copy()
+        self.start_tilt = np.array([book_tilt_deg(data.xquat[i]) for i in self.row_bodies])
+        self.spine_seated = -self.D / 2 + BACK_GAP + self.depth      # spine y once seated
+        self.pad_in_book = np.array([0, self.depth / 2 - PAD_INSET, PAD_HEIGHT - self.h / 2])
+        self.hand_z = self.z0 + HAND_HALF_L + PUSH_LIFT               # hand axis height while pushing
+        self.z_rest = self.z0 + self.h / 2 + 0.0005                  # book centre height on the board
+        self.ik = ArmIK(model, PANDA_HOME[:7])
+        self.ik.ignore = {self.book_geom}
+        self.run = None
+        self.info = {}
 
-    def push_pose(sign, x, tip_y):
-        rot = np.column_stack([np.cross(sign * zs, -ys), sign * zs, -ys])
-        low_tip = [0, -sign * FINGER_OPEN_MID, FINGERTIP_Z]
-        return hand_pose_for_point(low_tip, shelf.to_world([x, tip_y, hand_z - FINGER_OPEN_MID]), rot), rot
+    # --- Geometry, measured from the simulation --------------------------------
+    def obstacles(self):
+        return obstacles(self.m, self.d, self.shelf, self.row)
 
-    def push_path(start, sign, x, spine_now, tip_goal):
-        """From `start` (just let go): back off, turn, push to tip_goal.
-        Returns the back-off pose, the turned pose and the whole path."""
-        tip_back = max(D / 2 + 0.015, spine_now + 0.02)
-        tip_now = shelf.to_shelf(start[0] + start[1] @ [0, 0, FINGERTIP_Z])[1]
-        back_off = (start[0] + ys * (tip_back - tip_now), start[1])
-        ready = push_pose(sign, x, tip_back)
-        path = ([interpolate(*start, *back_off, s) for s in np.linspace(0, 1, 15)[1:]]
-                + [interpolate(*back_off, *ready, s) for s in np.linspace(0, 1, 50)[1:]]
-                + [push_pose(sign, x, y) for y in np.linspace(tip_back, tip_goal, 30)])
-        return back_off, ready, path
+    def slot(self):
+        """The slot as it is now: x of the left and right neighbours' faces at
+        their spines, and y of their spines (shelf frame)."""
+        ti = self.row.target_index
+        L = self.shelf.box(self.m, self.d, self.row_geoms[ti - 1])
+        R = self.shelf.box(self.m, self.d, self.row_geoms[ti])
+        spine_end = lambda c: c[np.argsort(c[:, 1])[4:]]            # the 4 corners at the spine
+        return spine_end(L)[:, 0].max(), spine_end(R)[:, 0].min(), L[:, 1].max(), R[:, 1].max()
 
-    def push_limit(x):
+    def free_space(self):
+        """Room each side of the slot: the spaces between books plus the row's end."""
+        W, ti = self.row.shelf_width, self.row.target_index
+        xs = [self.shelf.box(self.m, self.d, g)[:, 0] for g in self.row_geoms]
+        spaces = [xs[i].min() - xs[i - 1].max() for i in range(1, len(xs))]
+        return xs[0].min() + W / 2 + sum(spaces[:ti - 1]), W / 2 - xs[-1].max() + sum(spaces[ti:])
+
+    def push_force(self, side, dist):
+        """Sideways force to push the left (side -1) or right (+1) neighbour by
+        `dist`: every book on that side within `dist` of closing up moves too,
+        each needing friction x weight (MuJoCo takes the larger of the book's
+        and the board's friction)."""
+        ti, books = self.row.target_index, self.row.books
+        order = range(ti - 1, -1, -1) if side < 0 else range(ti, len(books))
+        xs = [self.shelf.box(self.m, self.d, self.row_geoms[i])[:, 0] for i in order]
+        force, closed = 0.0, 0.0
+        for k, i in enumerate(order):
+            if k:
+                closed += (xs[k - 1].min() - xs[k].max()) if side < 0 else (xs[k].min() - xs[k - 1].max())
+            if closed >= dist:
+                break
+            force += max(books[i].friction, self.row.base_friction) * books[i].mass * 9.81
+        return force
+
+    def seat_target(self):
+        """Where the book's spine should end up (y), and which rule applies:
+        'flush' with the spine of the neighbour that sticks out more, if the
+        book gets there before its back reaches the back panel; otherwise
+        'inside' the shelf's front edge by at least EDGE_IN (aiming EDGE_AIM
+        further in, but never deeper than the back panel allows)."""
+        _, _, fl, fr = self.slot()
+        flush = max(fl, fr)
+        if self.spine_seated <= flush:
+            return flush, "flush"
+        return max(self.spine_seated, self.D / 2 - EDGE_IN - EDGE_AIM), "inside"
+
+    def book_pre(self, x_slot):
+        """Book centre at the pre-insertion pose."""
+        return np.array([x_slot, self.D / 2 - PRE_OVERLAP + self.depth / 2, self.z0 + self.h / 2 + HOVER])
+
+    def hold_limit(self, x_slot, obs):
+        return tip_limit(obs, x_slot, [(FINGER_OPEN_SPAN, 0.0), (HAND_HALF_L, FINGERTIP_Z - PALM_Z)])
+
+    def push_limit(self, x, obs):
         return tip_limit(obs, x, [(FINGER_HALF_W, 0.0), (HAND_HALF_T, FINGERTIP_Z - PALM_Z)])
 
-    hold_limit = tip_limit(obs, x_gap, [(FINGER_OPEN_SPAN, 0.0), (HAND_HALF_L, FINGERTIP_Z - PALM_Z)])
+    # --- Hand poses ----------------------------------------------------------------
+    # Holding: the fingers close across the book's thickness, approaching along
+    # the book's -y. Pushing: the hand is turned 90 deg about the approach axis
+    # so the fingers are stacked vertically; the lower finger pushes low on the
+    # spine, so the push can't tip the book over backwards. Both work with the
+    # hand either way up (sign).
+    def grasp_pose(self, sign, centre, yaw=0.0):
+        Rb = self.shelf.rot(yaw)
+        rot = np.column_stack([np.cross(sign * Rb[:, 0], -Rb[:, 1]), sign * Rb[:, 0], -Rb[:, 1]])
+        pad = self.shelf.to_world(centre) + Rb @ self.pad_in_book
+        return hand_pose_for_point([0, 0, PAD_Z], pad, rot), rot
 
-    # --- 1. Choose the arm configuration -------------------------------------
-    # Many arm configurations reach the pre-insertion pose. Near a joint limit
-    # the IK swings the other joints round, and the arm can jump to another
-    # configuration mid-move and knock the row. So follow the whole planned
-    # sequence (slide in, back off, turn, push) from each candidate, and keep
-    # the one that stays farthest from the joint limits.
-    ik = ArmIK(model, PANDA_HOME[:7])
-    book_pre = np.array([x_gap, D / 2 - PRE_OVERLAP + d / 2, z0 + h / 2 + HOVER])
-    y_hold = max(spine_seated, hold_limit + PAD_INSET + FINGERTIP_Z - PAD_Z) - d / 2   # refined once grasped
-    tip_goal = max(spine_seated, push_limit(x_gap))
-    seed_rng = np.random.default_rng(0)
-    best = None
-    for rnd in range(IK_ROUNDS):                  # more random starts only if the first ones fall short
-        seeds = [seed_rng.uniform(ik.lo, ik.hi) for _ in range(IK_SEEDS)]
-        if rnd == 0:
-            seeds.insert(0, np.array(PANDA_HOME[:7]))
-        for grasp_sign in (1, -1):
-            slide = [grasp_pose(grasp_sign, [x_gap, y, z0 + h / 2]) for y in np.linspace(book_pre[1], y_hold, 40)]
-            for s in seeds:
-                q, ok = ik.solve_far(s, *grasp_pose(grasp_sign, book_pre))
-                if not ok:
-                    continue
-                ik.q_rest = q
-                q_slid, worst_slide, ok = ik.follow(q, slide)
-                if not ok or (best is not None and worst_slide <= best[0]):
-                    continue
-                for push_sign in (1, -1):
-                    path = push_path(slide[-1], push_sign, x_gap, y_hold + d / 2, tip_goal)[2]
-                    _, worst_push, ok = ik.follow(q_slid, path)
-                    score = min(worst_slide, worst_push)
-                    if ok and (best is None or score > best[0]):
-                        best = (score, q, push_sign)
-        if best is not None and best[0] >= MIN_MARGIN:
-            break
-    if best is None or best[0] < MIN_MARGIN:
-        raise RuntimeError("No arm configuration does the whole sequence without nearing a joint limit")
-    _, q_pre, push_sign = best
-    ik.q_rest = q_pre
+    def push_pose(self, sign, x, tip_y):
+        rot = np.column_stack([np.cross(sign * self.zs, -self.ys), sign * self.zs, -self.ys])
+        low_tip = [0, -sign * FINGER_OPEN_MID, FINGERTIP_Z]
+        return hand_pose_for_point(low_tip, self.shelf.to_world([x, tip_y, self.hand_z - FINGER_OPEN_MID]), rot), rot
 
-    # Put the arm there with the book between the fingers, then close them.
-    data.qpos[ik.qadr] = q_pre
-    for j in ("panda/finger_joint1", "panda/finger_joint2"):
-        data.qpos[model.jnt_qposadr[model.joint(j).id]] = t / 2 + 0.0005
-    p_hand, R_hand = ik.fk(q_pre)
-    data.qpos[book_q:book_q + 3] = p_hand + R_hand @ [0, 0, PAD_Z] - shelf.R @ pad_in_book
-    data.qpos[book_q + 3:book_q + 7] = mat2quat(shelf.R)
-    data.qvel[:] = 0
-    mujoco.mj_forward(model, data)
-    run = Runner(model, data, ik, q_pre, GRIP_CLOSED, viewer, log)
-    run.wait("close the gripper on the book at the pre-insertion pose", 0.5)
+    def tip_y(self, pose):
+        return self.shelf.to_shelf(pose[0] + pose[1] @ [0, 0, FINGERTIP_Z])[1]
 
-    # From here on, move the book: keep its pose in the hand as measured now.
-    R_h = data.xmat[ik.hand].reshape(3, 3)
-    R_b = data.xmat[book_body].reshape(3, 3)
-    book_in_hand = R_h.T @ (data.xpos[book_body] - data.xpos[ik.hand])
-    rot_held = shelf.R @ (R_h.T @ R_b).T                       # hand rotation that keeps the book upright
+    def push_path(self, start, sign, x, spine_now, tip_goal):
+        """From `start` (just let go): back off, turn, push to tip_goal.
+        Returns the back-off pose, the turned pose and the whole path."""
+        tip_back = max(self.D / 2 + 0.015, spine_now + 0.02)
+        back_off = (start[0] + self.ys * (tip_back - self.tip_y(start)), start[1])
+        ready = self.push_pose(sign, x, tip_back)
+        path = (segment(start, back_off, 15) + segment(back_off, ready, 50)
+                + [self.push_pose(sign, x, y) for y in np.linspace(tip_back, tip_goal, 30)])
+        return back_off, ready, path
 
-    def hand_for_book(book_shelf):
-        return shelf.to_world(book_shelf) - rot_held @ book_in_hand, rot_held
+    def insertion_plan(self, grasp_sign, push_sign, x_slot, y_from, obs):
+        """Nominal hand poses to rest the book, slide it in, let go and push it
+        home, for choosing the arm configuration (refined once it is held)."""
+        spine_ahead = PAD_INSET + FINGERTIP_Z - PAD_Z
+        target = self.seat_target()[0]
+        y_hold = max(target, self.hold_limit(x_slot, obs) + spine_ahead) - self.depth / 2
+        slide = [self.grasp_pose(grasp_sign, [x_slot, y, self.z_rest]) for y in np.linspace(y_from, y_hold, 40)]
+        tip_goal = max(target, self.push_limit(x_slot, obs))
+        return slide + self.push_path(slide[-1], push_sign, x_slot, y_hold + self.depth / 2, tip_goal)[2]
 
-    # While held, the spine stays a fixed distance in front of the fingertips.
-    tip = shelf.to_shelf(data.xpos[ik.hand] + R_h @ [0, 0, FINGERTIP_Z])
-    spine = shelf.box(model, data, book_geom)[:, 1].max()
-    spine_ahead = spine - tip[1]
-    t_start = run.t
+    def choose_arm(self, candidates, allowed=frozenset()):
+        """Many arm configurations reach a start pose. Near a joint limit the IK
+        swings the other joints round, and the arm can jump to another
+        configuration mid-move and knock the row. So follow each candidate's
+        whole planned path, drop those where the arm runs into anything (other
+        than `allowed` geoms its fingers may press on), and keep the one that
+        stays farthest from the joint limits. candidates: (start pose, path, label)."""
+        ik, seed_rng, best = self.ik, np.random.default_rng(0), None
+        ik.sync(self.d)
+        for rnd in range(IK_ROUNDS):                   # more random starts only if the first ones fall short
+            seeds = [seed_rng.uniform(ik.lo, ik.hi) for _ in range(IK_SEEDS)]
+            if rnd == 0:
+                seeds.insert(0, np.array(PANDA_HOME[:7]))
+            for start, path, label in candidates:
+                for s in seeds:
+                    q, ok = ik.solve_far(s, *start)
+                    if not ok:
+                        continue
+                    ik.q_rest = q
+                    _, worst, ok = ik.follow(q, path, floor=-np.inf if best is None else best[0], allowed=allowed)
+                    if ok and (best is None or worst > best[0]):
+                        best = (worst, q, label)
+            if best is not None and best[0] >= MIN_MARGIN:
+                break
+        if best is None or best[0] < MIN_MARGIN:
+            raise RuntimeError("No arm configuration does the whole sequence without nearing a joint limit "
+                               "or running into the shelf")
+        ik.q_rest = best[1]
+        return best[1], best[2]
 
-    # --- 2. Rest it on the board's edge, then slide it in along the board ---
-    # A two-finger pinch can't stop a heavy book from pitching nose-down (its
-    # weight acts several cm behind the pads). Resting its back on the board
-    # first lets the board carry that, as a person would do it.
-    y_hold = max(spine_seated, hold_limit + spine_ahead) - d / 2
-    if y_hold > D / 2 - CLEAR:                                  # its centre must be over the board
-        raise RuntimeError("Hand can't get the book far enough onto the board to let go")
-    z_rest = z0 + h / 2 + 0.0005
-    run.move("rest it on the board's edge", *hand_for_book([book_pre[0], book_pre[1], z_rest]), speed=0.01)
-    run.move("slide it in along the board", *hand_for_book([x_gap, y_hold, z_rest]), speed=INSERT_SPEED)
+    # --- Steps ----------------------------------------------------------------------
+    def place_arm(self, q):
+        """Start the arm at q with the gripper open."""
+        m, d = self.m, self.d
+        d.qpos[self.ik.qadr] = q
+        for j in ("panda/finger_joint1", "panda/finger_joint2"):
+            d.qpos[m.jnt_qposadr[m.joint(j).id]] = 0.04
+        d.qvel[:] = 0
+        mujoco.mj_forward(m, d)
+        self.run = Runner(m, d, self.ik, q, GRIP_OPEN, self.viewer, self.log)
 
-    # --- 3. Let go -----------------------------------------------------------
-    run.wait("open the gripper", 0.4, grip=GRIP_OPEN)
-    t_release = run.t
+    def take_book(self, grasp_sign, centre, yaw=0.0, name="close the gripper on the book"):
+        """Put the book between the open fingers, held as at (centre, yaw), and
+        close them. Where the book comes from is not modelled."""
+        m, d, ik = self.m, self.d, self.ik
+        R_h = d.xmat[ik.hand].reshape(3, 3)
+        R_b = R_h @ self.grasp_pose(grasp_sign, centre, yaw)[1].T @ self.shelf.rot(yaw)
+        for j in ("panda/finger_joint1", "panda/finger_joint2"):
+            d.qpos[m.jnt_qposadr[m.joint(j).id]] = self.t / 2 + 0.0005
+            d.qvel[m.jnt_dofadr[m.joint(j).id]] = 0
+        qa, va = m.jnt_qposadr[self.book_joint], m.jnt_dofadr[self.book_joint]
+        d.qpos[qa:qa + 3] = d.xpos[ik.hand] + R_h @ [0, 0, PAD_Z] - R_b @ self.pad_in_book
+        d.qpos[qa + 3:qa + 7] = mat2quat(R_b)
+        d.qvel[va:va + 6] = 0
+        mujoco.mj_forward(m, d)
+        self.run.wait(name, 0.5, grip=GRIP_CLOSED)
+        # From here on, move the book: keep its pose in the hand as measured now.
+        R_h = d.xmat[ik.hand].reshape(3, 3)
+        self.in_hand_p = R_h.T @ (d.xpos[self.book_body] - d.xpos[ik.hand])
+        self.in_hand_R = R_h.T @ d.xmat[self.book_body].reshape(3, 3)
 
-    # --- 4. Back off, turn the hand, push the spine with the lower fingertip -
-    # Replan from where the book really is. If the planned turn direction now
-    # comes too close to a joint limit, try the other one.
-    c = shelf.box(model, data, book_geom)
-    x_book, spine = c[:, 0].mean(), c[:, 1].max()
-    tip_goal = max(spine_seated, push_limit(x_book))
-    blocked = tip_goal > spine_seated
-    for sign in (push_sign, -push_sign):
-        back_off, ready, path = push_path((run.pos, run.rot), sign, x_book, spine, tip_goal)
-        _, worst, ok = ik.follow(run.q_cmd, path)
-        if ok and worst >= MIN_MARGIN:
-            break
-    else:
-        raise RuntimeError("No way to turn the hand for the push without nearing a joint limit")
+    def hand_for_book(self, centre, yaw=0.0):
+        rot = self.shelf.rot(yaw) @ self.in_hand_R.T
+        return self.shelf.to_world(centre) - rot @ self.in_hand_p, rot
 
-    run.move("back off", *back_off)
-    run.move("turn the hand to push", *ready)
-    run.move("reach the spine", *push_pose(sign, x_book, spine + 0.005))
-    run.move("push it home" if not blocked else
-             f"push it in (deeper neighbours stop the hand {1000 * (tip_goal - spine_seated):.0f} mm short)",
-             *push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED)
-    t_done = run.t
+    def seat(self, x_slot, y_from, push_sign):
+        """Holding the book straight in front of (or partly in) the slot: rest
+        it on the board, slide it in, let go, and push it into place.
+        Returns (time let go, time in place, whether the hand was blocked)."""
+        run = self.run
+        obs = self.obstacles()
+        target = self.seat_target()[0]
+        spine_ahead = y_from + self.depth / 2 - self.tip_y(self.hand_for_book([x_slot, y_from, self.z_rest]))
+        y_hold = max(target, self.hold_limit(x_slot, obs) + spine_ahead) - self.depth / 2
+        if y_hold > self.D / 2 - CLEAR:                             # its centre must be over the board
+            raise RuntimeError("Hand can't get the book far enough onto the board to let go")
+        # A two-finger pinch can't stop a heavy book from pitching nose-down (its
+        # weight acts several cm behind the pads). Resting its back on the board
+        # first lets the board carry that, as a person would do it.
+        run.move("rest it on the board", *self.hand_for_book([x_slot, y_from, self.z_rest]), speed=0.01)
+        # If the book runs into a neighbour (in a tight row, the pushed
+        # neighbours' backs still narrow the gap), stop rather than force it:
+        # forced, it twists in the fingers and jams. The fingertip push below,
+        # low and central on the spine, carries on from there.
+        if not run.move("slide it in along the board", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
+                        speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE):
+            c = self.shelf.box(self.m, self.d, self.book_geom)
+            if c[:, 1].mean() > self.D / 2 - CLEAR:                 # centre not over the board: can't let go
+                raise RuntimeError("the book jammed at the slot's entrance")
+        run.wait("open the gripper", 0.4, grip=GRIP_OPEN)
+        t_release = run.t
 
-    # --- 5. Back out and score ----------------------------------------------
-    run.move("back out", *push_pose(sign, x_book, max(D / 2, tip_goal) + 0.05))
-    run.wait("let it settle", 1.0)
+        c = self.shelf.box(self.m, self.d, self.book_geom)
+        x_book, spine = c[:, 0].mean(), c[:, 1].max()
+        if spine <= target + 0.002:                                 # the slide already got it there
+            tip_back = max(self.D / 2 + 0.015, spine + 0.02)
+            run.move("back off (it is already in place)",
+                     run.pos + self.ys * (tip_back - self.tip_y((run.pos, run.rot))))
+            run.wait("let it settle", 1.0)
+            return t_release, t_release, False
 
-    c = shelf.box(model, data, book_geom)
-    tilt = book_tilt_deg(data.xquat[book_body])
-    back_gap = c[:, 1].min() + D / 2
-    robot_geoms = {g for g in range(model.ngeom) if model.body(model.geom_bodyid[g]).name.startswith("panda/")}
-    touching = any((con.geom1 == book_geom and con.geom2 in robot_geoms) or
-                   (con.geom2 == book_geom and con.geom1 in robot_geoms) for con in data.contact[:data.ncon])
-    shift = np.linalg.norm(data.xpos[others] - start_pos, axis=1).max()
-    dtilt = np.abs(np.array([book_tilt_deg(data.xquat[i]) for i in others]) - start_tilt).max()
-    res = {
-        "upright": tilt <= UPRIGHT_DEG, "seated": back_gap <= BACK_GAP + SEAT_TOL, "released": not touching,
-        "tilt_deg": tilt, "back_gap_m": back_gap, "blocked": blocked,
-        "neighbour_shift_m": float(shift), "neighbour_tilt_change_deg": float(dtilt),
-        "time_to_release_s": t_release - t_start, "time_to_seat_s": t_done - t_start,
-    }
-    res["success"] = res["upright"] and res["seated"] and res["released"]
-    return res
+        # Replan the push from where the book really is. If the planned turn
+        # direction now comes too close to a joint limit, try the other one.
+        tip_goal = max(target, self.push_limit(x_book, obs))
+        blocked = tip_goal > target
+        self.ik.sync(self.d)
+        for sign in (push_sign, -push_sign):
+            back_off, ready, path = self.push_path((run.pos, run.rot), sign, x_book, spine, tip_goal)
+            _, worst, ok = self.ik.follow(run.q_cmd, path, allowed=frozenset())
+            if ok and worst >= MIN_MARGIN:
+                break
+        else:
+            raise RuntimeError("No way to turn the hand for the push without nearing a joint limit")
+        run.move("back off", *back_off)
+        run.move("turn the hand to push", *ready)
+        run.move("reach the spine", *self.push_pose(sign, x_book, spine + 0.005))
+        run.move("push it into place" if not blocked else
+                 f"push it in (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
+                 *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=PUSH_STOP_FORCE)
+        t_done = run.t
+        run.move("back out", *self.push_pose(sign, x_book, max(self.D / 2, tip_goal) + 0.05))
+        run.wait("let it settle", 1.0)
+        return t_release, t_done, blocked
+
+    def score(self, t_start, t_release, t_done, blocked, **info) -> dict:
+        m, d = self.m, self.d
+        c = self.shelf.box(m, d, self.book_geom)
+        tilt = book_tilt_deg(d.xquat[self.book_body])
+        back_gap = c[:, 1].min() + self.D / 2
+        spine = c[:, 1].max()                                        # frontmost point of the book
+        target, rule = self.seat_target()                            # from where the neighbours ended up
+        if rule == "flush":
+            offset = spine - target                                  # > 0: sticks out past the neighbour
+            in_place = abs(offset) <= ALIGN_TOL
+        else:
+            offset = self.D / 2 - spine                              # how far inside the front edge
+            in_place = offset >= EDGE_IN
+        robot = self.ik.robot
+        touching = any((con.geom1 == self.book_geom and con.geom2 in robot) or
+                       (con.geom2 == self.book_geom and con.geom1 in robot) for con in d.contact[:d.ncon])
+        shifts = np.linalg.norm(d.xpos[self.row_bodies] - self.start_pos, axis=1)
+        dtilt = np.abs(np.array([book_tilt_deg(d.xquat[i]) for i in self.row_bodies]) - self.start_tilt)
+        res = {
+            "upright": tilt <= UPRIGHT_DEG, "in_place": in_place, "released": not touching,
+            "rule": rule, "offset_m": offset, "tilt_deg": tilt, "back_gap_m": back_gap, "blocked": blocked,
+            "neighbour_shift_m": float(shifts.max()), "total_shift_m": float(shifts.sum()),
+            "neighbour_tilt_change_deg": float(dtilt.max()),
+            "time_to_release_s": t_release - t_start, "time_to_seat_s": t_done - t_start,
+            **self.info, **info,
+        }
+        res["success"] = res["upright"] and res["in_place"] and res["released"]
+        return res
+
+    # --- Clear scenario: the book starts grasped -------------------------------------
+    def insert(self, method="none needed"):
+        xl, xr, _, _ = self.slot()
+        x_slot = (xl + xr) / 2
+        pre = self.book_pre(x_slot)
+        obs = self.obstacles()
+        candidates = [(self.grasp_pose(gs, pre), self.insertion_plan(gs, ps, x_slot, pre[1], obs), (gs, ps))
+                      for gs in (1, -1) for ps in (1, -1)]
+        q, (gs, ps) = self.choose_arm(candidates)
+        self.place_arm(q)
+        self.take_book(gs, pre, name="close the gripper on the book at the pre-insertion pose")
+        t_start = self.run.t
+        return self.score(t_start, *self.seat(x_slot, pre[1], ps), method=method)
+
+    # --- Tight scenario: widen the gap, then insert ----------------------------------
+    def insert_tight(self, strategy="one-sided", margin=GAP_MARGIN):
+        xl, xr, fl, fr = self.slot()
+        need = self.t + margin - (xr - xl)
+        self.info["widening_m"] = max(0.0, need)
+        if need <= 0:
+            self.log(f"  the {1000 * (xr - xl):.0f} mm gap already fits the book")
+            return self.insert()
+        plan = self.plan_fingertip(xl, xr, fl, fr, need, strategy)
+        if plan is not None:
+            self.info["method"] = "fingertip, both sides" if plan[0] > 0 and plan[1] > 0 else "fingertip, one side"
+            return self.fingertip_then_insert(xl, xr, *plan)
+        self.info["method"] = "book wedge"
+        return self.wedge_in(xl, xr, fl, fr)
+
+    def plan_fingertip(self, xl, xr, fl, fr, need, strategy):
+        """How far to push each neighbour with the fingertips: (left, right,
+        fingertip depth), or None if they don't fit the gap, or can't reach a
+        neighbour that has room behind it.
+
+        'one-sided' tries pushing one side first (more free space first): it
+        saves the trip across the gap and the second push, and leaves one
+        neighbour's face straight for the book to slide along. 'split' tries
+        splitting the widening evenly first (each neighbour moves half, as far
+        as each side's free space allows). Each falls back on the other."""
+        if xr - xl < 2 * (FINGER_HALF_W + FIT_CLEAR):
+            self.info["fingertip"] = "gap narrower than the fingers"
+            return None
+        room_l, room_r = (r - ROOM_KEEP for r in self.free_space())
+        obs = self.obstacles()
+        x_mid = (xl + xr) / 2
+        dl_even = min(max(need / 2, need - room_r), room_l)
+        split = (dl_even, need - dl_even)
+        one_sided = sorted([(need, 0.0), (0.0, need)], key=lambda p: -(room_l if p[0] else room_r))
+        for dl, dr in ([split] + one_sided) if strategy == "split" else (one_sided + [split]):
+            if dl > room_l + 1e-9 or dr > room_r + 1e-9:
+                continue
+            if max(self.push_force(-1, dl), self.push_force(+1, dr)) > MAX_PUSH_FORCE:
+                continue                                              # too many books to shove at once
+            # deepest the fingertips may go: the palm stays clear over the whole sideways sweep
+            lo = min(xl - dl + FINGER_HALF_W, x_mid) - HAND_HALF_T
+            hi = max(xr + dr - FINGER_HALF_W, x_mid) + HAND_HALF_T
+            tip_in = tip_limit(obs, (lo + hi) / 2, [((hi - lo) / 2, FINGERTIP_Z - PALM_Z)])
+            if (dl > 0 and fl - tip_in < MIN_REACH) or (dr > 0 and fr - tip_in < MIN_REACH):
+                continue
+            return dl, dr, tip_in
+        self.info["fingertip"] = "fingers can't reach, or can't shove, a neighbour with room behind it"
+        return None
+
+    def fingertip_then_insert(self, xl, xr, dl, dr, tip_in):
+        obs = self.obstacles()
+        x_mid = (xl + xr) / 2
+        x_left = xl - dl + FINGER_HALF_W if dl > 0 else x_mid       # hand x when each push ends
+        x_right = xr + dr - FINGER_HALF_W if dr > 0 else x_mid
+        x_slot = (xl - dl + xr + dr) / 2                             # slot centre once widened
+        lo, hi = min(x_left, x_mid) - HAND_HALF_T - CLEAR, max(x_right, x_mid) + HAND_HALF_T + CLEAR
+        tip_out = max(front for a, b, front in obs if b > lo and a < hi) + 0.02
+        pre = self.book_pre(x_slot)
+        candidates = []
+        for ps in (1, -1):
+            gap = ([self.push_pose(ps, x_mid, y) for y in np.linspace(tip_out, tip_in, 15)[1:]]
+                   + [self.push_pose(ps, x, tip_in) for x in np.linspace(x_mid, x_left, 10)[1:]]
+                   + [self.push_pose(ps, x, tip_in) for x in np.linspace(x_left, x_right, 15)[1:]]
+                   + [self.push_pose(ps, x, tip_in) for x in np.linspace(x_right, x_slot, 10)[1:]]
+                   + [self.push_pose(ps, x_slot, y) for y in np.linspace(tip_in, tip_out, 15)[1:]])
+            for gs in (1, -1):
+                path = gap + segment(gap[-1], self.grasp_pose(gs, pre), 40) + \
+                    self.insertion_plan(gs, ps, x_slot, pre[1], obs)
+                candidates.append((self.push_pose(ps, x_mid, tip_out), path, (ps, gs)))
+        ti = self.row.target_index
+        q, (ps, gs) = self.choose_arm(candidates, allowed={self.row_geoms[ti - 1], self.row_geoms[ti]})
+        self.place_arm(q)
+        run = self.run
+        t_start = run.t
+        run.move("put the fingers into the gap", *self.push_pose(ps, x_mid, tip_in))
+        room_l, room_r = self.free_space()
+        if dl > 0:
+            self.push_neighbour(ps, -1, xl - dl, xl - room_l + ROOM_KEEP, tip_in)
+        if dr > 0:
+            self.push_neighbour(ps, +1, xr + dr, xr + room_r - ROOM_KEEP, tip_in)
+        run.move("back to the middle", *self.push_pose(ps, x_slot, tip_in))
+        run.move("take the fingers out", *self.push_pose(ps, x_slot, tip_out))
+        gap_time = run.t - t_start
+        xl, xr, _, _ = self.slot()
+        self.log(f"         the gap is now {1000 * (xr - xl):.1f} mm at the spines, for a {1000 * self.t:.1f} mm book")
+        x_slot = (xl + xr) / 2
+        pre = self.book_pre(x_slot)
+        run.move("turn the hand to the pre-insertion pose", *self.grasp_pose(gs, pre))
+        self.take_book(gs, pre, name="take the book (the hand-over is not modelled)")
+        return self.score(t_start, *self.seat(x_slot, pre[1], ps), gap_time_s=gap_time,
+                          push_left_m=dl, push_right_m=dr)
+
+    def push_neighbour(self, push_sign, side, target, limit, tip_in, tries=3):
+        """Push the left (side -1) or right (+1) neighbour until its face, at
+        its spine, reaches x = target, never commanding past x = limit. Under
+        load the arm gives way by up to ~1 cm (the wrist joints top out at
+        12 N m), and the neighbour swivels, so push again by what is missing."""
+        name = "left" if side < 0 else "right"
+        cmd = target
+        for k in range(tries):
+            self.run.move(f"push the {name} neighbour{' further' if k else ''} to its mark",
+                          *self.push_pose(push_sign, cmd - side * FINGER_HALF_W, tip_in), speed=GAP_PUSH_SPEED)
+            xl, xr, _, _ = self.slot()
+            short = side * (target - (xl if side < 0 else xr))
+            if short < 0.001 or cmd == limit:
+                return
+            cmd = cmd + side * short                                   # aim past the mark by what is missing
+            if side * (cmd - limit) > 0:
+                cmd = limit
+
+    def wedge_in(self, xl, xr, fl, fr):
+        """Book wedge, for gaps the fingertips can't open. The book is held
+        turned, so the back corner on one side (the guide corner) runs along
+        that neighbour's face; it is straightened as it goes in, and its other
+        side shoves the other neighbour toward the free space."""
+        room_l, room_r = self.free_space()
+        sigma = 1 if room_r >= room_l else -1                       # +1: shove the right neighbour
+        x_wall, y_wall, y_shove = (xl, fl, fr) if sigma > 0 else (xr, fr, fl)
+        t, d = self.t, self.depth
+        # turned enough for the back corner to fit the gap, and steeper than the
+        # friction between books, so the shoved neighbour slides instead of jamming
+        yaw0 = -sigma * max(math.acos(min(1.0, (xr - xl - 2 * WEDGE_EPS) / t)), WEDGE_MIN_YAW)
+        guide = np.array([-sigma * t / 2, -d / 2, 0.0])              # guide corner, book frame
+        lead = np.array([sigma * t / 2, -d / 2, 0.0])
+
+        def centre(gy, yaw):
+            turn = self.shelf.R.T @ self.shelf.rot(yaw)
+            return np.array([x_wall + sigma * WEDGE_EPS, gy, self.z0 + self.h / 2 + HOVER]) - turn @ guide
+
+        # Go in turned until the guide corner is level with the shoved
+        # neighbour's spine, then straighten by turning about that corner. While
+        # it turns about that point the book needs less and less room on the
+        # shoved side, so the shove never exceeds its width across the gap
+        # when turned (t / cos yaw0). Then it slides in straight.
+        lead_ahead = (self.shelf.R.T @ self.shelf.rot(yaw0) @ (lead - guide))[1]   # < 0: the lead corner is deeper
+        gy0 = max(y_wall + 0.005, y_shove + 0.005 - lead_ahead)      # both back corners outside the slot
+        wedge = ([(centre(y, yaw0), yaw0) for y in np.linspace(gy0, y_shove, 10)]
+                 + [(centre(y_shove, yaw0 * (1 - s)), yaw0 * (1 - s)) for s in np.linspace(0, 1, 30)[1:]])
+        x_slot, y_from = wedge[-1][0][0], wedge[-1][0][1]
+        obs = self.obstacles()
+        candidates = []
+        for gs in (1, -1):
+            path = [self.grasp_pose(gs, c, yaw) for c, yaw in wedge[1:]]
+            for ps in (1, -1):
+                candidates.append((self.grasp_pose(gs, *wedge[0]), path + self.insertion_plan(gs, ps, x_slot, y_from, obs),
+                                   (gs, ps)))
+        q, (gs, ps) = self.choose_arm(candidates)
+        self.place_arm(q)
+        self.take_book(gs, *wedge[0], name=f"close the gripper on the book, turned {abs(math.degrees(yaw0)):.0f} deg")
+        t_start = self.run.t
+        self.run.move_path(f"wedge it in, shoving the {'right' if sigma > 0 else 'left'} neighbour",
+                           [self.hand_for_book(c, yaw) for c, yaw in wedge[1:]], speed=WEDGE_SPEED)
+        return self.score(t_start, *self.seat(x_slot, y_from, ps))
 
 
 # ---------------------------------------------------------------------------
 # 4. Episodes and CLI
 # ---------------------------------------------------------------------------
-def make_clear_episode(cfg: ShelfConfig, rng, panda_xml: str, max_tries: int = 10):
+def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries: int = 10):
     """Like shelf_scene.make_episode, on the model with the target book."""
     for _ in range(max_tries):
-        row = sample_row(cfg, "clear", rng)
+        row = sample_row(cfg, scenario, rng)
         model = build_model(cfg, row, panda_xml)
         data = mujoco.MjData(model)
         if settle(model, data, row)["stable"]:
             return model, data, row
-    raise RuntimeError(f"No stable clear row in {max_tries} tries")
+    raise RuntimeError(f"No stable {scenario} row in {max_tries} tries")
 
 
 def report(res: dict) -> str:
     verdict = "SUCCESS" if res["success"] else "FAIL"
-    return (f"  {verdict}: tilt {res['tilt_deg']:.1f} deg, back {1000 * res['back_gap_m']:.1f} mm off the panel"
+    how = f" [{res['method']}]" if res.get("method") else ""
+    place = (f"spine {1000 * res['offset_m']:+.1f} mm from the neighbour's" if res["rule"] == "flush" else
+             f"deeper than its neighbours, spine {1000 * res['offset_m']:.1f} mm inside the front edge")
+    return (f"  {verdict}{how}: tilt {res['tilt_deg']:.1f} deg, {place}"
             f"{' (hand blocked)' if res['blocked'] else ''}, {'released' if res['released'] else 'STILL TOUCHING'}\n"
-            f"  neighbours: moved {1000 * res['neighbour_shift_m']:.1f} mm, tilted {res['neighbour_tilt_change_deg']:.1f} deg"
-            f" | released after {res['time_to_release_s']:.1f} s, seated after {res['time_to_seat_s']:.1f} s")
+            f"  other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm (all together "
+            f"{1000 * res['total_shift_m']:.0f} mm), most tilted {res['neighbour_tilt_change_deg']:.1f} deg"
+            f" | let go after {res['time_to_release_s']:.1f} s, in place after {res['time_to_seat_s']:.1f} s")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--scenario", choices=("clear", "tight"), default="clear")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--trials", type=int, default=1, help="run seeds seed .. seed+trials-1 and summarise")
+    ap.add_argument("--strategy", choices=("one-sided", "split"), default="one-sided",
+                    help="tight: push one neighbour aside, or split the widening between both")
+    ap.add_argument("--margin", type=float, default=GAP_MARGIN, help="tight: room left around the book, m")
     ap.add_argument("--panda", default=DEFAULT_PANDA, help="Menagerie panda.xml")
     ap.add_argument("--view", action="store_true", help="watch in the MuJoCo viewer (run with mjpython on macOS)")
     a = ap.parse_args()
 
+    def attempt(ep):
+        return ep.insert(method="") if a.scenario == "clear" else ep.insert_tight(a.strategy, a.margin)
+
     results = []
     for seed in range(a.seed, a.seed + a.trials):
-        model, data, row = make_clear_episode(ShelfConfig(), np.random.default_rng(seed), a.panda)
+        model, data, row = make_episode(ShelfConfig(), a.scenario, np.random.default_rng(seed), a.panda)
         b = row.target_book
         print(f"seed {seed}: target level {row.target_level} (board top {row.target_board_top:.2f} m), "
               f"gap {1000 * (row.gap_right - row.gap_left):.0f} mm for a {1000 * b.thickness:.0f} mm book "
@@ -541,7 +947,11 @@ def main():
         if a.view:
             import mujoco.viewer
             with mujoco.viewer.launch_passive(model, data) as viewer:
-                res = insert_book(model, data, row, viewer, log)
+                # The viewer only aims its camera with the scene's defaults (at
+                # the gap) when it opens a file, so do it here.
+                with viewer.lock():
+                    mujoco.mjv_defaultFreeCamera(model, viewer.cam)
+                res = attempt(Episode(model, data, row, viewer, log))
                 print(report(res))
                 print("Close the viewer window to exit.")
                 while viewer.is_running():
@@ -549,22 +959,33 @@ def main():
                     viewer.sync()
                     time.sleep(model.opt.timestep)
         else:
+            ep = Episode(model, data, row, None, log)
             try:
-                res = insert_book(model, data, row, None, log)
+                res = attempt(ep)
                 print(report(res))
-            except RuntimeError as e:                 # no safe way to do it in this scene
-                res = {"success": False, "error": str(e)}
-                print(f"  FAIL: {e}")
+            except RuntimeError as e:                 # no safe way to do it in this scene, or it jammed
+                res = {"success": False, "error": str(e), **ep.info}
+                print(f"  FAIL{' [' + ep.info['method'] + ']' if 'method' in ep.info else ''}: {e}")
         results.append(res)
 
     if a.trials > 1:
         n = len(results)
         ok = sum(r["success"] for r in results)
         print(f"\n{ok}/{n} succeeded. Of the rest: "
-              f"{sum(r.get('blocked', False) and not r['success'] for r in results)} blocked by deeper neighbours, "
-              f"{sum('error' in r for r in results)} with no safe arm path, "
+              f"{sum(r.get('blocked', False) and not r['success'] for r in results)} with the hand blocked short, "
               f"{sum(not r.get('upright', True) for r in results)} not upright, "
               f"{sum(not r.get('released', True) for r in results)} not released")
+        for err in sorted({r["error"] for r in results if "error" in r}):
+            print(f"  {sum(r.get('error') == err for r in results)} stopped: {err}")
+        for method in sorted({r.get("method") for r in results if r.get("method")}):
+            rs = [r for r in results if r.get("method") == method]
+            done = [r for r in rs if r["success"]]
+            line = f"  {method}: {len(done)}/{len(rs)} succeeded"
+            if done:
+                line += (f"; when it did, most-moved book {1000 * np.mean([r['neighbour_shift_m'] for r in done]):.1f} mm"
+                         f" on average (worst {1000 * max(r['neighbour_shift_m'] for r in done):.1f}),"
+                         f" in place after {np.mean([r['time_to_seat_s'] for r in done]):.1f} s")
+            print(line)
 
 
 if __name__ == "__main__":

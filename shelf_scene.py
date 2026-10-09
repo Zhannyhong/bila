@@ -73,6 +73,8 @@ class ShelfConfig:
     # Books (repo boxes: 0.04 x 0.16 x 0.24, density 500-1000)
     thickness: tuple = (0.015, 0.06)
     book_depth: tuple = (0.12, 0.22)
+    depth_clearance: float = 0.030       # every book at least this much shallower than the shelf
+    spine_inset: tuple = (0.010, 0.030)  # each spine this far behind the shelf's front edge
     book_height: tuple = (0.17, 0.30)
     density: tuple = (400.0, 900.0)      # kg/m^3
     book_friction: tuple = (0.25, 0.7)
@@ -97,7 +99,7 @@ REPO_DEFAULTS = ShelfConfig(   # one cubby whose board sits 0.5 m up, as on the 
     pose_jitter_xy=0.0, pose_jitter_yaw_deg=0.0, base_friction=(1.0, 1.0),
     thickness=(0.04, 0.04), book_depth=(0.16, 0.16), book_height=(0.24, 0.24),
     density=(500.0, 500.0), book_friction=(0.8, 0.8), spacing=(0.005, 0.005),
-    end_slack=(0.0, 0.0),
+    end_slack=(0.0, 0.0), spine_inset=(0.095, 0.095),   # boxes 5 mm off the back panel
 )
 
 
@@ -114,6 +116,7 @@ class Book:
     friction: float
     x: float                  # centre along the row (shelf frame)
     rgba: tuple = (0.5, 0.5, 0.5, 1.0)
+    inset: float = 0.0        # spine this far behind the shelf's front edge
 
 
 @dataclass
@@ -194,7 +197,7 @@ def sample_filler(cfg: ShelfConfig, rng: np.random.Generator, level: int,
     while True:
         b = _make_book(cfg, rng, f"l{level}_book_{len(books)}")
         b.height = min(b.height, H - 0.02)
-        b.depth = min(b.depth, D - 0.01)
+        b.depth = min(b.depth, D - cfg.depth_clearance)
         s = _u(rng, cfg.spacing)
         if used + b.thickness + s > fill * W:
             break
@@ -223,7 +226,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     H = level_heights[target_level]
     target = _make_book(cfg, rng, "target_book")
     target.height = min(target.height, H - 0.03)
-    target.depth = min(target.depth, D - 0.01)
+    target.depth = min(target.depth, D - cfg.depth_clearance)
 
     # Gap width at the target slot.
     if scenario == "clear":
@@ -245,7 +248,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     while True:
         b = _make_book(cfg, rng, f"book_{len(books)}")
         b.height = min(b.height, H - 0.02)       # must fit under the top board
-        b.depth = min(b.depth, D - 0.01)
+        b.depth = min(b.depth, D - cfg.depth_clearance)
         s = _u(rng, cfg.spacing)
         if used + b.thickness + s > budget:
             break
@@ -347,6 +350,11 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     fillers = [sample_filler(cfg, rng, k, h, W, D)
                for k, h in enumerate(level_heights) if k != target_level]
 
+    # Spines line up roughly with the shelf's front edge, as on a library
+    # shelf. Drawn last, so it leaves the rest of a seed's row unchanged.
+    for b in books + [bk for fl in fillers for bk in fl.books]:
+        b.inset = _u(rng, cfg.spine_inset)
+
     return Row(scenario, W, D, H, _u(rng, cfg.base_friction), pos, yaw,
                plinth, level_heights, target_level, tops[target_level],
                _u(rng, cfg.solref_timeconst), books, ti, target,
@@ -396,6 +404,9 @@ def _f(*v):
     return " ".join(f"{x:.6g}" for x in v)
 
 
+VIEW_DISTANCE = 0.9   # m from the gap to where a viewer's camera starts
+
+
 def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> str:
     """Return a complete MJCF string. If `panda_xml` (Menagerie's panda.xml)
     is given, the Panda is attached in front of the shelf facing -y.
@@ -413,8 +424,24 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
     ET.SubElement(m, "option", timestep="0.002", integrator="implicitfast",
                   cone="elliptic", impratio="10")
     ET.SubElement(m, "size", memory="64M")
+
+    # MuJoCo's default free camera looks at the gap: at its front, a third of
+    # the way up the level, from VIEW_DISTANCE away, above the arm and off to
+    # the gap's side so the robot isn't in the way. The viewer uses it when it
+    # opens the scene as a file and from its Align button; view_scene.py and
+    # insert_book.py --view apply it themselves. It sits 1.5 x extent away. A
+    # small extent would also shrink the shadows' reach, so shadowclip is
+    # raised to keep it at ~3 m.
+    gap_x = (row.gap_left + row.gap_right) / 2
+    side = 1 if gap_x >= 0 else -1
+    c, s = math.cos(row.shelf_yaw), math.sin(row.shelf_yaw)
+    lx, ly, lz = gap_x, D / 2 - 0.05, target_top + H / 3
+    look = (row.shelf_pos[0] + c * lx - s * ly, row.shelf_pos[1] + s * lx + c * ly, row.shelf_pos[2] + lz)
+    ET.SubElement(m, "statistic", center=_f(*look), extent=_f(VIEW_DISTANCE / 1.5))
     vis = ET.SubElement(m, "visual")
-    ET.SubElement(vis, "global", offwidth="1280", offheight="960")
+    ET.SubElement(vis, "global", offwidth="1280", offheight="960",
+                  azimuth=_f(math.degrees(row.shelf_yaw) - 90 - side * 30), elevation="-25")
+    ET.SubElement(vis, "map", shadowclip=_f(3.0 * 1.5 / VIEW_DISTANCE))
     ET.SubElement(vis, "headlight", ambient="0.4 0.4 0.4", diffuse="0.6 0.6 0.6")
 
     d = ET.SubElement(m, "default")
@@ -484,9 +511,9 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
     ET.SubElement(wb, "camera", name="scene_cam", mode="targetbody", target="view_target",
                   pos=_f(sp[0] + 0.6, sp[1] + 0.9, sp[2] + target_top + H + 0.5), fovy="45")
 
-    # Books: back face 5 mm from the back panel (like the repo's
-    # object_near_edge=False layout, pushed back for a realistic shelf).
-    c, s = math.cos(row.shelf_yaw), math.sin(row.shelf_yaw)
+    # Books: spine `inset` behind the shelf's front edge. With every book at
+    # least depth_clearance (>= the largest inset) shallower than the shelf,
+    # no back goes past the back panel.
 
     def add_books(books, z_base, free):
         """Place books standing on the board whose top is at z_base. Free books
@@ -494,7 +521,7 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
         without a joint are welded in place and cost almost nothing to simulate."""
         placed = []
         for b in books:
-            lx, ly, lz = b.x, -D / 2 + b.depth / 2 + 0.005, z_base + b.height / 2 + 0.0005
+            lx, ly, lz = b.x, D / 2 - b.inset - b.depth / 2, z_base + b.height / 2 + 0.0005
             wx, wy, wz = sp[0] + c * lx - s * ly, sp[1] + s * lx + c * ly, sp[2] + lz
             body = ET.SubElement(wb, "body", name=b.name, pos=_f(wx, wy, wz), euler=_f(0, 0, row.shelf_yaw))
             if free:
