@@ -11,3 +11,10 @@ wheels/
 
 # Generated scenes (contain absolute paths; regenerate with shelf_scene.py)
 scenes/
+
+# IDE settings (per developer)
+.idea/
+
+# macOS, and iCloud Drive placeholders for offloaded files
+.DS_Store
+*.icloud

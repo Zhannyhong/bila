@@ -32,8 +32,10 @@ The bookcase is built from the floor up:
 - **Every other level** holds an ordinary upright row, 50 to 100% full, packed against a random side panel.
   These books are **static** by default (no joint), so they add almost no simulation cost. Set
   `ShelfConfig(static_other_levels=False)` to make them free, e.g. to check in evaluation that nothing gets knocked off.
-- **The robot base follows the target level**, like a lift: base height = target board top − 0.21 m.
-  The arm then always sees the same geometry relative to the row it works on.
+- **The robot base follows the target level**, like a lift: base height = target board top − 0.40 m,
+  0.80 m in front of the shelf. The arm then always sees the same geometry relative to the row it works on,
+  and can hold its hand level to slide a book in. (The Panda can only point its hand level with the hand
+  about 0.5 m or more above its base, because joint 6 bends one way only.)
 
 ## What was taken from the repo, and what changed
 
@@ -101,9 +103,32 @@ The bookcase is built from the floor up:
    `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
    then 7 per filler book only if `static_other_levels=False`.
 
-6. **Next pieces to build on top** (from the design doc)
+6. **Scripted insertion (clear scenario)**
+   ```bash
+   uv run python insert_book.py --seed 0                # one episode: prints each step and the score
+   uv run python insert_book.py --seed 0 --trials 100   # success rate over seeds 0 to 99
+   uv run mjpython insert_book.py --seed 0 --view       # watch it (the macOS viewer needs mjpython)
+   ```
+   A hand-written baseline. The target book starts pinched in the gripper at a pre-insertion pose in front of the
+   gap. The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
+   fingers reach the neighbours' spines (each finger is wider than the clearance beside the book), turns its hand
+   90°, and pushes the spine low down with the lower fingertip until the back is 5 mm off the back panel.
+   It scores the result as the proposal does: upright within 5°, seated (back within 10 mm of the panel), released,
+   plus how far the neighbours moved.
+   - Control: Menagerie's position actuators, fed by differential IK along min-jerk paths, with gravity compensation.
+     The arm configuration is chosen so the whole sequence stays clear of the joint limits.
+   - The script adds the target book to the scene, and gives the gripper the real Franka Hand's 70 N (Menagerie's
+     squeezes a book with 1 to 2 N). It only changes its own copy of the model.
+   - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
+     while it slides.
+   - Seeds 0 to 99: 86 succeed. The other 14 have a neighbour much deeper than the target book, so the hand reaches
+     that neighbour's spine first and the book stops 1.5 to 10 cm short of the back panel. No episode moved a
+     neighbour more than 0.3 mm.
+
+7. **Next pieces to build on top** (from the design doc)
    - Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.
-   - Spawn the target book in the gripper (it is sampled in `row.target_book` but not placed yet).
+   - Spawn the target book in the gripper for other code too (`insert_book.py` does it for its own runs;
+     `build_scene` still leaves `row.target_book` out).
    - Add the gap-creation moves and insertion on top of that controller.
    - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
    - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
@@ -118,7 +143,7 @@ The bookcase is built from the floor up:
 | `target_band` | 0.40 to 1.10 m | Allowed height of the target board's top surface |
 | `fill_other_levels` | 50 to 100% | How full the non-target rows are |
 | `static_other_levels` | `True` | Weld non-target books in place, for speed |
-| `robot_xy`, `robot_z_offset` | (0, 0.62), −0.21 m | Robot base position; its height follows the target board |
+| `robot_xy`, `robot_z_offset` | (0, 0.80), −0.40 m | Robot base position; its height follows the target board |
 | `lean_angle_deg` | 12° to 35° | Lean for leaning and collapsed rows (raised when a book needs more to stay down) |
 
 ## Tested (MuJoCo 3.15.0)
@@ -139,10 +164,13 @@ could not be installed in the build environment. Run step 2 once on your machine
 
 ## Things to know
 
-- **Robot start pose.** Menagerie's own "home" pose reaches 0.55 m forward and hits the shelf, which knocks
-  books over. The scene uses a tucked "ready" pose instead (hand about 10 cm in front of the shelf).
-- **Robot height.** On a high target level the robot stands on a tall pedestal (up to about 0.9 m). That models a
-  lift or mobile base. To use a fixed base instead, narrow `target_band` and set `robot_z_offset` accordingly.
+- **Robot start pose.** The scene starts the Panda in a tucked "ready" pose (hand about 25 cm in front of the shelf).
+  Menagerie's own "home" pose reaches 0.55 m forward. It knocked books over when the base stood 0.62 m out,
+  and clears the shelf at 0.80 m.
+- **Robot height.** On a high target level the robot stands on a tall pedestal (up to about 0.7 m), and on the
+  lowest one (board top 0.40 m) it stands on the floor. That models a lift or mobile base. To use a fixed base
+  instead, narrow `target_band` and set `robot_z_offset` accordingly. Don't lower `target_band` below 0.40 m
+  without raising the base, or it ends up below the floor.
 - **Topple threshold.** Some settled books lean more than 45°. When scoring "no neighbour toppled", measure each
   book's tilt *change* from its settled pose, not its absolute tilt.
 - **Two leaning neighbours** (one on each side of the gap) are not generated: pushing both at once made one fall

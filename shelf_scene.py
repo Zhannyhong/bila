@@ -64,8 +64,11 @@ class ShelfConfig:
 
     # Robot base: in front of the shelf; its height follows the target level
     # (like a lift), so the arm always sees the same geometry relative to it.
-    robot_xy: tuple = (0.0, 0.62)
-    robot_z_offset: float = -0.21        # robot base z minus target board top
+    # Placed so the hand can point level into the shelf (needed to slide a
+    # book in): the Panda can only do that with its hand about 0.5 m or more
+    # above its base, and at 0.35 to 0.9 m in front of it.
+    robot_xy: tuple = (0.0, 0.80)
+    robot_z_offset: float = -0.40        # robot base z minus target board top (keeps the base above the floor for target_band >= 0.40)
 
     # Books (repo boxes: 0.04 x 0.16 x 0.24, density 500-1000)
     thickness: tuple = (0.015, 0.06)
@@ -381,8 +384,9 @@ def make_panda_with_sensors(panda_xml: str) -> str:
     return out
 
 
-PANDA_HOME = [0, -0.6, 0, -2.6, 0, 2.0, 0.7853, 0.04, 0.04]  # tucked 'ready' pose: hand ~10 cm in front of the shelf.
-# (Menagerie's own 'home' pose reaches 0.55 m forward and hits the shelf's top board.)
+PANDA_HOME = [0, -0.6, 0, -2.6, 0, 2.0, 0.7853, 0.04, 0.04]  # tucked 'ready' pose: hand ~25 cm in front of the shelf.
+# (Menagerie's own 'home' pose reaches 0.55 m forward. It hit the shelf when the
+# base stood 0.62 m out, and clears it now, but the tucked pose leaves more room.)
 
 
 # ---------------------------------------------------------------------------
