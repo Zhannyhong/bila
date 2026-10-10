@@ -120,7 +120,8 @@ The bookcase is built from the floor up:
    The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
    fingers reach the neighbours' spines (each finger is wider than the clearance beside the book), turns its hand
    90°, and pushes the spine low down with the lower fingertip until the book is in place (no push if the slide
-   already got it there). It scores the result as the proposal does: upright within 5°, in place, released, plus
+   already got it there). A book going in tightly drags its neighbours back, so it measures where the book has to
+   go again after the slide, and pushes again if the push dragged them further. It scores the result as the proposal does: upright within 5°, in place, released, plus
    how far the other books moved. In place means:
    - spine within 10 mm of the spine of the neighbour that sticks out more, or
    - if the book is deeper than that neighbour, so it can't line up without its back passing the back panel:
@@ -141,19 +142,36 @@ The bookcase is built from the floor up:
    - Fingertip: the empty hand puts its fingers (stacked vertically, 21 mm wide) into the gap and pushes a
      neighbour aside, by default one side only, the one with more free space if it can (`--strategy one-sided`;
      `split` pushes each neighbour half as far). Then the book is handed over (not modelled) and inserted as
-     above. Used when the fingers fit the gap, reach at least
+     above. Used when the fingers fit the gap and reach at least
      1 cm past a neighbour's spine (the 63 mm palm stops 46 mm behind the fingertips, at the most protruding spine
-     nearby), and the books that must move need under 35 N (the wrist joints top out at 12 N m).
-   - Book wedge, otherwise: the held book goes in turned, its back corner first, and straightens as it goes.
-   - Seeds 0 to 49, default `one-sided`: 26 succeed (one needed no widening). The fingertip handles 31 rows and
-     places 25. The wedge gets 18 rows and places none: in 4 the turned hand would run into the row, and most of
-     the rest jam at the slot's entrance.
-   - One side versus splitting, on the same 31 fingertip rows: one side places more, 25 vs 19 (20/50 overall
+     nearby). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
+     100 N, depending on the pose).
+   - Skipped otherwise, or when the push leaves the gap at the spines narrower than the book: no insertion,
+     counted as a failure. Nothing else on the stock hand can widen a gap narrower than the fingers:
+     - Pushed sideways at its back corner, the held book turns in the grasp: 2° at 9 to 15 N, 3 to 19° at 20 N,
+       and at 40 N up to 31°, much of it for good. Sliding the books takes more than that. A 140 N grip barely helps.
+     - A book wedge (held turned, back corner first, then straightened) was tried and dropped. Its slanted face
+       pushed the neighbour back into the shelf instead of aside (31 mm back and 2.5 mm aside on seed 21). It
+       placed none of its 18 rows, and dragged neighbours up to 12 cm into the shelf.
+     - A thin fingertip (10 mm or less) would fit every such row.
+   - Seeds 0 to 49, default `one-sided`: 36 succeed (one needed no widening). The fingertip handles 39 rows and
+     places 35. Every push left the gap at least as wide as the book. The other 10 rows, all with gaps narrower
+     than the fingers (12 to 23 mm), are skipped, and nothing in them moves.
+   - Dropping the old 35 N limit on the books' estimated friction gave the fingertip 8 rows that used to go to the
+     wedge (3 of them now placed), and let 6 rows that had to split push one side instead (4 of them failed before
+     and now succeed). Seed 27 now
+     pushes the side the estimate put at 93 N, and succeeds. Nothing that worked before fails.
+   - Measuring where the book has to go again after the slide, and pushing again when the push drags the
+     neighbours back, placed 2 more (seeds 0 and 46, which had stopped 12 to 15 mm proud of the neighbour) and 4
+     more with `split`. Rows that already worked take 0.1 s longer on average.
+   - One side versus splitting, on the same 39 fingertip rows: one side places more, 35 vs 24 (25/50 overall
      with `split`). Splitting swivels both neighbours, so the book's back corners catch on both sides and it
-     jams at the entrance more often. Where both worked, the most-moved book moved about the same (4.8 vs 4.1 mm,
-     one side vs split) and one side was 1.4 s faster (17.7 vs 19.1 s). Splitting needs much less force, as
-     fewer books must slide at once.
-   - Books have room behind them, so a book sliding in tightly can also drag its neighbours back.
+     jams at the entrance more often. In 6 rows it leaves the gap narrower than the book, so they are skipped.
+     Where both worked, the most-moved book moved about the same (6.1 vs 6.6 mm, one side
+     vs split) and one side was 1.8 s faster (17.6 vs 19.4 s). Splitting needs much less force, as fewer books
+     must slide at once.
+   - Books have room behind them, so a book sliding in tightly can also drag its neighbours back. On seed 0 it
+     drags the pushed neighbour 82 mm back, and still counts as placed: success only checks the inserted book.
    - Why it's hard: the fingertips push a neighbour only near its spine, so it swivels instead of sliding. The gap
      opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
      contact-rich part the proposal's residual policy is meant to learn.
@@ -164,6 +182,8 @@ The bookcase is built from the floor up:
      `build_scene` still leaves `row.target_book` out).
    - Add the gap-creation moves and insertion on top of that controller (`insert_book.py` scripts them with
      position control, as a baseline).
+   - Give the hand a thin fingertip (10 mm or less), so it can widen tight gaps narrower than the stock fingers
+     (skipped for now).
    - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
    - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
 

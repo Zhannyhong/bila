@@ -16,7 +16,9 @@ Insertion (shelf frame: x along the row, y out of the shelf, z up)
   3. Open the gripper.
   4. Back off, turn the hand 90 deg so the fingers are stacked vertically, and
      push the spine low down with the lower fingertip until the book is in
-     place (skipped if the slide already got it there). In place means:
+     place (skipped if the slide already got it there). A book going in
+     tightly drags its neighbours back, so where it has to go is measured
+     again after the slide, and after each push. In place means:
        - flush with the spine of the neighbour that sticks out more, within
          ALIGN_TOL, if the book can get there without its back reaching the
          back panel;
@@ -28,10 +30,10 @@ Clear scenario: the book starts already grasped at the pre-insertion pose.
 
 Tight scenario: the gap is narrower than the book, so it is widened first, to
 the book's thickness plus GAP_MARGIN.
-  - Fingertip (when the fingers fit the gap, reach a neighbour, and the books
-    to shove need no more than MAX_PUSH_FORCE): the empty hand puts its
-    vertically stacked fingers into the gap and pushes the neighbours apart,
-    re-pushing by whatever the arm's give left short. By default it pushes one
+  - Fingertip (when the fingers fit the gap and reach a neighbour with room
+    behind it): the empty hand puts its vertically stacked fingers into the
+    gap and pushes the neighbours apart as hard as the arm can, re-pushing by
+    whatever the arm's give left short. By default it pushes one
     side only (--strategy one-sided), the side with more free space if it can:
     on front-aligned rows that placed more books than splitting and was faster,
     for about the same displacement. --strategy split pushes each neighbour
@@ -41,11 +43,12 @@ the book's thickness plus GAP_MARGIN.
     The fingers only reach ~4 cm past the spines, so the neighbours swivel
     rather than slide: the gap widens at the spines but hardly at the back,
     and the book itself has to widen the rest as it slides in.
-  - Book wedge (otherwise): the book starts grasped and turned, so its back
-    corner fits the gap. That corner runs along one neighbour while the book
-    straightens as it goes in, and the book's other side shoves the other
-    neighbour toward the free space. It moves books much more than needed,
-    and often can't be done at all: turned far, the hand runs into the row.
+  - Skip (otherwise, or if the push leaves the gap at the spines narrower
+    than the book): no insertion, reported as a failure. Nothing else on the
+    stock hand can widen such a gap: pushed sideways at its back corner, the
+    held book slips in the grasp at 10-15 N, short of what sliding the books
+    takes. A book wedge (back corner first) pushed the neighbours back into
+    the shelf instead of aside, and placed none.
 
 The slide and the final push stop if the wrist force sensor feels the book
 stop giving way, rather than forcing a jammed book.
@@ -109,12 +112,7 @@ GAP_MARGIN = 0.006          # widen the gap to the book's thickness plus this
 FIT_CLEAR = 0.001           # fingers need this much room each side to enter the gap
 MIN_REACH = 0.010           # fingertips must get this far behind a neighbour's spine to push it
 ROOM_KEEP = 0.002           # leave this much of a side's free space unused
-MAX_PUSH_FORCE = 35.0       # N the fingertip can push sideways: the wrist joints top out at 12 N m
-                            # around 45-50 N (measured), less some headroom
 GAP_PUSH_SPEED = 0.03
-WEDGE_MIN_YAW = np.radians(35)   # wedge: steeper than book-on-book friction (up to 0.7), or it jams
-WEDGE_EPS = 0.002           # wedge: guide corner this far off the guide neighbour
-WEDGE_SPEED = 0.08          # of the hand, which swings a long arc while the book's corner barely moves
 
 # Scoring
 ALIGN_TOL = 0.010           # in place: spine within this of the more protruding neighbour's spine, or
@@ -404,23 +402,6 @@ class Runner:
                 return False
         return True
 
-    def move_path(self, name, poses, speed=TRANSIT_SPEED):
-        """Move the hand through a list of (pos, rot) poses, starting from the
-        current one, with one min-jerk timing over the whole path."""
-        self.log(f"  {self.t:5.2f} s  {name}")
-        pts = [(self.pos.copy(), self.rot.copy())] + list(poses)
-        dist = sum(np.linalg.norm(b[0] - a[0]) for a, b in zip(pts, pts[1:]))
-        ang = sum(np.linalg.norm(rotation_between(a[1], b[1])) for a, b in zip(pts, pts[1:]))
-        T = max(0.3, 1.875 * max(dist / speed, ang / TURN_SPEED))
-        n = int(round(T / self.m.opt.timestep))
-        for k in range(1, n + 1):
-            u = k / n
-            s = u ** 3 * (10 - 15 * u + 6 * u * u) * (len(pts) - 1)
-            i = min(int(s), len(pts) - 2)
-            self.pos, self.rot = interpolate(*pts[i], *pts[i + 1], s - i)
-            self.q_cmd = self.ik.solve(self.q_cmd, self.pos, self.rot)
-            self.step()
-
     def wait(self, name, duration, grip=None):
         self.log(f"  {self.t:5.2f} s  {name}")
         if grip is not None:
@@ -493,23 +474,6 @@ class Episode:
         xs = [self.shelf.box(self.m, self.d, g)[:, 0] for g in self.row_geoms]
         spaces = [xs[i].min() - xs[i - 1].max() for i in range(1, len(xs))]
         return xs[0].min() + W / 2 + sum(spaces[:ti - 1]), W / 2 - xs[-1].max() + sum(spaces[ti:])
-
-    def push_force(self, side, dist):
-        """Sideways force to push the left (side -1) or right (+1) neighbour by
-        `dist`: every book on that side within `dist` of closing up moves too,
-        each needing friction x weight (MuJoCo takes the larger of the book's
-        and the board's friction)."""
-        ti, books = self.row.target_index, self.row.books
-        order = range(ti - 1, -1, -1) if side < 0 else range(ti, len(books))
-        xs = [self.shelf.box(self.m, self.d, self.row_geoms[i])[:, 0] for i in order]
-        force, closed = 0.0, 0.0
-        for k, i in enumerate(order):
-            if k:
-                closed += (xs[k - 1].min() - xs[k].max()) if side < 0 else (xs[k].min() - xs[k - 1].max())
-            if closed >= dist:
-                break
-            force += max(books[i].friction, self.row.base_friction) * books[i].mass * 9.81
-        return force
 
     def seat_target(self):
         """Where the book's spine should end up (y), and which rule applies:
@@ -665,6 +629,9 @@ class Episode:
         run.wait("open the gripper", 0.4, grip=GRIP_OPEN)
         t_release = run.t
 
+        # Sliding in drags the neighbours back into the shelf, which moves the
+        # spine to line up with: aim at where they are now.
+        obs, target = self.obstacles(), self.seat_target()[0]
         c = self.shelf.box(self.m, self.d, self.book_geom)
         x_book, spine = c[:, 0].mean(), c[:, 1].max()
         if spine <= target + 0.002:                                 # the slide already got it there
@@ -689,9 +656,20 @@ class Episode:
         run.move("back off", *back_off)
         run.move("turn the hand to push", *ready)
         run.move("reach the spine", *self.push_pose(sign, x_book, spine + 0.005))
-        run.move("push it into place" if not blocked else
-                 f"push it in (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
-                 *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=PUSH_STOP_FORCE)
+        pushed = run.move("push it into place" if not blocked else
+                          f"push it in (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
+                          *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=PUSH_STOP_FORCE)
+        # The push drags them back too: push on to where they are now, unless
+        # the book is stuck or the hand can't go any deeper.
+        for _ in range(3):
+            target = self.seat_target()[0]
+            spine = self.shelf.box(self.m, self.d, self.book_geom)[:, 1].max()
+            goal = max(target, self.push_limit(x_book, self.obstacles()))
+            if not pushed or spine <= target + 0.002 or goal >= tip_goal - 0.001:
+                break
+            tip_goal, blocked = goal, goal > target
+            pushed = run.move("push it further (the neighbours went back with it)",
+                              *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=PUSH_STOP_FORCE)
         t_done = run.t
         run.move("back out", *self.push_pose(sign, x_book, max(self.D / 2, tip_goal) + 0.05))
         run.wait("let it settle", 1.0)
@@ -749,11 +727,10 @@ class Episode:
             self.log(f"  the {1000 * (xr - xl):.0f} mm gap already fits the book")
             return self.insert()
         plan = self.plan_fingertip(xl, xr, fl, fr, need, strategy)
-        if plan is not None:
-            self.info["method"] = "fingertip, both sides" if plan[0] > 0 and plan[1] > 0 else "fingertip, one side"
-            return self.fingertip_then_insert(xl, xr, *plan)
-        self.info["method"] = "book wedge"
-        return self.wedge_in(xl, xr, fl, fr)
+        if plan is None:
+            return self.skip(self.info["fingertip"])
+        self.info["method"] = "fingertip, both sides" if plan[0] > 0 and plan[1] > 0 else "fingertip, one side"
+        return self.fingertip_then_insert(xl, xr, *plan)
 
     def plan_fingertip(self, xl, xr, fl, fr, need, strategy):
         """How far to push each neighbour with the fingertips: (left, right,
@@ -777,8 +754,6 @@ class Episode:
         for dl, dr in ([split] + one_sided) if strategy == "split" else (one_sided + [split]):
             if dl > room_l + 1e-9 or dr > room_r + 1e-9:
                 continue
-            if max(self.push_force(-1, dl), self.push_force(+1, dr)) > MAX_PUSH_FORCE:
-                continue                                              # too many books to shove at once
             # deepest the fingertips may go: the palm stays clear over the whole sideways sweep
             lo = min(xl - dl + FINGER_HALF_W, x_mid) - HAND_HALF_T
             hi = max(xr + dr - FINGER_HALF_W, x_mid) + HAND_HALF_T
@@ -786,7 +761,7 @@ class Episode:
             if (dl > 0 and fl - tip_in < MIN_REACH) or (dr > 0 and fr - tip_in < MIN_REACH):
                 continue
             return dl, dr, tip_in
-        self.info["fingertip"] = "fingers can't reach, or can't shove, a neighbour with room behind it"
+        self.info["fingertip"] = "fingers can't reach a neighbour with room behind it"
         return None
 
     def fingertip_then_insert(self, xl, xr, dl, dr, tip_in):
@@ -825,6 +800,8 @@ class Episode:
         gap_time = run.t - t_start
         xl, xr, _, _ = self.slot()
         self.log(f"         the gap is now {1000 * (xr - xl):.1f} mm at the spines, for a {1000 * self.t:.1f} mm book")
+        if xr - xl < self.t:                                         # the push fell short: it can't go in straight
+            return self.skip("the push left the gap narrower than the book")
         x_slot = (xl + xr) / 2
         pre = self.book_pre(x_slot)
         run.move("turn the hand to the pre-insertion pose", *self.grasp_pose(gs, pre))
@@ -835,8 +812,8 @@ class Episode:
     def push_neighbour(self, push_sign, side, target, limit, tip_in, tries=3):
         """Push the left (side -1) or right (+1) neighbour until its face, at
         its spine, reaches x = target, never commanding past x = limit. Under
-        load the arm gives way by up to ~1 cm (the wrist joints top out at
-        12 N m), and the neighbour swivels, so push again by what is missing."""
+        load the arm gives way by up to ~2.5 cm (joint 6 tops out at 12 N m),
+        and the neighbour swivels, so push again by what is missing."""
         name = "left" if side < 0 else "right"
         cmd = target
         for k in range(tries):
@@ -850,49 +827,13 @@ class Episode:
             if side * (cmd - limit) > 0:
                 cmd = limit
 
-    def wedge_in(self, xl, xr, fl, fr):
-        """Book wedge, for gaps the fingertips can't open. The book is held
-        turned, so the back corner on one side (the guide corner) runs along
-        that neighbour's face; it is straightened as it goes in, and its other
-        side shoves the other neighbour toward the free space."""
-        room_l, room_r = self.free_space()
-        sigma = 1 if room_r >= room_l else -1                       # +1: shove the right neighbour
-        x_wall, y_wall, y_shove = (xl, fl, fr) if sigma > 0 else (xr, fr, fl)
-        t, d = self.t, self.depth
-        # turned enough for the back corner to fit the gap, and steeper than the
-        # friction between books, so the shoved neighbour slides instead of jamming
-        yaw0 = -sigma * max(math.acos(min(1.0, (xr - xl - 2 * WEDGE_EPS) / t)), WEDGE_MIN_YAW)
-        guide = np.array([-sigma * t / 2, -d / 2, 0.0])              # guide corner, book frame
-        lead = np.array([sigma * t / 2, -d / 2, 0.0])
-
-        def centre(gy, yaw):
-            turn = self.shelf.R.T @ self.shelf.rot(yaw)
-            return np.array([x_wall + sigma * WEDGE_EPS, gy, self.z0 + self.h / 2 + HOVER]) - turn @ guide
-
-        # Go in turned until the guide corner is level with the shoved
-        # neighbour's spine, then straighten by turning about that corner. While
-        # it turns about that point the book needs less and less room on the
-        # shoved side, so the shove never exceeds its width across the gap
-        # when turned (t / cos yaw0). Then it slides in straight.
-        lead_ahead = (self.shelf.R.T @ self.shelf.rot(yaw0) @ (lead - guide))[1]   # < 0: the lead corner is deeper
-        gy0 = max(y_wall + 0.005, y_shove + 0.005 - lead_ahead)      # both back corners outside the slot
-        wedge = ([(centre(y, yaw0), yaw0) for y in np.linspace(gy0, y_shove, 10)]
-                 + [(centre(y_shove, yaw0 * (1 - s)), yaw0 * (1 - s)) for s in np.linspace(0, 1, 30)[1:]])
-        x_slot, y_from = wedge[-1][0][0], wedge[-1][0][1]
-        obs = self.obstacles()
-        candidates = []
-        for gs in (1, -1):
-            path = [self.grasp_pose(gs, c, yaw) for c, yaw in wedge[1:]]
-            for ps in (1, -1):
-                candidates.append((self.grasp_pose(gs, *wedge[0]), path + self.insertion_plan(gs, ps, x_slot, y_from, obs),
-                                   (gs, ps)))
-        q, (gs, ps) = self.choose_arm(candidates)
-        self.place_arm(q)
-        self.take_book(gs, *wedge[0], name=f"close the gripper on the book, turned {abs(math.degrees(yaw0)):.0f} deg")
-        t_start = self.run.t
-        self.run.move_path(f"wedge it in, shoving the {'right' if sigma > 0 else 'left'} neighbour",
-                           [self.hand_for_book(c, yaw) for c, yaw in wedge[1:]], speed=WEDGE_SPEED)
-        return self.score(t_start, *self.seat(x_slot, y_from, ps))
+    def skip(self, reason) -> dict:
+        """Leave the book out: a failure, with how far the other books moved
+        (only a push that fell short moves them)."""
+        self.log(f"  skipped: {reason}")
+        shifts = np.linalg.norm(self.d.xpos[self.row_bodies] - self.start_pos, axis=1)
+        return {"success": False, "skipped": reason, "neighbour_shift_m": float(shifts.max()),
+                "total_shift_m": float(shifts.sum()), **self.info}
 
 
 # ---------------------------------------------------------------------------
@@ -912,6 +853,8 @@ def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries
 def report(res: dict) -> str:
     verdict = "SUCCESS" if res["success"] else "FAIL"
     how = f" [{res['method']}]" if res.get("method") else ""
+    if "skipped" in res:
+        return f"  SKIPPED{how}: {res['skipped']} | other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm"
     place = (f"spine {1000 * res['offset_m']:+.1f} mm from the neighbour's" if res["rule"] == "flush" else
              f"deeper than its neighbours, spine {1000 * res['offset_m']:.1f} mm inside the front edge")
     return (f"  {verdict}{how}: tilt {res['tilt_deg']:.1f} deg, {place}"
@@ -977,6 +920,8 @@ def main():
               f"{sum(not r.get('released', True) for r in results)} not released")
         for err in sorted({r["error"] for r in results if "error" in r}):
             print(f"  {sum(r.get('error') == err for r in results)} stopped: {err}")
+        for why in sorted({r["skipped"] for r in results if "skipped" in r}):
+            print(f"  {sum(r.get('skipped') == why for r in results)} skipped: {why}")
         for method in sorted({r.get("method") for r in results if r.get("method")}):
             rs = [r for r in results if r.get("method") == method]
             done = [r for r in rs if r["success"]]
