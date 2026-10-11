@@ -140,9 +140,11 @@ The bookcase is built from the floor up:
 
    **Tight**: the gap is first widened to the book's thickness plus 6 mm.
    - Fingertip: the empty hand puts its fingers (stacked vertically, 21 mm wide) into the gap and pushes a
-     neighbour aside, by default one side only, the one with more free space if it can (`--strategy one-sided`;
-     `split` pushes each neighbour half as far). Then the book is handed over (not modelled) and inserted as
-     above. Used when the fingers fit the gap and reach at least
+     neighbour aside. By default (`--strategy one-sided`) it pushes the side with more free space, as far as the
+     widening needs or that side's space allows. If the gap at the spines is then still short of the book plus
+     6 mm, it pushes the other side too, by what is missing, provided the fingertips reach that neighbour and the
+     arm can carry on from where it is. `split` pushes each neighbour half as far. Then the book is handed over
+     (not modelled) and inserted as above. Used when the fingers fit the gap and reach at least
      1 cm past a neighbour's spine (the 63 mm palm stops 46 mm behind the fingertips, at the most protruding spine
      nearby). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
      100 N, depending on the pose).
@@ -154,9 +156,11 @@ The bookcase is built from the floor up:
        pushed the neighbour back into the shelf instead of aside (31 mm back and 2.5 mm aside on seed 21). It
        placed none of its 18 rows, and dragged neighbours up to 12 cm into the shelf.
      - A thin fingertip (10 mm or less) would fit every such row.
-   - Seeds 0 to 49, default `one-sided`: 36 succeed (one needed no widening). The fingertip handles 39 rows and
-     places 35. Every push left the gap at least as wide as the book. The other 10 rows, all with gaps narrower
+   - Seeds 0 to 49, default `one-sided`: 37 succeed (one needed no widening). The fingertip handles 39 rows and
+     places 36. Every push left the gap at least as wide as the book. The other 10 rows, all with gaps narrower
      than the fingers (12 to 23 mm), are skipped, and nothing in them moves.
+   - In 7 fingertip rows the first push left the gap 1.4 to 2.3 mm short, so the other side was pushed too. That
+     placed seed 38, which used to jam at the entrance. The 5 of them that already worked still do, 2 to 4 s slower.
    - Dropping the old 35 N limit on the books' estimated friction gave the fingertip 8 rows that used to go to the
      wedge (3 of them now placed), and let 6 rows that had to split push one side instead (4 of them failed before
      and now succeed). Seed 27 now
@@ -164,11 +168,11 @@ The bookcase is built from the floor up:
    - Measuring where the book has to go again after the slide, and pushing again when the push drags the
      neighbours back, placed 2 more (seeds 0 and 46, which had stopped 12 to 15 mm proud of the neighbour) and 4
      more with `split`. Rows that already worked take 0.1 s longer on average.
-   - One side versus splitting, on the same 39 fingertip rows: one side places more, 35 vs 24 (25/50 overall
+   - One side versus splitting, on the same 39 fingertip rows: one side places more, 36 vs 24 (25/50 overall
      with `split`). Splitting swivels both neighbours, so the book's back corners catch on both sides and it
      jams at the entrance more often. In 6 rows it leaves the gap narrower than the book, so they are skipped.
      Where both worked, the most-moved book moved about the same (6.1 vs 6.6 mm, one side
-     vs split) and one side was 1.8 s faster (17.6 vs 19.4 s). Splitting needs much less force, as fewer books
+     vs split) and one side was 1.5 s faster (17.9 vs 19.4 s). Splitting needs much less force, as fewer books
      must slide at once.
    - Books have room behind them, so a book sliding in tightly can also drag its neighbours back. On seed 0 it
      drags the pushed neighbour 82 mm back, and still counts as placed: success only checks the inserted book.

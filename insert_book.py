@@ -33,10 +33,12 @@ the book's thickness plus GAP_MARGIN.
   - Fingertip (when the fingers fit the gap and reach a neighbour with room
     behind it): the empty hand puts its vertically stacked fingers into the
     gap and pushes the neighbours apart as hard as the arm can, re-pushing by
-    whatever the arm's give left short. By default it pushes one
-    side only (--strategy one-sided), the side with more free space if it can:
-    on front-aligned rows that placed more books than splitting and was faster,
-    for about the same displacement. --strategy split pushes each neighbour
+    whatever the arm's give left short. By default it pushes one side
+    (--strategy one-sided), the one with more free space, as far as the
+    widening needs or that side's space allows, and pushes the other side too
+    only if the gap is still short: on front-aligned rows one side placed
+    more books than splitting and was faster, for about the same
+    displacement. --strategy split pushes each neighbour
     half as far (fewer books must move at once) but swivels both, so the book
     catches on both sides more often. Then the book is handed over at the
     pre-insertion pose (not modelled) and inserted.
@@ -730,14 +732,16 @@ class Episode:
         if plan is None:
             return self.skip(self.info["fingertip"])
         self.info["method"] = "fingertip, both sides" if plan[0] > 0 and plan[1] > 0 else "fingertip, one side"
-        return self.fingertip_then_insert(xl, xr, *plan)
+        return self.fingertip_then_insert(xl, xr, *plan, gap_goal=self.t + margin)
 
     def plan_fingertip(self, xl, xr, fl, fr, need, strategy):
         """How far to push each neighbour with the fingertips: (left, right,
         fingertip depth), or None if they don't fit the gap, or can't reach a
         neighbour that has room behind it.
 
-        'one-sided' tries pushing one side first (more free space first): it
+        'one-sided' pushes one side (more free space first), as far as the
+        widening needs or its free space allows. If that leaves the gap short,
+        it pushes the other side too, by what is missing (top_up). One side
         saves the trip across the gap and the second push, and leaves one
         neighbour's face straight for the book to slide along. 'split' tries
         splitting the widening evenly first (each neighbour moves half, as far
@@ -750,21 +754,25 @@ class Episode:
         x_mid = (xl + xr) / 2
         dl_even = min(max(need / 2, need - room_r), room_l)
         split = (dl_even, need - dl_even)
-        one_sided = sorted([(need, 0.0), (0.0, need)], key=lambda p: -(room_l if p[0] else room_r))
+        sides = sorted((-1, 1), key=lambda s: -(room_l if s < 0 else room_r))  # more free space first
+        one_sided = [(min(need, room_l), 0.0) if s < 0 else (0.0, min(need, room_r)) for s in sides]
         for dl, dr in ([split] + one_sided) if strategy == "split" else (one_sided + [split]):
-            if dl > room_l + 1e-9 or dr > room_r + 1e-9:
+            if min(dl, dr) < 0 or max(dl, dr) <= 0 or dl > room_l + 1e-9 or dr > room_r + 1e-9:
                 continue
-            # deepest the fingertips may go: the palm stays clear over the whole sideways sweep
-            lo = min(xl - dl + FINGER_HALF_W, x_mid) - HAND_HALF_T
-            hi = max(xr + dr - FINGER_HALF_W, x_mid) + HAND_HALF_T
-            tip_in = tip_limit(obs, (lo + hi) / 2, [((hi - lo) / 2, FINGERTIP_Z - PALM_Z)])
+            tip_in = self.fingertip_depth([xl - dl + FINGER_HALF_W, x_mid, xr + dr - FINGER_HALF_W], obs)
             if (dl > 0 and fl - tip_in < MIN_REACH) or (dr > 0 and fr - tip_in < MIN_REACH):
                 continue
             return dl, dr, tip_in
         self.info["fingertip"] = "fingers can't reach a neighbour with room behind it"
         return None
 
-    def fingertip_then_insert(self, xl, xr, dl, dr, tip_in):
+    def fingertip_depth(self, xs, obs):
+        """Deepest the fingertips may go (smallest y) while the hand sweeps
+        sideways over the hand positions xs: the palm stays clear of the books."""
+        lo, hi = min(xs) - HAND_HALF_T, max(xs) + HAND_HALF_T
+        return tip_limit(obs, (lo + hi) / 2, [((hi - lo) / 2, FINGERTIP_Z - PALM_Z)])
+
+    def fingertip_then_insert(self, xl, xr, dl, dr, tip_in, gap_goal):
         obs = self.obstacles()
         x_mid = (xl + xr) / 2
         x_left = xl - dl + FINGER_HALF_W if dl > 0 else x_mid       # hand x when each push ends
@@ -795,6 +803,14 @@ class Episode:
             self.push_neighbour(ps, -1, xl - dl, xl - room_l + ROOM_KEEP, tip_in)
         if dr > 0:
             self.push_neighbour(ps, +1, xr + dr, xr + room_r - ROOM_KEEP, tip_in)
+        if (dl > 0) != (dr > 0):                                     # one side pushed: push the other if still short
+            side = 1 if dl > 0 else -1
+            more = self.top_up(ps, gs, side, tip_in, gap_goal,
+                               xr + room_r - ROOM_KEEP if side > 0 else xl - room_l + ROOM_KEEP)
+            if more is not None:
+                self.info["method"] = "fingertip, one side, then the other"
+                x_slot, tip_in, tip_out, d = more
+                dl, dr = (dl, d) if side > 0 else (d, dr)
         run.move("back to the middle", *self.push_pose(ps, x_slot, tip_in))
         run.move("take the fingers out", *self.push_pose(ps, x_slot, tip_out))
         gap_time = run.t - t_start
@@ -808,6 +824,50 @@ class Episode:
         self.take_book(gs, pre, name="take the book (the hand-over is not modelled)")
         return self.score(t_start, *self.seat(x_slot, pre[1], ps), gap_time_s=gap_time,
                           push_left_m=dl, push_right_m=dr)
+
+    def top_up(self, ps, gs, side, tip_in, gap_goal, limit):
+        """After pushing one side only: if the gap is still short of gap_goal,
+        push the other neighbour (side -1 left, +1 right) by what is missing,
+        never commanding past x = limit. Planned from where the arm is: only
+        if the fingertips reach that neighbour and the arm can carry on
+        through the insertion. Returns (slot centre, fingertip depth, depth to
+        take the fingers out at, distance pushed), or None if it doesn't push."""
+        run, ti = self.run, self.row.target_index
+        gl, gr, sl, sr = self.slot()
+        short = gap_goal - (gr - gl)
+        face, spine = (gr, sr) if side > 0 else (gl, sl)
+        d = min(short, side * (limit - face))
+        if short < 0.001 or d < 0.001:
+            return None
+        name = "right" if side > 0 else "left"
+        x_from = self.shelf.to_shelf(run.pos + run.rot @ [0, 0, FINGERTIP_Z])[0]   # where the first push left the hand
+        x_to = face + side * (d - FINGER_HALF_W)
+        x_slot = (gl + gr + side * d) / 2
+        obs = self.obstacles()
+        tip = max(tip_in, self.fingertip_depth([x_from, x_to], obs))   # the palm must clear the books it now crosses
+        if spine - tip < MIN_REACH:
+            self.log(f"         the gap is {1000 * short:.1f} mm short, but the fingertips can't reach the {name} neighbour")
+            return None
+        lo, hi = min(x_from, x_to) - HAND_HALF_T - CLEAR, max(x_from, x_to) + HAND_HALF_T + CLEAR
+        tip_out = max(front for a, b, front in obs if b > lo and a < hi) + 0.02
+        back = (run.pos + self.ys * (tip - self.tip_y((run.pos, run.rot))), run.rot)
+        pre = self.book_pre(x_slot)
+        path = (segment((run.pos, run.rot), back, 5)
+                + [self.push_pose(ps, x, tip) for x in np.linspace(x_from, x_to, 15)[1:]]
+                + [self.push_pose(ps, x, tip) for x in np.linspace(x_to, x_slot, 10)[1:]]
+                + [self.push_pose(ps, x_slot, y) for y in np.linspace(tip, tip_out, 15)[1:]])
+        path += segment(path[-1], self.grasp_pose(gs, pre), 40) + self.insertion_plan(gs, ps, x_slot, pre[1], obs)
+        self.ik.sync(self.d)
+        _, worst, ok = self.ik.follow(run.q_cmd, path, allowed={self.row_geoms[ti - 1], self.row_geoms[ti]})
+        if not ok or worst < MIN_MARGIN:
+            self.log(f"         the gap is {1000 * short:.1f} mm short, but the arm can't push the {name} neighbour "
+                     f"too without nearing a joint limit or running into the shelf")
+            return None
+        self.log(f"         the gap is {1000 * short:.1f} mm short: push the {name} neighbour too")
+        if tip > tip_in + 1e-4:
+            run.move("back off to cross the gap", *back)
+        self.push_neighbour(ps, side, face + side * d, limit, tip)
+        return x_slot, tip, tip_out, d
 
     def push_neighbour(self, push_sign, side, target, limit, tip_in, tries=3):
         """Push the left (side -1) or right (+1) neighbour until its face, at
