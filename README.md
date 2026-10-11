@@ -191,6 +191,33 @@ The bookcase is built from the floor up:
    - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
    - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
 
+## Perception (`perception.py`)
+
+What the robot knows about the target row, limited to what a wrist RGB-D camera could report. Code that decides
+what to do (the RL policy, and ideally the scripted sequences) should read a `ShelfEstimate` rather than `data`,
+so a camera-based source can replace the ground truth later without changing it.
+
+```python
+from perception import GroundTruthPerception, NoisyPerception
+est = GroundTruthPerception(model, row).estimate(data)       # or NoisyPerception(GroundTruthPerception(...), rng)
+est.book(-1).lean, est.book(+1).spine_y                      # the slot's left and right neighbours
+est.min_gap_width(0.25)                                      # narrowest free width up to 25 cm above the board
+```
+
+- **Each book is its spine face**: four corners in the shelf frame, and the values derived from them (thickness,
+  height, lean, swivel, how far out the spine sits). `slot_offset` names it relative to the slot: -1 and +1 are
+  the neighbours.
+- **The gap** is the free width at the spine plane at 8 heights above the board (1 to 29 cm), between everything
+  left and right of the slot, side panels included. A leaning neighbour shows as a gap that narrows with height.
+- **Not measured**: a book's depth is a prior (17 cm, capped to fit the shelf), since the camera only sees spines.
+  Mass, friction, contact forces and velocities are left out; they are for the reward and critic only.
+- `NoisyPerception` adds 2 mm of noise to each corner and reads gaps under 4 mm as closed. These are starting
+  guesses for a wrist camera.
+- Note: `row.gap_right - row.gap_left` is up to 3 mm short of the actual face-to-face gap, because `gap_left`
+  is set after the left neighbour's spacing. Measure the gap from the books, as `perception.py` does.
+
+Tests: `uv run pytest`.
+
 ## Settings (`ShelfConfig`)
 
 | Setting | Default | Meaning |
