@@ -73,8 +73,8 @@ class ShelfConfig:
     # Books (repo boxes: 0.04 x 0.16 x 0.24, density 500-1000)
     thickness: tuple = (0.015, 0.06)
     book_depth: tuple = (0.12, 0.22)
-    depth_clearance: float = 0.030       # every book at least this much shallower than the shelf
-    spine_inset: tuple = (0.010, 0.030)  # each spine this far behind the shelf's front edge
+    depth_clearance: float = 0.030       # every book at least this much shallower than the shelf, adjustable
+    spine_inset: tuple = (0.010, 0.030)  # each spine this far behind the shelf's front edge, adjustable
     book_height: tuple = (0.17, 0.30)
     density: tuple = (400.0, 900.0)      # kg/m^3
     book_friction: tuple = (0.25, 0.7)

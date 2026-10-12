@@ -69,8 +69,8 @@ def make_leaning_episode(cfg: ShelfConfig, rng: np.random.Generator, panda_xml: 
     MjSpec to add a pusher rod to the hand before compiling. (At the tucked
     home pose the rod is >10 cm from the shelf, so settling is unaffected.)"""
     for _ in range(max_tries):
-        row = sample_row(cfg, "leaning", rng)
-        spec = mujoco.MjSpec.from_string(build_scene(cfg, row, panda_xml))
+        row = sample_row(cfg, "leaning", rng) # build a row of books
+        spec = mujoco.MjSpec.from_string(build_scene(cfg, row, panda_xml)) # create the mujoco model with the row of books
         if tool_length > 0:
             hand = spec.body("panda/hand")
             hand.add_geom(name="pusher", type=mujoco.mjtGeom.mjGEOM_CAPSULE,
