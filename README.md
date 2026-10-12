@@ -1,14 +1,63 @@
-# MuJoCo bookshelf, ported from ContactExplorer
+# Library robot: making room on the shelf
 
-`shelf_scene.py` builds the bookshelf scene for the gap-creation project in MuJoCo.
-It starts from the shelf in ContactExplorer's singulation task
-(`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full,
-randomized bookcase standing on the floor. It also adds a Franka Panda with a wrist
-camera and force/torque sensor.
+A MuJoCo simulator for a library shelving robot. A Franka Panda has to make a gap in a row of books
+wide enough to slide a new book in, when the slot is clear, too tight, blocked by a leaning book, or
+blocked by a run of collapsed books.
+
+The project compares two ways of doing this:
+
+1. **Scripted controllers**: hand-written baselines, one per kind of row (this repo).
+2. **Residual PPO**: a learned policy that adds corrections on top of a scripted controller, to handle
+   the contact-rich cases the scripts get wrong (the hooks are in place; training is still to come).
 
 ![scenarios](scenarios_preview.png)
 
-## The bookcase
+## What's in the repo
+
+| File | What it does |
+| --- | --- |
+| `shelf_scene.py` | Builds a randomized bookcase and target row for one of four scenarios, adds the Panda, settles the row with physics |
+| `view_scene.py` | Opens a settled scenario in the MuJoCo viewer |
+| `insert_book.py` | Scripted baseline for the **clear** and **tight** rows: widens a tight gap with the fingertips, then slides the book in |
+| `scripted_controller.py` | Scripted baseline for the **leaning** row: pushes the leaning book upright, then widens the slot if needed |
+| `mujoco_menagerie/` | Git submodule with the Panda model |
+| `scenes/` | Generated scenes (git-ignored) |
+
+| Scenario | Target row | Scripted baseline |
+| --- | --- | --- |
+| clear | Slot already wide enough | `insert_book.py --scenario clear` |
+| tight | Slot narrower than the book | `insert_book.py --scenario tight` |
+| leaning | A neighbour leans into the slot | `scripted_controller.py` |
+| collapsed | A run of 3 to 6 books has toppled over | none yet |
+
+## Quick start
+
+```bash
+git clone --recurse-submodules <this repo>     # or, in an existing clone:
+git submodule update --init                     # fetches mujoco_menagerie
+uv sync                                         # installs mujoco and numpy from pyproject.toml
+
+# Generate and look at scenes
+uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
+uv run python view_scene.py --scenario leaning --seed 0          # add --no-robot for the bookcase only
+
+# Run the scripted baselines
+uv run python insert_book.py --scenario clear --seed 0
+uv run python insert_book.py --scenario tight --seed 0 --trials 50
+uv run python scripted_controller.py --seed 0
+uv run python scripted_controller.py --seeds 50
+```
+
+On macOS, anything with `--view` must run under `mjpython` instead of `python`
+(for example `uv run mjpython scripted_controller.py --seed 0 --view`), because the passive viewer needs it.
+
+## The simulator
+
+### The bookcase
+
+`shelf_scene.py` starts from the shelf in ContactExplorer's singulation task
+(`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full, randomized bookcase
+standing on the floor, with a Franka Panda that has a wrist camera and a force/torque sensor.
 
 The bookcase is built from the floor up:
 
@@ -39,8 +88,66 @@ The bookcase is built from the floor up:
   0.80 m in front of the shelf. The arm then always sees the same geometry relative to the row it works on,
   and can hold its hand level to slide a book in. (The Panda can only point its hand level with the hand
   about 0.5 m or more above its base, because joint 6 bends one way only.)
+- Frame convention (same as the Isaac Gym task): x along the row, y out of the shelf (back panel at −y), z up.
 
-## What was taken from the repo, and what changed
+### How the target row is made
+
+Books are placed upright, then the leaning and collapsed scenarios push some of them over during a short
+settling phase (the pushes are stored in `row.nudges`). This way every lean is a real resting pose found by
+physics, not a hand-set angle that might overlap other books.
+
+- **Leaning**: the gap is sized from the lean angle you want (12° to 35°), so the book comes to rest against its neighbour.
+- **Collapsed**: a run of 3 to 6 books topples into a hole next to it. The hole is sized the same way, so the run
+  leans far enough to stay down and lands on the book across the hole below its top.
+- In both, the spare row space goes to the end away from the toppling. The books that catch the lean are
+  packed against a side panel and can't slide away.
+
+### Generating and viewing scenes
+
+```bash
+uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
+uv run python shelf_scene.py --scenario leaning --seed 3 --out scenes      # one scenario only
+```
+
+This writes one `.xml` (the MuJoCo scene) and one `.json` (levels, book sizes, target slot, gap edges) per
+scenario, then settles each scene and prints whether it is stable. `scenes/` is git-ignored: the XML holds absolute paths.
+
+```bash
+uv run python view_scene.py --scenario leaning --seed 0       # add --no-robot for the bookcase only
+```
+
+`view_scene.py` settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
+(Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
+Either way the camera starts on the gap, from the front and to one side, so the robot isn't in the way.
+The scene sets this as MuJoCo's default free camera (`<statistic>` and `<visual><global>`), so you can still
+orbit, and the viewer's Align button brings you back to it. MuJoCo's viewer only applies it by itself when it
+opens a file, so `view_scene.py` and `insert_book.py --view` apply it themselves. In the viewer,
+Rendering > Camera > `scene_cam` shows the whole target row.
+
+### Using it from Python
+
+```python
+import numpy as np
+from shelf_scene import ShelfConfig, make_episode
+cfg = ShelfConfig()
+rng = np.random.default_rng(0)
+model, data, row, report = make_episode(cfg, "collapsed", rng,
+                                        panda_xml="mujoco_menagerie/franka_emika_panda/panda.xml")
+start_qpos = data.qpos.copy()      # settled state = the episode's start
+print(row.target_level, row.target_board_top)
+```
+
+`make_episode` throws away the occasional row that keeps sliding and samples again.
+For RL, generate a few thousand settled `qpos` vectors once and reset from that list. Settling inside every
+reset is too slow.
+
+`qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
+then 7 per filler book only if `static_other_levels=False`.
+
+To change the scene before compiling (as `scripted_controller.py` does to add its pusher rod), build the XML
+with `sample_row` + `build_scene`, edit it with `mujoco.MjSpec.from_string(...)`, compile, then call `settle`.
+
+### What was taken from ContactExplorer, and what changed
 
 | Isaac Gym repo | MuJoCo version | Why it changed |
 | --- | --- | --- |
@@ -48,149 +155,175 @@ The bookcase is built from the floor up:
 | `_define_back_wall`, `_define_side_wall`: walls for one cubby | `back_panel` and side panels from floor to top | Same parts, full height |
 | Shelf 0.344 × 0.26 m, fixed | 0.6 to 1.0 m wide, 0.22 to 0.32 m deep, randomized levels and pose | Room for 12 to 20 books per row and space to push them |
 | 5 boxes, 4 × 16 × 24 cm, fixed size | Every book a different, random size, mass and friction | Real shelves are mixed |
-| Neighbour boxes have `fix_base_link=True` and friction `1e-5` | Target-row books are **free bodies** with normal friction (0.25 to 0.7) | Your task is to push neighbours, so they must be movable |
+| Neighbour boxes have `fix_base_link=True` and friction `1e-5` | Target-row books are **free bodies** with normal friction (0.25 to 0.7) | The task is to push neighbours, so they must be movable |
 | PhysX `friction`, `restitution` | MuJoCo `friction`, `solref`, `solimp`, `condim=4` | Different contact model |
 | Two fixed cameras, 640×480, 58° | `scene_cam` (fixed, off to the side, aimed at the target row) + `wrist_cam` on the Panda hand | Robot blocked the front view; wrist camera sees the gap up close |
-| xArm6 + Allegro hand | Franka Panda from MuJoCo Menagerie + F/T sensor at the flange | Your chosen robot |
+| xArm6 + Allegro hand | Franka Panda from MuJoCo Menagerie + F/T sensor at the flange | Our chosen robot |
 
 `python shelf_scene.py --repo-defaults` rebuilds the original single cubby (board top at 0.51 m) and box size, for comparison.
 
-## Implementation steps
+## Scripted baselines
 
-1. **Install**
-   ```bash
-   git clone --recurse-submodules <this repo>     # or, in an existing clone:
-   git submodule update --init                     # fetches mujoco_menagerie
-   uv sync                                         # installs mujoco and numpy from pyproject.toml
-   ```
+### Clear and tight rows: `insert_book.py`
 
-2. **Generate scenes**
-   ```bash
-   uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
-   ```
-   This writes one `.xml` (the MuJoCo scene) and one `.json` (levels, book sizes, target slot, gap edges) per scenario,
-   then settles each scene and prints whether it is stable. `scenes/` is git-ignored: the XML holds absolute paths.
+```bash
+uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
+uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
+uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (macOS)
+```
 
-3. **Look at a scene**
-   ```bash
-   uv run python view_scene.py --scenario leaning --seed 0       # add --no-robot for the bookcase only
-   ```
-   This settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
-   (Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
-   Either way the camera starts on the gap, from the front and to one side, so the robot isn't in the way.
-   The scene sets this as MuJoCo's default free camera (`<statistic>` and `<visual><global>`), so you can still
-   orbit, and the viewer's Align button brings you back to it. MuJoCo's viewer only applies it by itself when it
-   opens a file, so `view_scene.py` and `insert_book.py --view` apply it themselves.
+Options: `--strategy one-sided|split` (how a tight gap is widened, default `one-sided`), `--margin` (room left
+around the book in a tight gap, default 6 mm), `--panda` (path to Menagerie's `panda.xml`).
 
-4. **How the target row is made (the key idea)**
-   Books are placed upright, then the leaning and collapsed scenarios push some of them over during a short
-   settling phase. This way every lean is a real resting pose found by physics, not a hand-set angle that
-   might overlap other books.
-   - Leaning: the gap is sized from the lean angle you want (12° to 35°), so the book comes to rest against its neighbour.
-   - Collapsed: a run of 3 to 6 books topples into a hole next to it. The hole is sized the same way, so the run
-     leans far enough to stay down and lands on the book across the hole below its top.
-   - In both, the spare row space goes to the end away from the toppling. The books that catch the lean are
-     packed against a side panel and can't slide away.
+**How it inserts a book.** The target book is held in the gripper at a pre-insertion pose in front of the gap.
+The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
+fingers reach the neighbours' spines (each finger is wider than the clearance beside the book), turns its hand
+90°, and pushes the spine low down with the lower fingertip until the book is in place (no push if the slide
+already got it there). A book going in tightly drags its neighbours back, so it measures where the book has to
+go again after the slide, and pushes again if the push dragged them further.
 
-5. **Use it in your training code**
-   ```python
-   import numpy as np
-   from shelf_scene import ShelfConfig, make_episode
-   cfg = ShelfConfig()
-   rng = np.random.default_rng(0)
-   model, data, row, report = make_episode(cfg, "collapsed", rng,
-                                           panda_xml="mujoco_menagerie/franka_emika_panda/panda.xml")
-   start_qpos = data.qpos.copy()      # settled state = the episode's start
-   print(row.target_level, row.target_board_top)
-   ```
-   `make_episode` throws away the occasional row that keeps sliding and samples again.
-   For RL, generate a few thousand settled `qpos` vectors once and reset from that list. Settling inside every
-   reset is too slow.
+**Scoring** follows the proposal: upright within 5°, in place, released, plus how far the other books moved.
+In place means:
+- spine within 10 mm of the spine of the neighbour that sticks out more, or
+- if the book is deeper than that neighbour, so it can't line up without its back passing the back panel:
+  at least 10 mm behind the shelf's front edge. With the default rows that's rare (about 1 row in 400: a book
+  near the maximum depth beside neighbours set more than 25 mm in, as the inserted book stops 5 mm short of
+  the back panel), but it also covers other layouts such as `--repo-defaults`.
 
-   `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
-   then 7 per filler book only if `static_other_levels=False`.
+**Control and setup**
+- Menagerie's position actuators, fed by differential IK along min-jerk paths, with gravity compensation.
+  The arm configuration is chosen so the whole sequence stays clear of the joint limits and doesn't run into
+  the shelf. The slide and the final push stop when the wrist force sensor feels the book stop giving way.
+- The script adds the target book to the scene, and gives the gripper the real Franka Hand's 70 N (Menagerie's
+  squeezes a book with 1 to 2 N). It only changes its own copy of the model.
+- The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
+  while it slides.
 
-6. **Scripted insertion (clear and tight scenarios)**
-   ```bash
-   uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
-   uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
-   uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
-   ```
-   A hand-written baseline. The target book is held in the gripper at a pre-insertion pose in front of the gap.
-   The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
-   fingers reach the neighbours' spines (each finger is wider than the clearance beside the book), turns its hand
-   90°, and pushes the spine low down with the lower fingertip until the book is in place (no push if the slide
-   already got it there). A book going in tightly drags its neighbours back, so it measures where the book has to
-   go again after the slide, and pushes again if the push dragged them further. It scores the result as the proposal does: upright within 5°, in place, released, plus
-   how far the other books moved. In place means:
-   - spine within 10 mm of the spine of the neighbour that sticks out more, or
-   - if the book is deeper than that neighbour, so it can't line up without its back passing the back panel:
-     at least 10 mm behind the shelf's front edge. With the default rows that's rare (about 1 row in 400: a book
-     near the maximum depth beside neighbours set more than 25 mm in, as the inserted book stops 5 mm short of
-     the back panel), but it also covers other layouts such as `--repo-defaults`.
-   - Control: Menagerie's position actuators, fed by differential IK along min-jerk paths, with gravity compensation.
-     The arm configuration is chosen so the whole sequence stays clear of the joint limits and doesn't run into
-     the shelf. The slide and the final push stop when the wrist force sensor feels the book stop giving way.
-   - The script adds the target book to the scene, and gives the gripper the real Franka Hand's 70 N (Menagerie's
-     squeezes a book with 1 to 2 N). It only changes its own copy of the model.
-   - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
-     while it slides.
-   - Clear, seeds 0 to 99: all 100 succeed, in place after 10 s on average. No episode moved another book more
-     than 0.2 mm.
+**Clear**, seeds 0 to 99: all 100 succeed, in place after 10 s on average. No episode moved another book more
+than 0.2 mm.
 
-   **Tight**: the gap is first widened to the book's thickness plus 6 mm.
-   - Fingertip: the empty hand puts its fingers (stacked vertically, 21 mm wide) into the gap and pushes a
-     neighbour aside, by default one side only, the one with more free space if it can (`--strategy one-sided`;
-     `split` pushes each neighbour half as far). Then the book is handed over (not modelled) and inserted as
-     above. Used when the fingers fit the gap and reach at least
-     1 cm past a neighbour's spine (the 63 mm palm stops 46 mm behind the fingertips, at the most protruding spine
-     nearby). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
-     100 N, depending on the pose).
-   - Skipped otherwise, or when the push leaves the gap at the spines narrower than the book: no insertion,
-     counted as a failure. Nothing else on the stock hand can widen a gap narrower than the fingers:
-     - Pushed sideways at its back corner, the held book turns in the grasp: 2° at 9 to 15 N, 3 to 19° at 20 N,
-       and at 40 N up to 31°, much of it for good. Sliding the books takes more than that. A 140 N grip barely helps.
-     - A book wedge (held turned, back corner first, then straightened) was tried and dropped. Its slanted face
-       pushed the neighbour back into the shelf instead of aside (31 mm back and 2.5 mm aside on seed 21). It
-       placed none of its 18 rows, and dragged neighbours up to 12 cm into the shelf.
-     - A thin fingertip (10 mm or less) would fit every such row.
-   - Seeds 0 to 49, default `one-sided`: 36 succeed (one needed no widening). The fingertip handles 39 rows and
-     places 35. Every push left the gap at least as wide as the book. The other 10 rows, all with gaps narrower
-     than the fingers (12 to 23 mm), are skipped, and nothing in them moves.
-   - Dropping the old 35 N limit on the books' estimated friction gave the fingertip 8 rows that used to go to the
-     wedge (3 of them now placed), and let 6 rows that had to split push one side instead (4 of them failed before
-     and now succeed). Seed 27 now
-     pushes the side the estimate put at 93 N, and succeeds. Nothing that worked before fails.
-   - Measuring where the book has to go again after the slide, and pushing again when the push drags the
-     neighbours back, placed 2 more (seeds 0 and 46, which had stopped 12 to 15 mm proud of the neighbour) and 4
-     more with `split`. Rows that already worked take 0.1 s longer on average.
-   - One side versus splitting, on the same 39 fingertip rows: one side places more, 35 vs 24 (25/50 overall
-     with `split`). Splitting swivels both neighbours, so the book's back corners catch on both sides and it
-     jams at the entrance more often. In 6 rows it leaves the gap narrower than the book, so they are skipped.
-     Where both worked, the most-moved book moved about the same (6.1 vs 6.6 mm, one side
-     vs split) and one side was 1.8 s faster (17.6 vs 19.4 s). Splitting needs much less force, as fewer books
-     must slide at once.
-   - Books have room behind them, so a book sliding in tightly can also drag its neighbours back. On seed 0 it
-     drags the pushed neighbour 82 mm back, and still counts as placed: success only checks the inserted book.
-   - Why it's hard: the fingertips push a neighbour only near its spine, so it swivels instead of sliding. The gap
-     opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
-     contact-rich part the proposal's residual policy is meant to learn.
+**Tight**: the gap is first widened to the book's thickness plus 6 mm.
+- Fingertip: the empty hand puts its fingers (stacked vertically, 21 mm wide) into the gap and pushes a
+  neighbour aside, by default one side only, the one with more free space if it can (`--strategy one-sided`;
+  `split` pushes each neighbour half as far). Then the book is handed over (not modelled) and inserted as
+  above. Used when the fingers fit the gap and reach at least 1 cm past a neighbour's spine (the 63 mm palm
+  stops 46 mm behind the fingertips, at the most protruding spine nearby). There is no force limit: the arm
+  pushes as hard as it can (joint 6 reaches its 12 N m at 55 to 100 N, depending on the pose).
+- Skipped otherwise, or when the push leaves the gap at the spines narrower than the book: no insertion,
+  counted as a failure. Nothing else on the stock hand can widen a gap narrower than the fingers:
+  - Pushed sideways at its back corner, the held book turns in the grasp: 2° at 9 to 15 N, 3 to 19° at 20 N,
+    and at 40 N up to 31°, much of it for good. Sliding the books takes more than that. A 140 N grip barely helps.
+  - A book wedge (held turned, back corner first, then straightened) was tried and dropped. Its slanted face
+    pushed the neighbour back into the shelf instead of aside (31 mm back and 2.5 mm aside on seed 21). It
+    placed none of its 18 rows, and dragged neighbours up to 12 cm into the shelf.
+  - A thin fingertip (10 mm or less) would fit every such row.
 
-7. **Next pieces to build on top** (from the design doc)
-   - Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.
-   - Spawn the target book in the gripper for other code too (`insert_book.py` does it for its own runs;
-     `build_scene` still leaves `row.target_book` out).
-   - Add the gap-creation moves and insertion on top of that controller (`insert_book.py` scripts them with
-     position control, as a baseline).
-   - Give the hand a thin fingertip (10 mm or less), so it can widen tight gaps narrower than the stock fingers
-     (skipped for now).
-   - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
-   - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
+Results, seeds 0 to 49:
+- Default `one-sided`: 36 succeed (one needed no widening). The fingertip handles 39 rows and places 35.
+  Every push left the gap at least as wide as the book. The other 10 rows, all with gaps narrower than the
+  fingers (12 to 23 mm), are skipped, and nothing in them moves.
+- One side versus splitting, on the same 39 fingertip rows: one side places more, 35 vs 24 (25/50 overall
+  with `split`). Splitting swivels both neighbours, so the book's back corners catch on both sides and it
+  jams at the entrance more often. In 6 rows it leaves the gap narrower than the book, so they are skipped.
+  Where both worked, the most-moved book moved about the same (6.1 vs 6.6 mm, one side vs split) and one side
+  was 1.8 s faster (17.6 vs 19.4 s). Splitting needs much less force, as fewer books must slide at once.
+- Dropping the old 35 N limit on the books' estimated friction gave the fingertip 8 rows that used to go to the
+  wedge (3 of them now placed), and let 6 rows that had to split push one side instead (4 of them failed before
+  and now succeed). Seed 27 now pushes the side the estimate put at 93 N, and succeeds. Nothing that worked
+  before fails.
+- Measuring where the book has to go again after the slide, and pushing again when the push drags the
+  neighbours back, placed 2 more (seeds 0 and 46, which had stopped 12 to 15 mm proud of the neighbour) and 4
+  more with `split`. Rows that already worked take 0.1 s longer on average.
+- Books have room behind them, so a book sliding in tightly can also drag its neighbours back. On seed 0 it
+  drags the pushed neighbour 82 mm back, and still counts as placed: success only checks the inserted book.
+
+Why it's hard: the fingertips push a neighbour only near its spine, so it swivels instead of sliding. The gap
+opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
+contact-rich part the residual policy is meant to learn.
+
+### Leaning rows: `scripted_controller.py`
+
+```bash
+uv run python scripted_controller.py --seed 0          # one episode, prints the metrics
+uv run python scripted_controller.py --seeds 50        # batch evaluation over seeds 0 to 49
+uv run mjpython scripted_controller.py --seed 0 --view # watch it (macOS)
+```
+
+Options: `--tool-length` (pusher rod length in m, default 0.08; `0` uses the bare fingers), `--spin-limit`
+(stop or retry the sliding push once the book has turned this many degrees about the vertical, default 20),
+`--drift-tol` (how far a book may still drift, in m, for a settled row to be accepted, default 0.002),
+`--panda` (path to Menagerie's `panda.xml`).
+
+It pushes the leaning neighbour back upright, and slides books aside if the slot is still narrower than the
+new book. It does not insert the book.
+
+**How it works**
+1. **Perception (privileged):** read the book poses from `MjData` and find the wedge under the leaning book
+   (open at the bottom, closed where its top rests on the far book).
+2. **Plan:** the highest point of the wedge the tool fits into (more leverage), the push direction (away from
+   the slot), and how deep the tool can go before the 21 cm-wide hand would touch a book.
+3. **Motion:** joint-space move to a staging pose 10 cm out, then straight Cartesian lines. Each tick, damped
+   least-squares IK turns the Cartesian setpoint into joint targets for the Panda's position actuators.
+   Gravity is compensated through `qfrc_applied`, like the real Franka does internally.
+4. **Closed-loop pushes:** *unlean* stops as soon as the book is upright (pushing past vertical topples the
+   unpacked books behind it like dominoes). *Widen* pushes low until the measured slot is wide enough (book
+   thickness + 8 mm, at most 10 cm of travel), and retries once nearer mid-depth if the book spins. Both keep
+   the setpoint at most 1.5 cm ahead of the tool, which caps the force.
+
+Phases, in order: `to_stage` → `approach` → `insert` → `unlean` → `settle`, then, only if the slot is still too
+narrow, `lower` → `deepen` → `widen` → `settle2`, and finally `backoff` → `retract` → `done`.
+
+**Tool:** a thin 8 cm pusher rod (6 mm radius capsule) is added to the hand with `MjSpec`. The tool goes in
+3 cm past the leaning book's spine (and to its mid-depth on the retry), and without the rod the 21 cm-wide hand
+would have to enter the shelf and hit the books beside the slot. The rod points into the shelf, pitched 15°
+down: pointing straight forward this close to its base is outside the Panda's comfortable workspace.
+
+**Success** means the controller finished, the slot (measured over the new book's height) is at least the
+book's thickness + 4 mm, the leaning book is within 8° of upright, and no other book's tilt changed by 10° or
+more. Each episode also prints the slot width before and after, the leaner's tilt before and after, the most
+any other book tilted or moved, whether the robot touched anything on the approach, and why the widening push
+stopped.
+
+**Known gaps (good targets for the residual policy):**
+- The leaner sometimes slides until it lies flat against the far book, leaving no wedge (`NoWedge`, ~8% of
+  rows). This needs a different move, e.g. hooking the top edge. These rows, and poses out of reach, are
+  reported as errors and count as failures.
+- Very steep leans (≈ 60°) roll over instead of rising.
+- Sliding pushes on books with free space behind them can spin the book rather than slide it.
+
+### Collapsed rows
+
+No scripted baseline yet.
+
+## Residual PPO hooks
+
+- **Leaning:** `ScriptedLeaningController.step(data)` computes a Cartesian setpoint (`self.setpoint`, in the
+  shelf frame) every tick before IK. A residual policy can add its correction to `self.setpoint` (and/or the
+  push speeds) at that point, then let `_track()` turn it into joint targets.
+- **Clear / tight:** `insert_book.py` follows min-jerk Cartesian paths through the same kind of differential IK,
+  so a residual can be added to its Cartesian targets in the same way.
+- Observations for the policy can start from the privileged state the scripts already compute (book poses,
+  slot width, leaner tilt and yaw, wrist force/torque), and move to the wrist camera later.
+- For training speed, reset from a stored list of settled `qpos` vectors rather than settling every episode.
+
+## Next steps
+
+- Train the residual PPO policy on top of the scripted controllers and compare against them on the same seeds.
+- Write a scripted baseline for the collapsed scenario.
+- Add a move for `NoWedge` rows in the leaning scenario (e.g. hooking the leaning book's top edge).
+- Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.
+- Spawn the target book in the gripper for other code too (`insert_book.py` does it for its own runs;
+  `build_scene` still leaves `row.target_book` out).
+- Give the hand a thin fingertip (10 mm or less), so it can widen tight gaps narrower than the stock fingers
+  (skipped for now). The leaning controller's pusher rod is a first step in that direction.
+- Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
+- For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
 
 ## Settings (`ShelfConfig`)
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `width`, `depth` | 0.60 to 1.00 m, 0.22 to 0.32 m | Inner size of the bookcase |
 | `num_levels` | 3 to 5 | Shelf boards above the plinth |
 | `level_height` | 0.25 to 0.40 m | Clear height of each level |
 | `plinth_height` | 0.05 to 0.10 m | Bottom kick board |
@@ -228,9 +361,11 @@ and 0 to 14 per scenario with free filler books).
   instead, narrow `target_band` and set `robot_z_offset` accordingly. Don't lower `target_band` below 0.40 m
   without raising the base, or it ends up below the floor.
 - **Topple threshold.** Some settled books lean more than 45°. When scoring "no neighbour toppled", measure each
-  book's tilt *change* from its settled pose, not its absolute tilt.
+  book's tilt *change* from its settled pose, not its absolute tilt (both scripted baselines do this).
 - **Two leaning neighbours** (one on each side of the gap) are not generated: pushing both at once made one fall
   flat. Use the collapsed scenario for several leaning books.
+- **Privileged state.** Both scripted baselines read book poses straight from the simulator. A deployable
+  version needs perception (wrist camera, fiducials) in their place.
 - **Generated robot file.** `shelf_scene.py` writes `panda_shelf.xml` into `mujoco_menagerie/franka_emika_panda/`
   so the robot's mesh paths still work. The submodule is set to ignore untracked files, so this doesn't show as a change.
 - **Shelf width.** If you set the shelf very narrow, `sample_row` raises an error when fewer than 4 books fit.
