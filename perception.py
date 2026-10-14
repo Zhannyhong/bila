@@ -142,13 +142,13 @@ def slice_x(corners, z: float) -> Optional[Tuple[float, float]]:
     return (min(xs), max(xs)) if xs else None
 
 
-def gap_profile(books: List[BookEstimate], panel_x, board_top: float, heights) -> np.ndarray:
-    """Free width of the slot at each height above the board: from the
-    right-most edge of anything left of the slot to the left-most edge of
-    anything right of it, side panels included. Every book counts, not just
+def gap_edges(books: List[BookEstimate], panel_x, board_top: float, heights) -> Tuple[np.ndarray, np.ndarray]:
+    """x of the slot's left and right edges at each height above the board:
+    the right-most edge of anything left of the slot, and the left-most edge
+    of anything right of it, side panels included. Every book counts, not just
     the two neighbours, so a run of books leaning over the slot narrows it too.
     NaN where a side has nothing seen at that height."""
-    widths = []
+    lefts, rights = [], []
     for h in heights:
         z = board_top + h
         left = [s[1] for b in books if b.slot_offset < 0 and (s := slice_x(b.spine_corners, z))]
@@ -157,8 +157,16 @@ def gap_profile(books: List[BookEstimate], panel_x, board_top: float, heights) -
             left.append(panel_x[0])
         if panel_x[1] is not None:
             right.append(panel_x[1])
-        widths.append(max(0.0, min(right) - max(left)) if left and right else math.nan)
-    return np.array(widths)
+        lefts.append(max(left) if left else math.nan)
+        rights.append(min(right) if right else math.nan)
+    return np.array(lefts), np.array(rights)
+
+
+def gap_profile(books: List[BookEstimate], panel_x, board_top: float, heights) -> np.ndarray:
+    """Free width of the slot at each height above the board (see gap_edges).
+    NaN where a side has nothing seen at that height."""
+    left, right = gap_edges(books, panel_x, board_top, heights)
+    return np.maximum(0.0, right - left)                  # NaN stays NaN
 
 
 # ---------------------------------------------------------------------------

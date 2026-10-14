@@ -216,6 +216,21 @@ est.min_gap_width(0.25)                                      # narrowest free wi
 - Note: `row.gap_right - row.gap_left` is up to 3 mm short of the actual face-to-face gap, because `gap_left`
   is set after the left neighbour's spacing. Measure the gap from the books, as `perception.py` does.
 
+**Seeing what the robot knows** (`visualize.py`): both pictures read only a `ShelfEstimate`, so they work the
+same for every perception source.
+
+```bash
+uv run python visualize.py --scenario leaning --seed 0 --noisy                  # front + top view -> scenes/*.png
+uv run mjpython view_scene.py --scenario leaning --seed 0 --show-estimate       # the estimate over the 3D scene
+```
+
+- Front view: spines (the slot's neighbours orange, labelled by place relative to the slot and lean), and the
+  gap's width at each measured height: green where the book to insert fits, red where it doesn't, grey above
+  its top. With `--noisy`, the ground truth is drawn dashed.
+- Top view: each book's box as the robot models it. Its depth is the prior, so the backs are a guess.
+- In the viewer: see-through boxes, spine corners as dots, and the gap bars, over the real books.
+  `draw_in_viewer` also works on `mujoco.Renderer`'s scene, for off-screen pictures.
+
 Tests: `uv run pytest`.
 
 ## Settings (`ShelfConfig`)
