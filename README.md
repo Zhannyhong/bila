@@ -328,6 +328,31 @@ uv run python eval_perception.py validate                # NoisyPerception's err
 - `uv run python visualize.py --scenario leaning --seed 0 --camera [--noisy]` saves the camera image with the
   estimate outlined, and the estimate's front and top view with the ground truth dashed.
 
+**What the policy sees** (`observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
+
+```python
+from observation import ObservationBuilder, robot_state, book_names_by_offset
+obs = ObservationBuilder(est, target=(thickness, height))       # once per episode, after the robot looks
+x = obs.actor(est, robot_state(model, data), now=data.time)     # every control step: 117 numbers
+v = obs.critic(model, data, truth, book_names_by_offset(row))   # privileged extras for training: 126 numbers
+x[obs.actor_layout["gap_narrowest"]]                            # any part by name
+```
+
+- Everything is in the slot frame, fixed when the robot looks: origin at the slot, the board's front edge and
+  its top, with the shelf's axes. The same row gives the same numbers wherever the shelf, level or robot is.
+- Actor (what a real robot has): books -3..-1 and +1..+3 (seen flag; spine centre, thickness, height, lean,
+  swivel, visible), the gap (widths at 8 heights capped at 10 cm, which heights the book to insert spans, the
+  narrowest gap, the widening still needed for book + 6 mm), free space behind each neighbour, the book to
+  insert, the estimate's age, and the robot (joint angles and speeds, gripper, tool tip pose and velocity in
+  the slot frame, wrist force/torque). The environment appends its own: base controller phase and action,
+  time left, the last action.
+- Free space (`perception.free_space`): walking out from the slot, the books before the first space of 10 mm
+  or more and its width, capped at 6 books, and whether the camera saw far enough to tell. It is the cascade
+  risk: those books move together when the neighbour is pushed, and the space is where they can fall.
+- Critic: the same book and gap features from the ground truth now (not from the look), and each nearby book's
+  mass, friction and velocity.
+- SI units; normalise in the RL wrapper. The tool tip defaults to the fingertips (`tool_offset=` for a rod).
+
 Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 
 ## Settings (`ShelfConfig`)

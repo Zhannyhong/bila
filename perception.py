@@ -184,6 +184,48 @@ def gap_profile(books: List[BookEstimate], panel_x, board_top: float, heights) -
     return np.maximum(0.0, right - left)                  # NaN stays NaN
 
 
+FREE_SPACE_MIN = 0.010   # m: a space between books this wide or more is room to slide or tip into
+FREE_SPACE_CAP = 6       # books: look no further out than this (a push doesn't carry further)
+
+
+@dataclass
+class FreeSpace:
+    """Room on one side of the slot, behind its neighbour, measured at the board."""
+    books: int        # books between the slot and the first free space (FREE_SPACE_CAP if none that close)
+    width: float      # m: how wide that free space is (0 if none within the cap)
+    resolved: bool    # False if the camera didn't see far enough to tell
+
+
+def free_space(est: ShelfEstimate, side: int, min_width: float = FREE_SPACE_MIN,
+               cap: int = FREE_SPACE_CAP) -> FreeSpace:
+    """Walk out from the slot on one side (-1 left, +1 right), book by book,
+    to the first space between books at least `min_width` wide, measured
+    between their spines' bottom corners. The books packed in front of it
+    move together when the neighbour is pushed that way, and the space is
+    where they can slide or tip into: the cascade risk. After the last book
+    seen, the side panel closes the row if it is in view; if it isn't, what
+    lies beyond is unknown (resolved=False)."""
+    by_offset = {b.slot_offset: b for b in est.books}
+    inner, outer = (1, 0) if side < 0 else (0, 1)        # bottom corner facing the slot, and facing away
+    for k in range(1, cap + 1):
+        book = by_offset.get(side * k)
+        if book is None:
+            return FreeSpace(cap, 0.0, False)
+        edge = book.spine_corners[outer, 0]
+        beyond = by_offset.get(side * (k + 1))
+        if beyond is not None:
+            width = side * (beyond.spine_corners[inner, 0] - edge)
+        elif est.panel_x[0 if side < 0 else 1] is not None:
+            width = side * (est.panel_x[0 if side < 0 else 1] - edge)
+            if width < min_width:                        # packed up to the panel: no room on this side
+                return FreeSpace(cap, 0.0, True)
+        else:
+            return FreeSpace(cap, 0.0, False)            # the rest of the row wasn't seen
+        if width >= min_width:
+            return FreeSpace(k, float(width), True)
+    return FreeSpace(cap, 0.0, True)
+
+
 # ---------------------------------------------------------------------------
 # 3. Sources
 # ---------------------------------------------------------------------------
