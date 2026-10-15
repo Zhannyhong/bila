@@ -35,6 +35,7 @@ from typing import Optional, Tuple
 import mujoco
 import numpy as np
 
+from camera import CAMERA
 from insert_book import MIN_MARGIN, ArmIK, ShelfFrame
 from shelf_scene import PANDA_HOME, Row
 
@@ -44,7 +45,6 @@ CAM_HEIGHT = 0.15    # camera this high above the target board (about the middle
 UPSIDE_DOWN = True   # camera rolled 180 deg: reachable far more often (see above)
 IK_SEEDS = 48        # random arm configurations tried, besides the ready pose (12 found the 50 cm
                      # view in only 2 of 12 scenes, 48 in 10)
-CAMERA = "panda/wrist_cam"
 
 
 def slot_x(row: Row) -> float:

@@ -3,9 +3,11 @@ Pictures of what the robot knows about the target row: a ShelfEstimate drawn
 as a front and top view (matplotlib), or as see-through boxes over the scene in
 the MuJoCo viewer. Both read only the ShelfEstimate, so they show any
 perception source the same way: ground truth, noisy, and later the camera.
+And what the wrist camera sees, with the estimate drawn over its image.
 
     uv run python visualize.py --scenario leaning --seed 0            # saves scenes/estimate_leaning_seed0.png
     uv run python visualize.py --scenario leaning --seed 0 --noisy    # noisy estimate, ground truth dashed
+    uv run python visualize.py --scenario leaning --seed 0 --camera   # wrist camera image -> scenes/camera_*.png
     uv run python view_scene.py --scenario leaning --seed 0 --show-estimate   # the same in 3D, in the viewer
 
 In the pictures
@@ -28,6 +30,7 @@ from typing import Optional, Tuple
 import mujoco
 import numpy as np
 
+from camera import CameraFrame, WristCamera, project, robot_mask
 from perception import BookEstimate, GroundTruthPerception, NoisyPerception, ShelfEstimate, gap_edges
 from shelf_scene import SCENARIOS, ShelfConfig, make_episode
 
@@ -208,6 +211,51 @@ def draw_in_viewer(scn: mujoco.MjvScene, est: ShelfEstimate, target: Optional[Tu
 
 
 # ---------------------------------------------------------------------------
+# 3. The camera's image, with the estimate over it
+# ---------------------------------------------------------------------------
+def plot_frame(frame: CameraFrame, est: Optional[ShelfEstimate] = None, model: Optional[mujoco.MjModel] = None,
+               path: Optional[str] = None, span: int = 6):
+    """The camera's RGB image and depth image. Over the RGB: the estimate's
+    spine outlines (the slot's neighbours orange, others blue, within `span`
+    of the slot) and, given the model, the robot's own pixels in red. Where the
+    outlines sit on the spines, the camera pose and model agree with the
+    estimate. Saves to `path`, or opens a window."""
+    import matplotlib.pyplot as plt
+
+    fig, (ax_rgb, ax_depth) = plt.subplots(1, 2, figsize=(16, 4.8))
+    ax_rgb.imshow(frame.rgb)
+    if model is not None:
+        robot = robot_mask(model, frame)
+        ax_rgb.imshow(np.dstack([robot, np.zeros_like(robot), np.zeros_like(robot), 0.6 * robot]).astype(float))
+    if est is not None:
+        R, t = est.shelf_pose[:3, :3], est.shelf_pose[:3, 3]
+        for b in est.books:
+            if abs(b.slot_offset) > span:
+                continue
+            u, v, z = project(frame, b.spine_corners @ R.T + t)
+            if np.all(z > 0):
+                ax_rgb.fill(u, v, fill=False, ec=book_rgba(b), lw=1.5)
+                ax_rgb.text(u.mean(), v.min() - 6, f"{b.slot_offset:+d}", color="w", fontsize=8, ha="center")
+    W, H = frame.size
+    ax_rgb.set_xlim(0, W)
+    ax_rgb.set_ylim(H, 0)
+    ax_rgb.set_title("wrist camera" + (": estimate outlined" if est is not None else ""), fontsize=10)
+    shown = np.where(frame.depth > 0, frame.depth, np.nan)
+    im = ax_depth.imshow(shown, cmap="viridis")
+    fig.colorbar(im, ax=ax_depth, label="depth (m); blank = no reading")
+    ax_depth.set_title("depth", fontsize=10)
+    for ax in (ax_rgb, ax_depth):
+        ax.set_xticks([])
+        ax.set_yticks([])
+    fig.tight_layout()
+    if path:
+        fig.savefig(path, dpi=110)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+# ---------------------------------------------------------------------------
 # CLI: estimate a settled row and save the picture
 # ---------------------------------------------------------------------------
 def estimate_row(model, data, row, noisy: bool = False, seed: int = 0):
@@ -226,16 +274,28 @@ def main():
     ap.add_argument("--noisy", action="store_true", help="show NoisyPerception, with the ground truth dashed")
     ap.add_argument("--out", help="image path (default scenes/estimate_<scenario>_seed<seed>.png)")
     ap.add_argument("--show", action="store_true", help="open a window instead of saving")
+    ap.add_argument("--camera", action="store_true",
+                    help="the wrist camera's image from the inspection pose, with the estimate outlined")
     a = ap.parse_args()
 
-    model, data, row, _ = make_episode(ShelfConfig(), a.scenario, np.random.default_rng(a.seed))
+    panda = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml") if a.camera else None
+    model, data, row, _ = make_episode(ShelfConfig(), a.scenario, np.random.default_rng(a.seed), panda_xml=panda)
     est, truth = estimate_row(model, data, row, a.noisy, a.seed)
-    target = (row.target_book.thickness, row.target_book.height)
     path = None
     if not a.show:
-        path = a.out or os.path.join(HERE, "scenes", f"estimate_{a.scenario}_seed{a.seed}.png")
+        kind = "camera" if a.camera else "estimate"
+        path = a.out or os.path.join(HERE, "scenes", f"{kind}_{a.scenario}_seed{a.seed}.png")
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    plot_estimate(est, truth, target, path)
+    if a.camera:
+        from inspection import look_from, solve_inspection
+        view = solve_inspection(model, data, row)
+        if view is None:
+            raise SystemExit("no arm pose reaches the inspection view in this scene")
+        look_from(model, data, view[0])
+        with WristCamera(model) as cam:
+            plot_frame(cam.capture(data), est, model, path)
+    else:
+        plot_estimate(est, truth, (row.target_book.thickness, row.target_book.height), path)
     if path:
         print(f"saved {path}")
 

@@ -260,6 +260,29 @@ solve_inspection(model, data, row, dx=0.2)         # a look 20 cm further along 
   the image is taken, not from the target.
 - Rendering off-screen in WSL: `MUJOCO_GL=egl`.
 
+**The wrist camera** (`camera.py`): RGB-D images in the conventions a real camera pipeline (OpenCV,
+RealSense) uses, so code written against them carries over to real images.
+
+```python
+from camera import WristCamera, points, project, robot_mask
+with WristCamera(model) as cam:           # 1280 x 720, ~89 deg wide like a D405 (87)
+    frame = cam.capture(data)             # rgb, depth (m), seg (geom ids), K, pose, stamp
+xyz = points(frame, mask)                 # world points for the pixels in mask that have depth
+u, v, z = project(frame, xyz)             # world points back to pixels
+```
+
+- Camera frame x right, y down, z forward; pixel row 0 at the top. Depth is along the camera's z, and 0 means
+  no reading (beyond 1.5 m, or dropped by the noise model).
+- Images come out upright: at the inspection pose the camera is rolled 180°, so `capture` turns the image and
+  the camera frame round. The pose is read from the simulation when the image is taken.
+- Markers (sites, such as the green dot at the target slot) are hidden: no real camera would see them.
+- `WristCamera(model, noise=DepthNoise())` adds D405-like depth errors: random error growing with distance
+  squared (about 1.5 mm at 50 cm) and no reading at object edges. The numbers are a starting guess.
+- Checked: every book pixel turned into a 3D point lies on that book's box (99% within 2 mm). A capture takes
+  about 0.25 s; points for a whole image about 0.15 s.
+- `uv run python visualize.py --scenario leaning --seed 0 --camera` saves the wrist camera's image from the
+  inspection pose with the estimate's spines outlined over it, and the depth image.
+
 Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 
 ## Settings (`ShelfConfig`)
