@@ -271,33 +271,44 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", choices=SCENARIOS, default="leaning")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--noisy", action="store_true", help="show NoisyPerception, with the ground truth dashed")
-    ap.add_argument("--out", help="image path (default scenes/estimate_<scenario>_seed<seed>.png)")
-    ap.add_argument("--show", action="store_true", help="open a window instead of saving")
+    ap.add_argument("--noisy", action="store_true",
+                    help="NoisyPerception (or, with --camera, D405-like depth noise), with the ground truth dashed")
     ap.add_argument("--camera", action="store_true",
-                    help="the wrist camera's image from the inspection pose, with the estimate outlined")
+                    help="estimate from the wrist camera at the inspection pose: saves its image with the "
+                         "estimate outlined, and the estimate's front and top view with the ground truth dashed")
+    ap.add_argument("--out", help="image path (default scenes/<kind>_<scenario>_seed<seed>.png)")
+    ap.add_argument("--show", action="store_true", help="open windows instead of saving")
     a = ap.parse_args()
+
+    def path_for(kind):
+        if a.show:
+            return None
+        path = a.out if a.out and kind != "camera" else os.path.join(HERE, "scenes", f"{kind}_{a.scenario}_seed{a.seed}.png")
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        print(f"saving {path}")
+        return path
 
     panda = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml") if a.camera else None
     model, data, row, _ = make_episode(ShelfConfig(), a.scenario, np.random.default_rng(a.seed), panda_xml=panda)
-    est, truth = estimate_row(model, data, row, a.noisy, a.seed)
-    path = None
-    if not a.show:
-        kind = "camera" if a.camera else "estimate"
-        path = a.out or os.path.join(HERE, "scenes", f"{kind}_{a.scenario}_seed{a.seed}.png")
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    if a.camera:
-        from inspection import look_from, solve_inspection
-        view = solve_inspection(model, data, row)
-        if view is None:
-            raise SystemExit("no arm pose reaches the inspection view in this scene")
-        look_from(model, data, view[0])
-        with WristCamera(model) as cam:
-            plot_frame(cam.capture(data), est, model, path)
-    else:
-        plot_estimate(est, truth, (row.target_book.thickness, row.target_book.height), path)
-    if path:
-        print(f"saved {path}")
+    target = (row.target_book.thickness, row.target_book.height)
+    if not a.camera:
+        est, truth = estimate_row(model, data, row, a.noisy, a.seed)
+        plot_estimate(est, truth, target, path_for("estimate"))
+        return
+
+    from camera import DepthNoise
+    from inspection import look_from, solve_inspection
+    from rgbd_perception import RGBDPerception
+    view = solve_inspection(model, data, row)
+    if view is None:
+        raise SystemExit("no arm pose reaches the inspection view in this scene")
+    look_from(model, data, view[0])
+    camera = WristCamera(model, noise=DepthNoise() if a.noisy else None, rng=np.random.default_rng(a.seed))
+    with RGBDPerception(model, row, camera=camera) as perception:
+        frame = camera.capture(data)
+        est = perception.estimate_from_frame(frame)
+    plot_frame(frame, est, model, path_for("camera"))
+    plot_estimate(est, GroundTruthPerception(model, row).estimate(data), target, path_for("estimate_rgbd"))
 
 
 if __name__ == "__main__":

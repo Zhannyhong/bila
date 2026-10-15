@@ -16,8 +16,8 @@ What the camera can't see stays out:
 
 Sources of an estimate (each returns a ShelfEstimate):
   GroundTruthPerception   spine faces of the simulated books, exact
-  NoisyPerception         wraps another source, adds camera-like errors
-  (later) an RGB-D source fitting spine faces to the wrist camera's depth image
+  NoisyPerception         the ground truth with the wrist camera's measured errors: cheap, for training
+  RGBDPerception          (rgbd_perception.py) spine faces fitted to the wrist camera's depth image
 
 Every source produces spine corners and derives the rest with the same
 functions (book_from_spine, gap_profile), so noise on the corners carries
@@ -97,10 +97,22 @@ class ShelfEstimate:
         """The book at this place relative to the slot, or None if not seen."""
         return next((b for b in self.books if b.slot_offset == slot_offset), None)
 
+    def slot_x(self) -> float:
+        """Where the slot is along the row: between its neighbours' bottom
+        corners. NaN if a neighbour wasn't seen."""
+        left, right = self.book(-1), self.book(+1)
+        if left is None or right is None:
+            return math.nan
+        return (left.spine_corners[1, 0] + right.spine_corners[0, 0]) / 2
+
     def min_gap_width(self, up_to: float) -> float:
         """Narrowest free width of the gap from the board up to `up_to` metres
-        above it: what a book that tall must get through. NaN if not seen."""
+        above it: what a book that tall must get through. Heights not seen are
+        skipped: there nothing in view on one side reaches that high, so the gap
+        runs past the camera's view and can't be the narrowest. NaN if no
+        height up to there was seen."""
         w = self.gap_widths[self.gap_heights <= up_to]
+        w = w[~np.isnan(w)]
         return float(np.min(w)) if len(w) else math.nan
 
 
@@ -147,7 +159,10 @@ def gap_edges(books: List[BookEstimate], panel_x, board_top: float, heights) -> 
     the right-most edge of anything left of the slot, and the left-most edge
     of anything right of it, side panels included. Every book counts, not just
     the two neighbours, so a run of books leaning over the slot narrows it too.
-    NaN where a side has nothing seen at that height."""
+    NaN where a side has nothing seen at that height, and on a whole side if
+    its neighbour (-1 or +1) wasn't seen: the gap there is unknown, and
+    measuring to a book further out would overstate it."""
+    seen = {b.slot_offset for b in books}
     lefts, rights = [], []
     for h in heights:
         z = board_top + h
@@ -157,8 +172,8 @@ def gap_edges(books: List[BookEstimate], panel_x, board_top: float, heights) -> 
             left.append(panel_x[0])
         if panel_x[1] is not None:
             right.append(panel_x[1])
-        lefts.append(max(left) if left else math.nan)
-        rights.append(min(right) if right else math.nan)
+        lefts.append(max(left) if left and -1 in seen else math.nan)
+        rights.append(min(right) if right and +1 in seen else math.nan)
     return np.array(lefts), np.array(rights)
 
 
@@ -220,23 +235,82 @@ class GroundTruthPerception:
             stamp=float(data.time), source="ground_truth")
 
 
-class NoisyPerception:
-    """Wraps another source and adds camera-like errors. Each spine corner is
-    off by Gaussian noise (2 mm by default: about +-1 deg of lean on a 20 cm
-    book and +-5 deg of swivel on a 3 cm spine), and gaps narrower than the
-    camera resolves read as closed. Everything derived is recomputed from the
-    noisy corners. The noise levels are a starting guess, to be set from the
-    RGB-D source's real errors once it exists."""
+# What the wrist camera's estimate gets wrong, measured by eval_perception.py
+# (`calibrate`) over 48 scenes, 12 of each scenario: camera ~50 cm from the
+# spines, D405-like depth noise. Per band of |slot offset|, each quantity's
+# error as (median, std), in m or rad; the std is set so that 95% of errors fall
+# where 95% of the camera's do (its errors have heavier tails than a Gaussian).
+CAMERA_ERRORS = {
+    (1, 1): {"x": (0.00006, 0.00062), "z": (-0.00095, 0.00027), "spine_y": (-0.00000, 0.00002),
+             "thickness": (-0.00045, 0.00148), "height": (0.00070, 0.00047), "lean": (-0.00001, 0.00270),
+             "yaw": (-0.00009, 0.00598)},
+    (2, 3): {"x": (-0.00006, 0.00092), "z": (-0.00089, 0.00029), "spine_y": (-0.00000, 0.00002),
+             "thickness": (0.00215, 0.00151), "height": (0.00082, 0.00049), "lean": (0.00003, 0.00356),
+             "yaw": (0.00026, 0.00989)},
+    (4, 99): {"x": (-0.00004, 0.00177), "z": (-0.00085, 0.00058), "spine_y": (-0.00001, 0.00004),
+              "thickness": (0.00464, 0.00294), "height": (0.00090, 0.00090), "lean": (0.00022, 0.00523),
+              "yaw": (-0.00024, 0.01371)},
+}
+VIEW_REACH = 0.53   # m: the camera sees books whose outer edge is within this of the slot, along the row
 
-    def __init__(self, source: Perception, rng: np.random.Generator,
-                 corner_std: float = 0.002, min_gap: float = 0.004):
-        self.source, self.rng = source, rng
-        self.corner_std, self.min_gap = corner_std, min_gap
+
+def rotation(axis: str, angle: float) -> np.ndarray:
+    """Rotation by angle (rad) about the shelf's y or z axis."""
+    c, s = math.cos(angle), math.sin(angle)
+    if axis == "y":
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def perturb_spine(corners, err: dict) -> np.ndarray:
+    """Spine corners with errors added: thickness and height grown by
+    err["thickness"] and err["height"]; turned about the spine's centre by
+    err["lean"] (about the shelf's y axis) and err["yaw"] (about vertical); the
+    centre moved by err["x"], err["spine_y"] and err["z"]."""
+    c = np.asarray(corners, dtype=float)
+    centre = c.mean(axis=0)
+    across = ((c[1] - c[0]) + (c[2] - c[3])) / 2
+    up = ((c[3] - c[0]) + (c[2] - c[1])) / 2
+    across *= 1 + err["thickness"] / np.linalg.norm(across)
+    up *= 1 + err["height"] / np.linalg.norm(up)
+    turn = rotation("z", err["yaw"]) @ rotation("y", err["lean"])
+    across, up = turn @ across, turn @ up
+    centre = centre + np.array([err["x"], err["spine_y"], err["z"]])
+    return np.array([centre - across / 2 - up / 2, centre + across / 2 - up / 2,
+                     centre + across / 2 + up / 2, centre - across / 2 + up / 2])
+
+
+class NoisyPerception:
+    """Wraps another source (normally the ground truth) and makes its estimate
+    look like the wrist camera's, at a fraction of the cost (no rendering):
+      - each book's position, size, lean and swivel get the camera's measured
+        error for its distance from the slot (CAMERA_ERRORS): its bias, plus
+        Gaussian noise with its spread times `scale`;
+      - books, and side panels, further along the row from the slot than the
+        camera sees (VIEW_REACH) are left out.
+    Everything derived (thickness, angles, the gap) is recomputed from the
+    changed corners. scale > 1 trains on worse estimates than the camera's."""
+
+    def __init__(self, source: Perception, rng: np.random.Generator, scale: float = 1.0,
+                 errors: dict = CAMERA_ERRORS, reach: float = VIEW_REACH):
+        self.source, self.rng, self.scale = source, rng, scale
+        self.errors, self.reach = errors, reach
+
+    def error_for(self, slot_offset: int) -> dict:
+        """A random error for a book this far from the slot."""
+        band = next(b for b in self.errors if b[0] <= abs(slot_offset) <= b[1])
+        return {k: mean + self.scale * std * self.rng.normal() for k, (mean, std) in self.errors[band].items()}
 
     def estimate(self, data: mujoco.MjData) -> ShelfEstimate:
         est = self.source.estimate(data)
-        books = [book_from_spine(b.spine_corners + self.rng.normal(0.0, self.corner_std, (4, 3)),
-                                 b.slot_offset, b.depth, b.visible) for b in est.books]
-        widths = gap_profile(books, est.panel_x, est.board_top, est.gap_heights)
-        widths[widths < self.min_gap] = 0.0                      # NaN (not seen) stays NaN
-        return replace(est, books=books, gap_widths=widths, source="noisy")
+        x_slot = est.slot_x()
+        books = []
+        for b in est.books:
+            outer = b.spine_corners[0, 0] if b.slot_offset < 0 else b.spine_corners[1, 0]
+            if abs(outer - x_slot) > self.reach:
+                continue
+            corners = perturb_spine(b.spine_corners, self.error_for(b.slot_offset))
+            books.append(book_from_spine(corners, b.slot_offset, b.depth, b.visible))
+        panels = tuple(x if x is not None and abs(x - x_slot) <= self.reach else None for x in est.panel_x)
+        widths = gap_profile(books, panels, est.board_top, est.gap_heights)
+        return replace(est, books=books, panel_x=panels, gap_widths=widths, source="noisy")

@@ -107,7 +107,14 @@ class WristCamera:
         self.m, self.name = model, name
         self.cam = model.camera(name).id
         self.K = intrinsics(model.cam_fovy[self.cam], width, height)
-        self.renderer = mujoco.Renderer(model, height, width)
+        # No anti-aliasing: it blends neighbouring pixels at object edges, and a
+        # blend of two objects' id colours decodes to some third object's id.
+        samples = model.vis.quality.offsamples
+        model.vis.quality.offsamples = 0
+        try:
+            self.renderer = mujoco.Renderer(model, height, width)
+        finally:
+            model.vis.quality.offsamples = samples
         self.options = mujoco.MjvOption()
         self.options.sitegroup[:] = 0           # hide markers (e.g. the target slot's dot)
         self.noise, self.rng = noise, rng if rng is not None else np.random.default_rng()

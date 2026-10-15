@@ -211,8 +211,10 @@ est.min_gap_width(0.25)                                      # narrowest free wi
   left and right of the slot, side panels included. A leaning neighbour shows as a gap that narrows with height.
 - **Not measured**: a book's depth is a prior (17 cm, capped to fit the shelf), since the camera only sees spines.
   Mass, friction, contact forces and velocities are left out; they are for the reward and critic only.
-- `NoisyPerception` adds 2 mm of noise to each corner and reads gaps under 4 mm as closed. These are starting
-  guesses for a wrist camera.
+- `NoisyPerception` makes the ground truth look like the wrist camera's estimate, without rendering (use it to
+  train): each book's position, size, lean and swivel get the camera's measured error for its distance from the
+  slot (`CAMERA_ERRORS`, from `eval_perception.py`), and books beyond the camera's view along the row
+  (`VIEW_REACH`, 53 cm from the slot) are left out. `scale=1.5` trains on worse estimates than the camera's.
 - Note: `row.gap_right - row.gap_left` is up to 3 mm short of the actual face-to-face gap, because `gap_left`
   is set after the left neighbour's spacing. Measure the gap from the books, as `perception.py` does.
 
@@ -282,6 +284,49 @@ u, v, z = project(frame, xyz)             # world points back to pixels
   about 0.25 s; points for a whole image about 0.15 s.
 - `uv run python visualize.py --scenario leaning --seed 0 --camera` saves the wrist camera's image from the
   inspection pose with the estimate's spines outlined over it, and the depth image.
+
+**What the robot knows from the camera** (`rgbd_perception.py`): a `ShelfEstimate` built from one wrist-camera
+image, the same kind of estimate as the ground truth's, so anything that reads estimates can use it.
+
+```python
+from rgbd_perception import RGBDPerception
+look_from(model, data, solve_inspection(model, data, row)[0])    # the arm at the inspection pose first
+with RGBDPerception(model, row) as perception:
+    est = perception.estimate(data)
+```
+
+- Per book: its pixels (here from the simulation's object ids, `OracleSegmenter`; a learned segmenter would
+  replace it), the 3D points on the target level that face out of the shelf (the spine), a plane facing their
+  median normal, and the smallest rectangle around them in it. Its corners are the spine corners.
+- Normals come from depth averaged over 5 x 5 pixels, and the plane keeps points within 3 mm or 3 times their
+  spread: both matter with depth noise.
+- Books are named by where they stand relative to the target slot: the boundary between adjacent books closest
+  to the slot's place on the shelf map (books can shift a little while settling).
+- A side panel out of the camera's view is `None`, and if a slot neighbour isn't seen the gap on that side is
+  unknown (NaN), rather than measured past books the camera didn't see.
+- About 1.5 to 2 s per estimate (capture plus fitting).
+- The camera renders without anti-aliasing: blended pixels at object edges decoded to wrong object ids.
+
+**How well it works** (`eval_perception.py`, 48 scenes, 12 of each scenario, 722 books matched to the truth):
+
+```bash
+MUJOCO_GL=egl uv run python eval_perception.py collect   # ~20 min: stores the estimates in scenes/
+uv run python eval_perception.py report                  # error tables
+uv run python eval_perception.py calibrate               # CAMERA_ERRORS and VIEW_REACH for NoisyPerception
+uv run python eval_perception.py validate                # NoisyPerception's errors next to the camera's
+```
+
+- All 722 books named as in the truth. Each side of the slot: at least 3 books seen, median 7, the whole side in 93%.
+- With D405-like depth noise, the 95% error for the slot's neighbours (books further out in brackets, up to 6 out):
+  corners 2.6 mm (5.4), thickness 2.5 mm (7.3; further books come out too thick), lean 0.3° (0.4°), swivel 0.7°
+  (1.4°). The narrowest gap up to the book's height: within 1.6 mm in 95% of scenes.
+- A gap's width at one height can be far off just above a book's top: a 2 mm height error decides whether that
+  book bounds the gap there. The narrowest gap doesn't suffer from this; prefer it.
+- `NoisyPerception` matches the camera's error, per quantity and distance from the slot, within a few tenths of a
+  mm or degree. Its narrowest gap is noisier than the camera's (95% within 3.3 mm): it errs each book's centre
+  and thickness separately, where the camera's errors at a spine's two edges partly cancel.
+- `uv run python visualize.py --scenario leaning --seed 0 --camera [--noisy]` saves the camera image with the
+  estimate outlined, and the estimate's front and top view with the ground truth dashed.
 
 Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 

@@ -8,8 +8,8 @@ import math
 import numpy as np
 import pytest
 
-from perception import (DEPTH_PRIOR, GroundTruthPerception, NoisyPerception, book_from_spine,
-                        gap_profile, slice_x)
+from perception import (CAMERA_ERRORS, DEPTH_PRIOR, VIEW_REACH, GroundTruthPerception, NoisyPerception,
+                        book_from_spine, gap_profile, perturb_spine, slice_x)
 from shelf_scene import ShelfConfig, make_episode
 
 MM = 0.001
@@ -135,16 +135,45 @@ def test_leaning_neighbour_closes_the_gap_toward_its_top(leaning_scene):
 # ---------------------------------------------------------------------------
 # Noise
 # ---------------------------------------------------------------------------
-def test_noisy_perception_stays_close_and_is_repeatable(leaning_scene):
+def test_perturb_spine_adds_the_errors_asked_for():
+    c = spine(0.03, 0.25)
+    zero = dict(x=0, z=0, spine_y=0, thickness=0, height=0, lean=0, yaw=0)
+    np.testing.assert_allclose(perturb_spine(c, zero), c, atol=1e-12)
+    b = book_from_spine(perturb_spine(c, {**zero, "thickness": 0.002, "height": -0.003, "lean": 0.1,
+                                          "yaw": 0.05, "x": 0.01}), -1, 0.17, 1.0)
+    assert b.thickness == pytest.approx(0.032)
+    assert b.height == pytest.approx(0.247)
+    assert b.lean == pytest.approx(0.1, abs=1e-3)               # angles are projected, so the two mix slightly
+    assert b.yaw == pytest.approx(0.05, abs=1e-3)
+    assert b.spine_corners.mean(axis=0)[0] == pytest.approx(c.mean(axis=0)[0] + 0.01)
+
+
+def test_noisy_perception_errs_like_the_camera(leaning_scene):
     model, data, row = leaning_scene
     gt = GroundTruthPerception(model, row)
+    exact = gt.estimate(data)
     a = NoisyPerception(gt, np.random.default_rng(1)).estimate(data)
     b = NoisyPerception(gt, np.random.default_rng(1)).estimate(data)
-    exact = gt.estimate(data)
     assert a.source == "noisy"
-    np.testing.assert_array_equal(a.gap_widths, b.gap_widths)
-    for noisy, true in zip(a.books, exact.books):
-        assert noisy.slot_offset == true.slot_offset
-        assert np.abs(noisy.spine_corners - true.spine_corners).max() < 10 * MM    # 5 sigma
-        assert abs(noisy.lean - true.lean) < math.radians(5)
-    assert np.all((a.gap_widths == 0) | (a.gap_widths >= 0.004))  # narrow gaps read as closed
+    np.testing.assert_array_equal(a.gap_widths, b.gap_widths)              # repeatable with a seed
+    truth = {t.slot_offset: t for t in exact.books}
+    for noisy in a.books:
+        true = truth[noisy.slot_offset]
+        assert np.abs(noisy.spine_corners - true.spine_corners).max() < 20 * MM
+        assert abs(noisy.lean - true.lean) < math.radians(2)
+    # Books further along the row than the camera sees are left out.
+    x_slot = exact.slot_x()
+    for t in exact.books:
+        outer = t.spine_corners[0, 0] if t.slot_offset < 0 else t.spine_corners[1, 0]
+        assert (a.book(t.slot_offset) is not None) == (abs(outer - x_slot) <= VIEW_REACH)
+
+
+def test_noisy_perception_without_spread_keeps_only_the_camera_biases(leaning_scene):
+    model, data, row = leaning_scene
+    gt = GroundTruthPerception(model, row)
+    exact = gt.estimate(data)
+    est = NoisyPerception(gt, np.random.default_rng(0), scale=0).estimate(data)
+    bias = CAMERA_ERRORS[(1, 1)]
+    for offset in (-1, +1):
+        assert est.book(offset).thickness == pytest.approx(exact.book(offset).thickness + bias["thickness"][0])
+        assert est.book(offset).height == pytest.approx(exact.book(offset).height + bias["height"][0])
