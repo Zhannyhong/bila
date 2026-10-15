@@ -231,7 +231,36 @@ uv run mjpython view_scene.py --scenario leaning --seed 0 --show-estimate       
 - In the viewer: see-through boxes, spine corners as dots, and the gap bars, over the real books.
   `draw_in_viewer` also works on `mujoco.Renderer`'s scene, for off-screen pictures.
 
-Tests: `uv run pytest`.
+**Where the robot looks from** (`inspection.py`): before touching the row, the wrist camera looks straight in
+from 15 cm above the target board, as far back as the arm allows: about 50 cm from the spines, else 45 or 40 cm.
+
+```python
+from inspection import solve_inspection, look_from
+q, standoff = solve_inspection(model, data, row)   # arm angles and distance used, or None if none is reachable
+look_from(model, data, q)                          # puts the arm there (the move itself is not modelled)
+solve_inspection(model, data, row, dx=0.2)         # a look 20 cm further along the row
+```
+
+- Tested on 48 scenes (12 seeds of each scenario, target boards 0.43 to 1.10 m up): the camera got to 50 cm in
+  43 and to 45 cm in the other 5, and could also move 30 cm either way along the row. The arm showed as a thin
+  strip at the image edge (at most 0.5% of the image), never over the neighbours.
+- On 32 of those scenes, the books whose whole spine was in view:
+
+  | Camera from the spines | Both neighbours | Share of the row | Whole row | Fewest on one side (median) |
+  | --- | --- | --- | --- | --- |
+  | about 50 cm (used) | 100% | 93% | 41% of scenes | 5 |
+  | about 30 cm | 100% | 69% | 3% of scenes | 4 |
+
+  Further back costs resolution: about 1.5 mm per pixel at 640 px wide, against 0.9 mm from 30 cm.
+- Finding the pose takes up to about 20 s (many starting guesses, and closer distances if 50 cm fails), so
+  solve it once per scene and store it, e.g. with the scene's settled start state.
+- The camera is rolled 180°, so **its image comes out upside down**: rotate it before use. Held the right way
+  up, the arm reached the centre view from 30 cm in only half the scenes (its wrist bends one way only).
+- Without gravity compensation the held arm sags about 5 mm in 2 s. Read the camera's pose from `data` when
+  the image is taken, not from the target.
+- Rendering off-screen in WSL: `MUJOCO_GL=egl`.
+
+Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 
 ## Settings (`ShelfConfig`)
 
