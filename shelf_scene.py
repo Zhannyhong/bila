@@ -388,7 +388,20 @@ def make_panda_with_sensors(panda_xml: str) -> str:
     ET.SubElement(sensor, "force", name="ft_force", site="ft_site")
     ET.SubElement(sensor, "torque", name="ft_torque", site="ft_site")
     out = os.path.join(os.path.dirname(os.path.abspath(panda_xml)), "panda_shelf.xml")
-    tree.write(out)
+    # Several processes may build scenes at once (parallel trials, RL workers):
+    # leave an identical file alone, and swap a new one in whole, so no reader
+    # ever sees it half written.
+    xml = ET.tostring(root)
+    try:
+        with open(out, "rb") as fh:
+            if fh.read() == xml:
+                return out
+    except FileNotFoundError:
+        pass
+    tmp = f"{out}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(xml)
+    os.replace(tmp, out)
     return out
 
 
