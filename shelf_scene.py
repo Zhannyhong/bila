@@ -7,7 +7,7 @@ What it builds
     top board, side panels and back panel (the single cubby of the Isaac
     Gym version, stacked into a full bookcase).
   - A target level: a row of free-moving books (boxes) with a target slot,
-    in one of four scenario families: clear, tight, leaning, collapsed.
+    in one of five scenario families: clear, tight, leaning, collapsed, packed.
   - Filler rows on the other levels (static by default, for speed).
   - Optional Franka Panda (from MuJoCo Menagerie) with a wrist camera
     and a 6-axis force/torque sensor, plus a fixed scene camera.
@@ -39,7 +39,7 @@ from typing import List, Optional
 
 import numpy as np
 
-SCENARIOS = ("clear", "tight", "leaning", "collapsed")
+SCENARIOS = ("clear", "tight", "leaning", "collapsed", "packed")
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +235,8 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
         gap = target.thickness * _u(rng, cfg.tight_gap_factor)
     elif scenario == "leaning":
         gap = cfg.leaning_reserve          # final width is set below, from the lean angle
-    else:  # collapsed: the slot is closed, but a hole opens next to the run
-        gap = 0.0
+    else:  # collapsed: the slot is closed, but a hole opens next to the run.
+        gap = 0.0                          # packed: the slot's neighbours touch, upright
     hole = cfg.collapsed_reserve if scenario == "collapsed" else 0.0   # final width set below
 
     # Fill the row with books until the shelf is (nearly) full.
@@ -313,6 +313,8 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     gap_left = gap_right = None
     for i, b in enumerate(books):
         if i == ti:
+            if scenario == "packed":       # no spacing either: the neighbours' faces touch
+                x = books[ti - 1].x + books[ti - 1].thickness / 2
             gap_left = x
             x += gap
             gap_right = x

@@ -28,7 +28,7 @@ The bookcase is built from the floor up:
 
 - **3 to 5 levels**, each 0.25 to 0.40 m tall, on a 5 to 10 cm plinth. Side panels and the back panel run from the floor to the top board.
 - **One target level** is chosen per episode, from the levels whose board top is 0.40 to 1.10 m off the floor (within the Panda's reach).
-  It holds the scenario row: clear, tight, leaning or collapsed.
+  It holds the scenario row: clear, tight, leaning, collapsed or packed.
 - **Books line up at the front**, as on a library shelf: each spine sits 10 to 30 mm behind the shelf's front edge,
   and every book is at least 30 mm shallower than the shelf, so no back goes past the back panel (the deepest
   book, set furthest in, just touches it).
@@ -91,6 +91,9 @@ The bookcase is built from the floor up:
      leans far enough to stay down and lands on the book across the hole below its top.
    - In both, the spare row space goes to the end away from the toppling. The books that catch the lean are
      packed against a side panel and can't slide away.
+   - Packed: no gap at all. The slot's neighbours stand upright, face to face (no spacing between them either), so
+     the only room is the row's spare space: 3 to 15 cm at one end, plus 0 to 3 mm between books. In 97% of rows
+     that is enough on one side for the book plus 6 mm (all of them, using both sides).
 
 5. **Use it in your training code**
    ```python
@@ -241,6 +244,7 @@ Tests: `uv run pytest`.
 | tight | 40/40 | Nothing moves (< 0.2 mm) |
 | leaning | 132/140 | Leans of 14° to 56°; failures are re-sampled by `make_episode` |
 | collapsed | 136/140 | Runs lean 15° to 49°; failures re-sampled |
+| packed | 40/40 | Nothing moves (≤ 0.2 mm); the slot's neighbours end up at most 1.1 mm apart |
 | all four, free filler books | 60/60 | Stable with the other levels' books free too |
 
 - Bookcases came out 0.96 to 1.99 m tall, with the target on levels 1 to 3 and its board top between 0.40 and 1.10 m.
