@@ -11,7 +11,7 @@ Insertion (shelf frame: x along the row, y out of the shelf, z up)
      thickness near the spine, 11.5 cm above its bottom.
   2. Rest its back on the board's edge, then slide it in along the board while
      holding it, until the hand would come within 5 mm of another book's spine.
-     Each finger reaches 2.6 cm out from its pad, more than the clearance
+     Each finger reaches 1.2 cm out from its pad, more than the clearance
      beside the book, so the fingers can't follow it in.
   3. Open the gripper.
   4. Back off, turn the hand 90 deg so the fingers are stacked vertically, and
@@ -46,11 +46,13 @@ the book's thickness plus GAP_MARGIN.
     rather than slide: the gap widens at the spines but hardly at the back,
     and the book itself has to widen the rest as it slides in.
   - Skip (otherwise, or if the push leaves the gap at the spines narrower
-    than the book): no insertion, reported as a failure. Nothing else on the
-    stock hand can widen such a gap: pushed sideways at its back corner, the
-    held book slips in the grasp at 10-15 N, short of what sliding the books
-    takes. A book wedge (back corner first) pushed the neighbours back into
-    the shelf instead of aside, and placed none.
+    than the book): no insertion, reported as a failure. The thin fingers
+    (10 mm, see shelf_scene) fit every tight gap the generator makes (12 mm
+    and up); Menagerie's 21 mm fingers didn't fit 1 in 5. Nothing else on the
+    hand can widen a gap narrower than the fingers: pushed sideways at its
+    back corner, the held book slips in the grasp at 10-15 N, short of what
+    sliding the books takes. A book wedge (back corner first) pushed the
+    neighbours back into the shelf instead of aside, and placed none.
 
 The slide and the final push stop if the wrist force sensor feels the book
 stop giving way, rather than forcing a jammed book.
@@ -58,7 +60,8 @@ stop giving way, rather than forcing a jammed book.
 Control: Menagerie's position actuators, fed joint targets by differential IK
 along a min-jerk Cartesian path, with gravity compensation on the arm. The
 gripper is made as strong as the real Franka Hand (70 N continuous): Menagerie's
-gripper squeezes a book with only 1-2 N, too little to hold one.
+gripper squeezes a book with only 1-2 N, too little to hold one. The fingers
+are shelf_scene's thin ones, not Menagerie's.
 """
 
 import argparse
@@ -70,25 +73,26 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco
 
-from shelf_scene import PANDA_HOME, ShelfConfig, _f, book_tilt_deg, build_scene, sample_row, settle
+from shelf_scene import (FINGER_HALF_W, FINGER_LEN, FINGER_THICK, PANDA_HOME, ShelfConfig, _f, book_tilt_deg,
+                         build_scene, sample_row, settle)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PANDA = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
 
-# Panda hand geometry, measured from Menagerie's collision meshes.
-# Hand frame: z = approach (along the fingers), y = finger travel.
-FINGERTIP_Z = 0.1123        # end of the fingers
-PAD_Z = 0.1029              # centre of the finger pads
+# Panda hand geometry, with the thin fingers shelf_scene gives it (Menagerie's
+# hand, measured from its collision mesh). Hand frame: z = approach (along the
+# fingers), y = finger travel.
+FINGERTIP_Z = 0.0584 + FINGER_LEN   # end of the fingers (Menagerie mounts them 58.4 mm out)
+PAD_Z = 0.1026              # where the pads hold the book (where Menagerie's pad centre is)
 PALM_Z = 0.066              # face of the hand between the fingers
-FINGER_OPEN_SPAN = 0.0663   # outer face of a fully open finger, from the hand axis
-FINGER_OPEN_MID = 0.0544    # centre of a fully open finger, from the hand axis
-FINGER_HALF_W = 0.0105      # finger half-width, across its travel
+FINGER_OPEN_SPAN = 0.04 + FINGER_THICK       # outer face of a fully open finger, from the hand axis
+FINGER_OPEN_MID = 0.04 + FINGER_THICK / 2    # centre of a fully open finger, from the hand axis
 HAND_HALF_T = 0.0316        # hand half-thickness, across finger travel
 HAND_HALF_L = 0.105         # hand half-length, along finger travel
 
 # Grasp and sequence settings
 GRIP_FORCE = 70.0           # N on each side of the book (the real Franka Hand's continuous force)
-PAD_INSET = 0.029           # pad centre this far behind the spine (palm 8 mm off the spine)
+PAD_INSET = 0.029           # the pads hold the book this far behind its spine (palm 8 mm off the spine)
 PAD_HEIGHT = 0.115          # ... and this high above the book's bottom. Low, so sliding the book on
                             # the board can't tip it: board friction at its back-bottom corner tips it
                             # about the pads if friction x PAD_HEIGHT > (pads to book back). Not lower,

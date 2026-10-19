@@ -9,8 +9,8 @@ What it builds
   - A target level: a row of free-moving books (boxes) with a target slot,
     in one of five scenario families: clear, tight, leaning, collapsed, packed.
   - Filler rows on the other levels (static by default, for speed).
-  - Optional Franka Panda (from MuJoCo Menagerie) with a wrist camera
-    and a 6-axis force/torque sensor, plus a fixed scene camera.
+  - Optional Franka Panda (from MuJoCo Menagerie) with thin 10 mm fingers,
+    a wrist camera and a 6-axis force/torque sensor, plus a fixed scene camera.
 
 Frame convention (same as the Isaac Gym task)
   x = along the row, y = depth (back panel at -y, open front at +y), z = up.
@@ -366,10 +366,21 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
 # ---------------------------------------------------------------------------
 # 3. Panda with wrist camera and F/T sensor (a modified copy of Menagerie's)
 # ---------------------------------------------------------------------------
+# Thin fingers for the Franka Hand, in place of Menagerie's (21 mm wide, too
+# wide for the narrower tight gaps): plain bars, 10 mm wide across their travel
+# and 12 mm thick out from the gripping face, as long as Menagerie's, with a
+# 35 mm pad strip at the tip. The pad is longer than Menagerie's 17 mm, so the
+# narrow finger still stops a book turning in the grasp as the board drags on it.
+FINGER_HALF_W = 0.005       # half-width across the finger's travel
+FINGER_THICK = 0.012        # thickness out from the gripping face
+FINGER_LEN = 0.0539         # length from where it is mounted (as Menagerie's)
+PAD_LEN = 0.035             # pad strip at the tip, on the gripping side
+
+
 def make_panda_with_sensors(panda_xml: str) -> str:
     """Write `panda_shelf.xml` next to Menagerie's panda.xml (so mesh paths
-    still resolve) with a wrist camera, an F/T sensor site and no keyframe.
-    Returns the new file's path."""
+    still resolve) with a wrist camera, an F/T sensor site, thin fingers and
+    no keyframe. Returns the new file's path."""
     tree = ET.parse(panda_xml)
     root = tree.getroot()
     for kf in root.findall("keyframe"):
@@ -384,6 +395,21 @@ def make_panda_with_sensors(panda_xml: str) -> str:
     # fingers and pitched ~15 deg inward (placement checked in renders). MuJoCo cameras look down their -z.
     ET.SubElement(hand, "camera", name="wrist_cam", pos="0.09 0 0.08",
                   xyaxes="0 1 0 0.97 0 0.26", fovy="58")
+    # Thin fingers: a bar, recessed 2 mm on the gripping side, with a 2 mm pad
+    # strip there at its tip. In a finger's frame, z runs along it from where
+    # it is mounted and y points away from the other finger (Menagerie turns
+    # the right one 180 deg about z, so the same shape serves both).
+    bar = ((FINGER_HALF_W, (FINGER_THICK - 0.002) / 2, FINGER_LEN / 2),
+           (0, 0.002 + (FINGER_THICK - 0.002) / 2, FINGER_LEN / 2))
+    pad = ((FINGER_HALF_W, 0.001, PAD_LEN / 2), (0, 0.001, FINGER_LEN - PAD_LEN / 2))
+    for name in ("left_finger", "right_finger"):
+        finger = root.find(f".//body[@name='{name}']")
+        for g in finger.findall("geom"):
+            finger.remove(g)
+        for half, pos in (bar, pad):
+            ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), material="black",
+                          **{"class": "visual"})
+            ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), **{"class": "collision"})
     sensor = root.find("sensor")
     if sensor is None:
         sensor = ET.SubElement(root, "sensor")

@@ -3,8 +3,8 @@
 `shelf_scene.py` builds the bookshelf scene for the gap-creation project in MuJoCo.
 It starts from the shelf in ContactExplorer's singulation task
 (`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full,
-randomized bookcase standing on the floor. It also adds a Franka Panda with a wrist
-camera and force/torque sensor.
+randomized bookcase standing on the floor. It also adds a Franka Panda with thin
+10 mm fingers, a wrist camera and a force/torque sensor.
 
 ![scenarios](scenarios_preview.png)
 
@@ -51,7 +51,7 @@ The bookcase is built from the floor up:
 | Neighbour boxes have `fix_base_link=True` and friction `1e-5` | Target-row books are **free bodies** with normal friction (0.25 to 0.7) | Your task is to push neighbours, so they must be movable |
 | PhysX `friction`, `restitution` | MuJoCo `friction`, `solref`, `solimp`, `condim=4` | Different contact model |
 | Two fixed cameras, 640×480, 58° | `scene_cam` (fixed, off to the side, aimed at the target row) + `wrist_cam` on the Panda hand | Robot blocked the front view; wrist camera sees the gap up close |
-| xArm6 + Allegro hand | Franka Panda from MuJoCo Menagerie + F/T sensor at the flange | Your chosen robot |
+| xArm6 + Allegro hand | Franka Panda from MuJoCo Menagerie, with thin 10 mm fingers, + F/T sensor at the flange | Your chosen robot; Menagerie's 21 mm fingers don't fit the narrower tight gaps |
 
 `python shelf_scene.py --repo-defaults` rebuilds the original single cubby (board top at 0.51 m) and box size, for comparison.
 
@@ -138,11 +138,15 @@ The bookcase is built from the floor up:
      squeezes a book with 1 to 2 N). It only changes its own copy of the model.
    - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
      while it slides.
+   - The fingers are thin bars in place of Menagerie's (`shelf_scene.py`, `make_panda_with_sensors`): 10 mm wide
+     across their travel, 12 mm thick, as long as Menagerie's, with a 35 mm pad strip at the tip. The real Franka
+     Hand takes custom fingers, so these could be machined. The pad is longer than Menagerie's 17 mm: with a
+     19 mm one, the board's drag turned a book 6° in the grasp on one clear row (seed 9) and it fell over.
    - Clear, seeds 0 to 99: all 100 succeed, in place after 10 s on average. No episode moved another book more
-     than 0.2 mm.
+     than 0.25 mm.
 
    **Tight**: the gap is first widened to the book's thickness plus 6 mm.
-   - Fingertip: the empty hand puts its fingers (stacked vertically, 21 mm wide) into the gap and pushes a
+   - Fingertip: the empty hand puts its fingers (stacked vertically, 10 mm wide) into the gap and pushes a
      neighbour aside. By default (`--strategy one-sided`) it pushes the side with more free space, as far as the
      widening needs or that side's space allows. If the gap at the spines is then still short of the book plus
      6 mm, it pushes the other side too, by what is missing, provided the fingertips reach that neighbour and the
@@ -152,30 +156,32 @@ The bookcase is built from the floor up:
      nearby). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
      100 N, depending on the pose).
    - Skipped otherwise, or when the push leaves the gap at the spines narrower than the book: no insertion,
-     counted as a failure. Nothing else on the stock hand can widen a gap narrower than the fingers:
+     counted as a failure. The fingers need 12 mm (1 mm clear each side) and the generator's tight gaps are at
+     least 12.2 mm, so none are skipped for that. With Menagerie's 21 mm fingers, 10 of the 50 rows below were
+     (gaps of 12 to 23 mm), and these other ways to widen them were tried and dropped:
      - Pushed sideways at its back corner, the held book turns in the grasp: 2° at 9 to 15 N, 3 to 19° at 20 N,
        and at 40 N up to 31°, much of it for good. Sliding the books takes more than that. A 140 N grip barely helps.
      - A book wedge (held turned, back corner first, then straightened) was tried and dropped. Its slanted face
        pushed the neighbour back into the shelf instead of aside (31 mm back and 2.5 mm aside on seed 21). It
        placed none of its 18 rows, and dragged neighbours up to 12 cm into the shelf.
-     - A thin fingertip (10 mm or less) would fit every such row.
-   - Seeds 0 to 49, default `one-sided`: 37 succeed (one needed no widening). The fingertip handles 39 rows and
-     places 36. Every push left the gap at least as wide as the book. The other 10 rows, all with gaps narrower
-     than the fingers (12 to 23 mm), are skipped, and nothing in them moves.
-   - In 7 fingertip rows the first push left the gap 1.4 to 2.3 mm short, so the other side was pushed too. That
-     placed seed 38, which used to jam at the entrance. The 5 of them that already worked still do, 2 to 4 s slower.
-   - Dropping the old 35 N limit on the books' estimated friction gave the fingertip 8 rows that used to go to the
-     wedge (3 of them now placed), and let 6 rows that had to split push one side instead (4 of them failed before
-     and now succeed). Seed 27 now
-     pushes the side the estimate put at 93 N, and succeeds. Nothing that worked before fails.
-   - Measuring where the book has to go again after the slide, and pushing again when the push drags the
-     neighbours back, placed 2 more (seeds 0 and 46, which had stopped 12 to 15 mm proud of the neighbour) and 4
-     more with `split`. Rows that already worked take 0.1 s longer on average.
-   - One side versus splitting, on the same 39 fingertip rows: one side places more, 36 vs 24 (25/50 overall
+   - Seeds 0 to 49, default `one-sided`: 48 succeed (one needed no widening), in place after 19 s on average. The
+     fingertip handles the other 49 rows and places 47. Every push left the gap at least as wide as the book. The
+     2 that fail (seeds 16 and 31) end up 4 to 5 cm proud of the neighbour. With Menagerie's 21 mm fingers, 37
+     succeeded.
+   - In 14 fingertip rows the first push left the gap short, so the other side was pushed too (13 of them placed).
+   - Earlier changes, measured with Menagerie's 21 mm fingers:
+     - Dropping the old 35 N limit on the books' estimated friction gave the fingertip 8 rows that used to go to
+       the wedge (3 of them now placed), and let 6 rows that had to split push one side instead (4 of them failed
+       before and now succeed). Seed 27 now pushes the side the estimate put at 93 N, and succeeds. Nothing that
+       worked before fails.
+     - Measuring where the book has to go again after the slide, and pushing again when the push drags the
+       neighbours back, placed 2 more (seeds 0 and 46, which had stopped 12 to 15 mm proud of the neighbour) and
+       4 more with `split`. Rows that already worked take 0.1 s longer on average.
+   - One side versus splitting, on the same 49 fingertip rows: one side places more, 47 vs 34 (35/50 overall
      with `split`). Splitting swivels both neighbours, so the book's back corners catch on both sides and it
-     jams at the entrance more often. In 6 rows it leaves the gap narrower than the book, so they are skipped.
-     Where both worked, the most-moved book moved about the same (6.1 vs 6.6 mm, one side
-     vs split) and one side was 1.5 s faster (17.9 vs 19.4 s). Splitting needs much less force, as fewer books
+     jams at the entrance more often. In 9 rows it leaves the gap narrower than the book, so they are skipped.
+     Where both worked, the most-moved book moved about the same (6.2 vs 5.6 mm, one side
+     vs split) and one side was 1.6 s faster (18.3 vs 19.9 s). Splitting needs much less force, as fewer books
      must slide at once.
    - Books have room behind them, so a book sliding in tightly can also drag its neighbours back. On seed 0 it
      drags the pushed neighbour 82 mm back, and still counts as placed: success only checks the inserted book.
@@ -189,8 +195,6 @@ The bookcase is built from the floor up:
      `build_scene` still leaves `row.target_book` out).
    - Add the gap-creation moves and insertion on top of that controller (`insert_book.py` scripts them with
      position control, as a baseline).
-   - Give the hand a thin fingertip (10 mm or less), so it can widen tight gaps narrower than the stock fingers
-     (skipped for now).
    - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
    - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
 
@@ -266,6 +270,7 @@ and 0 to 14 per scenario with free filler books).
   book's tilt *change* from its settled pose, not its absolute tilt.
 - **Two leaning neighbours** (one on each side of the gap) are not generated: pushing both at once made one fall
   flat. Use the collapsed scenario for several leaning books.
-- **Generated robot file.** `shelf_scene.py` writes `panda_shelf.xml` into `mujoco_menagerie/franka_emika_panda/`
-  so the robot's mesh paths still work. The submodule is set to ignore untracked files, so this doesn't show as a change.
+- **Generated robot file.** `shelf_scene.py` writes `panda_shelf.xml` (Menagerie's Panda with the thin fingers,
+  wrist camera and F/T sensor) into `mujoco_menagerie/franka_emika_panda/` so the robot's mesh paths still work.
+  The submodule is set to ignore untracked files, so this doesn't show as a change.
 - **Shelf width.** If you set the shelf very narrow, `sample_row` raises an error when fewer than 4 books fit.
