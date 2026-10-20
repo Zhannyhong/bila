@@ -369,12 +369,13 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
 # Thin fingers for the Franka Hand, in place of Menagerie's (21 mm wide, too
 # wide for the narrower tight gaps): plain bars, 10 mm wide across their travel
 # and 12 mm thick out from the gripping face, as long as Menagerie's, with a
-# 35 mm pad strip at the tip. The pad is longer than Menagerie's 17 mm, so the
-# narrow finger still stops a book turning in the grasp as the board drags on it.
+# pad strip along all of the finger that reaches past the palm (46 mm, against
+# Menagerie's 17 mm pad), so the narrow finger still stops a book turning in
+# the grasp. insert_book.py holds books right up against the palm to use it all.
 FINGER_HALF_W = 0.005       # half-width across the finger's travel
 FINGER_THICK = 0.012        # thickness out from the gripping face
 FINGER_LEN = 0.0539         # length from where it is mounted (as Menagerie's)
-PAD_LEN = 0.035             # pad strip at the tip, on the gripping side
+PAD_LEN = 0.046             # pad strip on the gripping side, from the tip back to the palm
 
 
 def make_panda_with_sensors(panda_xml: str) -> str:

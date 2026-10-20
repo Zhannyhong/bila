@@ -8,7 +8,8 @@ Scripted insertion of the target book, for the clear and tight scenarios.
 Insertion (shelf frame: x along the row, y out of the shelf, z up)
   1. Hold the book at the pre-insertion pose: lined up with the gap, its back
      1 cm over the board's front edge and 3 mm above it. The fingers pinch its
-     thickness near the spine, 11.5 cm above its bottom.
+     thickness 11.5 cm above its bottom, with its spine 2 mm off the palm, so
+     the whole pad strip grips it.
   2. Rest its back on the board's edge, then slide it in along the board while
      holding it, until the hand would come within 5 mm of another book's spine.
      Each finger reaches 1.2 cm out from its pad, more than the clearance
@@ -92,7 +93,8 @@ HAND_HALF_L = 0.105         # hand half-length, along finger travel
 
 # Grasp and sequence settings
 GRIP_FORCE = 70.0           # N on each side of the book (the real Franka Hand's continuous force)
-PAD_INSET = 0.029           # the pads hold the book this far behind its spine (palm 8 mm off the spine)
+PALM_GAP = 0.002            # the book's spine sits this far off the palm, deep in the grasp
+PAD_INSET = PAD_Z - PALM_Z - PALM_GAP   # ... so the pads hold it this far behind its spine
 PAD_HEIGHT = 0.115          # ... and this high above the book's bottom. Low, so sliding the book on
                             # the board can't tip it: board friction at its back-bottom corner tips it
                             # about the pads if friction x PAD_HEIGHT > (pads to book back). Not lower,

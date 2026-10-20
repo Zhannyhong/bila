@@ -139,9 +139,13 @@ The bookcase is built from the floor up:
    - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
      while it slides.
    - The fingers are thin bars in place of Menagerie's (`shelf_scene.py`, `make_panda_with_sensors`): 10 mm wide
-     across their travel, 12 mm thick, as long as Menagerie's, with a 35 mm pad strip at the tip. The real Franka
-     Hand takes custom fingers, so these could be machined. The pad is longer than Menagerie's 17 mm: with a
-     19 mm one, the board's drag turned a book 6° in the grasp on one clear row (seed 9) and it fell over.
+     across their travel, 12 mm thick, as long as Menagerie's, with a pad strip along all 46 mm of each finger
+     that reaches past the palm. The real Franka Hand takes custom fingers, so these could be machined.
+   - The book is held right up against the palm (its spine 2 mm off it), so the whole pad strip grips it. Held
+     3 cm off the board for 3 s, books then turn 3.1° in the hand on average (5.1° for the 8 that weigh over
+     1.2 kg), against 4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. Insertion results are the same. A short
+     pad is worse: with a 19 mm one, the board's drag turned a book 6° in the grasp on one clear row (seed 9) and
+     it fell over.
    - Clear, seeds 0 to 99: all 100 succeed, in place after 10 s on average. No episode moved another book more
      than 0.25 mm.
 
