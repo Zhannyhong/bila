@@ -113,11 +113,12 @@ The bookcase is built from the floor up:
    `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
    then 7 per filler book only if `static_other_levels=False`.
 
-6. **Scripted insertion (clear and tight scenarios)**
+6. **Scripted insertion (clear, tight and packed scenarios)**
    ```bash
    uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
    uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
    uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
+   uv run mjpython insert_book.py --scenario packed --seed 7 --view      # a packed row it manages
    ```
    A hand-written baseline. The target book is held in the gripper at a pre-insertion pose in front of the gap.
    The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
@@ -192,6 +193,25 @@ The bookcase is built from the floor up:
    - Why it's hard: the fingertips push a neighbour only near its spine, so it swivels instead of sliding. The gap
      opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
      contact-rich part the proposal's residual policy is meant to learn.
+
+   **Packed**: the neighbours touch, so the fingers have to make room for themselves first.
+   - Stagger: the closed fingers, stacked, push the neighbour on the side with less room 2 cm straight back into
+     the shelf. The side of the other neighbour then shows in front of it, and the fingers push that one aside
+     from there, until the gap at the spines is 4 mm wider than the fingers. They back off its face before coming
+     out, or friction drags it out of the shelf. Then the tight-row widening and insertion take over.
+   - Seeds 0 to 49: 6 succeed (in place after 24 s on average, but the most-moved book moves 9 cm on average).
+     The rest: 11 end up out of place, 10 find no arm configuration for the widening and insertion, 7 jam at the
+     entrance, 5 are left with a gap narrower than the book, 4 have no room behind the other neighbour, 4 keep a
+     gap narrower than the fingers, 2 can't slide the book far enough onto the board, and 1 has too little room
+     in the row.
+   - Why it's hard: the neighbour is pushed at its front corner, so it swivels, comes partly out of the shelf,
+     and then takes up more of the row. An earlier study found the same with other moves: dragging a book's top
+     or spine by friction slides the books rather than tipping them, while a sideways push at the top tips the
+     run 12° at 6 to 58 N and it mostly stays tipped, leaving a V to wedge into. Finding a reliable way to push a
+     neighbour's top without a face to push on is the open problem.
+   - `free_space` counts each side's room as its length less the books' thicknesses, not from the books'
+     outlines: a pushed book that turned would otherwise seem to fill the row, and the widening would pick the
+     wrong side. For upright books (clear and tight rows) both give the same.
 
 7. **Next pieces to build on top** (from the design doc)
    - Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.

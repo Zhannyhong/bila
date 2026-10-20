@@ -1,9 +1,10 @@
 """
-Scripted insertion of the target book, for the clear and tight scenarios.
+Scripted insertion of the target book, for the clear, tight and packed scenarios.
 
     uv run python insert_book.py --scenario clear --seed 0              # one episode, headless
     uv run python insert_book.py --scenario tight --seed 0 --trials 50  # success rate over seeds 0..49
     uv run mjpython insert_book.py --scenario tight --seed 0 --view     # watch it (macOS needs mjpython)
+    uv run mjpython insert_book.py --scenario packed --seed 7 --view    # a packed row it manages
 
 Insertion (shelf frame: x along the row, y out of the shelf, z up)
   1. Hold the book at the pre-insertion pose: lined up with the gap, its back
@@ -54,6 +55,14 @@ the book's thickness plus GAP_MARGIN.
     back corner, the held book slips in the grasp at 10-15 N, short of what
     sliding the books takes. A book wedge (back corner first) pushed the
     neighbours back into the shelf instead of aside, and placed none.
+
+Packed scenario: the neighbours touch, so the fingers can't get in. First
+make room for them (stagger_open): the closed fingers, stacked, push the
+neighbour on the side with less room 2 cm straight back into the shelf, so
+the side of the other one shows in front of it, then push that one aside
+from there until the gap is a few mm wider than the fingers. Then as a tight
+row. A weak baseline (6 of 50): the book pushed at its front corner swivels
+and comes partly out of the shelf.
 
 The slide and the final push stop if the wrist force sensor feels the book
 stop giving way, rather than forcing a jammed book.
@@ -111,6 +120,7 @@ TRANSIT_SPEED = 0.10        # m/s, peak of each min-jerk move
 INSERT_SPEED = 0.06
 PUSH_SPEED = 0.05
 TURN_SPEED = 1.5            # rad/s
+JOINT_SPEED = 1.0           # rad/s, peak, for joint-space moves away from the shelf (changing arm configuration)
 IK_SEEDS = 20               # random starts per round when choosing the arm configuration
 IK_ROUNDS = 3               # rounds tried before giving up (most scenes need only the first)
 MIN_MARGIN = 0.05           # rad: the chosen path must keep every joint this far from its limits
@@ -121,6 +131,11 @@ FIT_CLEAR = 0.001           # fingers need this much room each side to enter the
 MIN_REACH = 0.010           # fingertips must get this far behind a neighbour's spine to push it
 ROOM_KEEP = 0.002           # leave this much of a side's free space unused
 GAP_PUSH_SPEED = 0.03
+
+# Gap creation (packed scenario: no gap at all)
+STAGGER = 0.020             # push the other neighbour back until the face to push shows this deep in front of it
+STAGGER_OPEN = 0.004        # open the gap this much wider than the fingers, then widen as in a tight row
+EASE_OFF = 0.004            # back the fingertips off a pushed face this far before taking them out
 
 # Scoring
 ALIGN_TOL = 0.010           # in place: spine within this of the more protruding neighbour's spine, or
@@ -260,11 +275,15 @@ class ArmIK:
         body = lambda g: model.body(model.geom_bodyid[g]).name
         self.robot = {g for g in range(model.ngeom) if body(g).startswith("panda/")}
         self.fingers = {g for g in self.robot if body(g) in ("panda/left_finger", "panda/right_finger")}
+        self.finger_qadr = [model.jnt_qposadr[model.joint(j).id] for j in ("panda/finger_joint1", "panda/finger_joint2")]
         self.ignore = set()                 # geoms the arm may touch anywhere (the book it handles)
 
-    def sync(self, data):
-        """Copy the scene (books, fingers) from the simulation, for collision checks."""
+    def sync(self, data, finger=None):
+        """Copy the scene (books, fingers) from the simulation, for collision
+        checks; with `finger`, plan with each finger that far open instead."""
         self.d.qpos[:] = data.qpos
+        if finger is not None:
+            self.d.qpos[self.finger_qadr] = finger
 
     def collides(self, q, allowed=()):
         """Whether the arm at q is more than 1 mm into anything, other than
@@ -410,6 +429,20 @@ class Runner:
                 return False
         return True
 
+    def move_joints(self, name, q_goal, speed=JOINT_SPEED):
+        """Move the arm in joint space to q_goal along a min-jerk path (peak
+        joint speed `speed`, rad/s). Only for moves clear of the shelf: nothing
+        here checks what the hand passes."""
+        self.log(f"  {self.t:5.2f} s  {name}")
+        q0, q_goal = self.q_cmd.copy(), np.asarray(q_goal, dtype=float)
+        T = max(0.3, 1.875 * float(np.max(np.abs(q_goal - q0))) / speed)
+        n = int(round(T / self.m.opt.timestep))
+        for k in range(1, n + 1):
+            u = k / n
+            self.q_cmd = q0 + (q_goal - q0) * (u ** 3 * (10 - 15 * u + 6 * u * u))
+            self.step()
+        self.pos, self.rot = self.ik.fk(self.q_cmd)
+
     def wait(self, name, duration, grip=None):
         self.log(f"  {self.t:5.2f} s  {name}")
         if grip is not None:
@@ -477,11 +510,15 @@ class Episode:
         return spine_end(L)[:, 0].max(), spine_end(R)[:, 0].min(), L[:, 1].max(), R[:, 1].max()
 
     def free_space(self):
-        """Room each side of the slot: the spaces between books plus the row's end."""
-        W, ti = self.row.shelf_width, self.row.target_index
-        xs = [self.shelf.box(self.m, self.d, g)[:, 0] for g in self.row_geoms]
-        spaces = [xs[i].min() - xs[i - 1].max() for i in range(1, len(xs))]
-        return xs[0].min() + W / 2 + sum(spaces[:ti - 1]), W / 2 - xs[-1].max() + sum(spaces[ti:])
+        """Room each side of the slot: from the neighbour's face at its spine
+        to the side panel, less the thickness of every book on that side (the
+        spaces between them plus the row's end, for upright books). Measured
+        from the books' outlines instead, a book pushed until it turned would
+        seem to take up more of the row than it does."""
+        W, ti, books = self.row.shelf_width, self.row.target_index, self.row.books
+        xl, xr, _, _ = self.slot()
+        return (xl + W / 2 - sum(b.thickness for b in books[:ti]),
+                W / 2 - xr - sum(b.thickness for b in books[ti:]))
 
     def seat_target(self):
         """Where the book's spine should end up (y), and which rule applies:
@@ -522,6 +559,13 @@ class Episode:
         low_tip = [0, -sign * FINGER_OPEN_MID, FINGERTIP_Z]
         return hand_pose_for_point(low_tip, self.shelf.to_world([x, tip_y, self.hand_z - FINGER_OPEN_MID]), rot), rot
 
+    def col_pose(self, sign, x, tip_y, z_axis):
+        """Hand turned as in push_pose (fingers stacked vertically), with its
+        axis at height z_axis and fingertips at (x, tip_y) (shelf frame).
+        push_pose is col_pose at z_axis = hand_z, with the fingers open."""
+        rot = np.column_stack([np.cross(sign * self.zs, -self.ys), sign * self.zs, -self.ys])
+        return self.shelf.to_world([x, tip_y, z_axis]) - rot @ [0, 0, FINGERTIP_Z], rot
+
     def tip_y(self, pose):
         return self.shelf.to_shelf(pose[0] + pose[1] @ [0, 0, FINGERTIP_Z])[1]
 
@@ -545,15 +589,16 @@ class Episode:
         tip_goal = max(target, self.push_limit(x_slot, obs))
         return slide + self.push_path(slide[-1], push_sign, x_slot, y_hold + self.depth / 2, tip_goal)[2]
 
-    def choose_arm(self, candidates, allowed=frozenset()):
+    def choose_arm(self, candidates, allowed=frozenset(), finger=None):
         """Many arm configurations reach a start pose. Near a joint limit the IK
         swings the other joints round, and the arm can jump to another
         configuration mid-move and knock the row. So follow each candidate's
         whole planned path, drop those where the arm runs into anything (other
         than `allowed` geoms its fingers may press on), and keep the one that
-        stays farthest from the joint limits. candidates: (start pose, path, label)."""
+        stays farthest from the joint limits. candidates: (start pose, path, label).
+        `finger`: plan with the fingers this far open (default: as they are)."""
         ik, seed_rng, best = self.ik, np.random.default_rng(0), None
-        ik.sync(self.d)
+        ik.sync(self.d, finger)
         for rnd in range(IK_ROUNDS):                   # more random starts only if the first ones fall short
             seeds = [seed_rng.uniform(ik.lo, ik.hi) for _ in range(IK_SEEDS)]
             if rnd == 0:
@@ -585,6 +630,55 @@ class Episode:
         d.qvel[:] = 0
         mujoco.mj_forward(m, d)
         self.run = Runner(m, d, self.ik, q, GRIP_OPEN, self.viewer, self.log)
+
+    def begin(self, candidates, allowed=frozenset(), finger=None):
+        """Get the hand to the start of a step, ready to follow one of the
+        candidates (start pose, path, label), and return its label. At the
+        start of the episode the arm is placed at the best configuration. Later
+        the hand carries on from where it is, if some candidate's start and
+        path can be reached from there with joint limits to spare and without
+        hitting anything; otherwise the arm moves for real to the best
+        configuration (reposition). Raises RuntimeError if none is possible."""
+        run = self.run
+        if run is not None:
+            self.ik.sync(self.d, finger)
+            for start, path, label in candidates:
+                lead = segment((run.pos, run.rot), start, 30)
+                _, worst, ok = self.ik.follow(run.q_cmd, lead + list(path), allowed=allowed)
+                if ok and worst >= 2 * MIN_MARGIN:                  # a little spare: the real path drifts
+                    self.ik.q_rest = run.q_cmd.copy()
+                    run.move("move to the start of the next step", *start)
+                    return label
+        q, label = self.choose_arm(candidates, allowed, finger)
+        if run is None:
+            self.place_arm(q)
+        else:
+            self.reposition(q)                                       # q puts the hand at that start pose
+        return label
+
+    def reposition(self, q):
+        """Take the hand straight out of the shelf, then move the arm in joint
+        space to q, by way of the tucked home pose if the direct move would hit
+        anything: the next step may need another arm configuration."""
+        run, ik = self.run, self.ik
+        tip = self.tip_y((run.pos, run.rot))
+        out = max(tip, self.D / 2 + 0.08)
+        if out > tip:
+            run.move("take the hand out of the shelf", run.pos + self.ys * (out - tip))
+        ik.sync(self.d)
+        home = np.array(PANDA_HOME[:7])
+
+        def clear(q0, q1):
+            return not any(ik.collides(q0 + s * (q1 - q0)) for s in np.linspace(0, 1, 25)[1:])
+
+        if clear(run.q_cmd, q):
+            run.move_joints("move the arm to its next configuration", q)
+        elif clear(run.q_cmd, home) and clear(home, q):
+            run.move_joints("tuck the arm", home)
+            run.move_joints("move the arm to its next configuration", q)
+        else:
+            raise RuntimeError("No collision-free joint move to the next arm configuration")
+        ik.q_rest = np.array(q, dtype=float)
 
     def take_book(self, grasp_sign, centre, yaw=0.0, name="close the gripper on the book"):
         """Put the book between the open fingers, held as at (centre, yaw), and
@@ -720,10 +814,11 @@ class Episode:
         obs = self.obstacles()
         candidates = [(self.grasp_pose(gs, pre), self.insertion_plan(gs, ps, x_slot, pre[1], obs), (gs, ps))
                       for gs in (1, -1) for ps in (1, -1)]
-        q, (gs, ps) = self.choose_arm(candidates)
-        self.place_arm(q)
-        self.take_book(gs, pre, name="close the gripper on the book at the pre-insertion pose")
-        t_start = self.run.t
+        first = self.run is None
+        gs, ps = self.begin(candidates)
+        self.take_book(gs, pre, name="close the gripper on the book at the pre-insertion pose" if first else
+                       "take the book (the hand-over is not modelled)")
+        t_start = self.run.t if first else 0.0                       # else: from the start of the episode
         return self.score(t_start, *self.seat(x_slot, pre[1], ps), method=method)
 
     # --- Tight scenario: widen the gap, then insert ----------------------------------
@@ -799,10 +894,12 @@ class Episode:
                     self.insertion_plan(gs, ps, x_slot, pre[1], obs)
                 candidates.append((self.push_pose(ps, x_mid, tip_out), path, (ps, gs)))
         ti = self.row.target_index
-        q, (ps, gs) = self.choose_arm(candidates, allowed={self.row_geoms[ti - 1], self.row_geoms[ti]})
-        self.place_arm(q)
+        first = self.run is None
+        ps, gs = self.begin(candidates, allowed={self.row_geoms[ti - 1], self.row_geoms[ti]}, finger=0.04)
         run = self.run
-        t_start = run.t
+        t_start = run.t if first else 0.0                            # else: from the start of the episode
+        if run.grip != GRIP_OPEN:
+            run.wait("open the gripper", 0.3, grip=GRIP_OPEN)
         run.move("put the fingers into the gap", *self.push_pose(ps, x_mid, tip_in))
         room_l, room_r = self.free_space()
         if dl > 0:
@@ -893,6 +990,90 @@ class Episode:
             if side * (cmd - limit) > 0:
                 cmd = limit
 
+    # --- Packed scenario: no gap at all ----------------------------------------------
+    def insert_packed(self, margin=GAP_MARGIN):
+        """Open a slot where the neighbours touch (stagger_open), just wide
+        enough for the fingers, then carry on as in a tight row. Pushed at its
+        front corner a book swivels, so the tight-row push from inside the
+        gap does the rest of the widening better."""
+        xl, xr, _, _ = self.slot()
+        need = self.t + margin - (xr - xl)
+        self.info["widening_m"] = max(0.0, need)
+        if need <= 0:
+            return self.insert()
+        room = dict(zip((-1, 1), self.free_space()))
+        sides = [s for s in (-1, 1) if room[s] - ROOM_KEEP >= need]
+        if not sides:
+            return self.skip("not enough free space in the row for the book")
+        if not self.stagger_open(max(sides, key=lambda s: room[s]),
+                                 min(need, 2 * (FINGER_HALF_W + FIT_CLEAR) + STAGGER_OPEN)):
+            return self.skip(self.info["open"])
+        res = self.insert_tight("one-sided", margin)
+        then = res.get("method")
+        res["method"] = "stagger" if then in (None, "stagger") else f"stagger, then {then}"
+        return res
+
+    def stagger_open(self, side, opening):
+        """Push the slot's neighbour on the side away from `side` straight back
+        into the shelf, so the face of the one on `side` shows in front of it;
+        put the closed fingertips against that face and push it aside, away
+        from the slot, until the gap at the spines is `opening` wide. Returns
+        True once the hand is out again, or False with the reason in
+        self.info["open"]."""
+        ti = self.row.target_index
+        w = FINGER_HALF_W
+        xl, xr, fl, fr = self.slot()
+        x_f, n_spine, o_spine = (xr, fr, fl) if side > 0 else (xl, fl, fr)
+        o = self.shelf.box(self.m, self.d, self.row_geoms[ti - 1 if side > 0 else ti])
+        room_back = o[:, 1].min() + self.D / 2 - BACK_GAP              # how far it can go back
+        push_back = min(max(0.0, STAGGER - (n_spine - o_spine)), room_back)
+        if n_spine - (o_spine - push_back) < MIN_REACH + 0.002:
+            self.info["open"] = "no room behind the other neighbour to push it back"
+            return False
+        if o[:, 0].max() - o[:, 0].min() < 2 * w + 0.003:
+            self.info["open"] = "the other neighbour is thinner than the fingers"
+            return False
+        x_o = x_f - side * (w + 0.0015)                              # fingers on the other book, beside the face
+        z = self.hand_z
+        o_new = o_spine - push_back
+        tip_aside = o_new + 0.002                                    # just in front of its new spine
+        tip_out = max(f for _, _, f in self.obstacles()) + 0.02
+        x_end = x_f + side * (opening - w)
+        cands = []
+        for sign in (1, -1):
+            path = ([self.col_pose(sign, x_o, y, z) for y in np.linspace(tip_out, tip_aside, 20)[1:]]
+                    + [self.col_pose(sign, x, tip_aside, z) for x in np.linspace(x_o, x_end, 15)[1:]]
+                    + [self.col_pose(sign, x_end, y, z) for y in np.linspace(tip_aside, tip_out, 10)[1:]])
+            cands.append((self.col_pose(sign, x_o, tip_out, z), path, sign))
+        try:
+            sign = self.begin(cands, allowed={self.row_geoms[ti - 1], self.row_geoms[ti]}, finger=0.0)
+        except RuntimeError as e:
+            self.info["open"] = str(e)
+            return False
+        self.info["method"] = "stagger"
+        run = self.run
+        run.wait("close the gripper", 0.3, grip=GRIP_CLOSED)
+        if push_back > 0:
+            run.move("reach the other neighbour's spine", *self.col_pose(sign, x_o, o_spine + 0.005, z))
+            run.move(f"push it {1000 * push_back:.0f} mm back into the shelf", *self.col_pose(sign, x_o, o_new, z),
+                     speed=PUSH_SPEED, stop_force=PUSH_STOP_FORCE)
+        run.move("put the fingertips beside the face that shows", *self.col_pose(sign, x_o, tip_aside, z))
+        goal = x_end
+        for k in range(3):                                          # the arm gives way under load: push on
+            run.move(f"push it aside{' further' if k else ''}", *self.col_pose(sign, goal, tip_aside, z),
+                     speed=GAP_PUSH_SPEED)
+            xl, xr, _, _ = self.slot()
+            short = opening - (xr - xl)
+            if short < 0.001:
+                break
+            goal += side * short
+        # Ease off its face before taking the fingers out, or friction drags
+        # the book out of the shelf with them.
+        run.move("ease off its face", *self.col_pose(sign, goal - side * EASE_OFF, tip_aside, z))
+        run.move("take the fingers out", *self.col_pose(sign, goal - side * EASE_OFF, tip_out, z))
+        run.wait("let it settle", 0.3)
+        return True
+
     def skip(self, reason) -> dict:
         """Leave the book out: a failure, with how far the other books moved
         (only a push that fell short moves them)."""
@@ -932,7 +1113,7 @@ def report(res: dict) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scenario", choices=("clear", "tight"), default="clear")
+    ap.add_argument("--scenario", choices=("clear", "tight", "packed"), default="clear")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--trials", type=int, default=1, help="run seeds seed .. seed+trials-1 and summarise")
     ap.add_argument("--strategy", choices=("one-sided", "split"), default="one-sided",
@@ -943,7 +1124,11 @@ def main():
     a = ap.parse_args()
 
     def attempt(ep):
-        return ep.insert(method="") if a.scenario == "clear" else ep.insert_tight(a.strategy, a.margin)
+        if a.scenario == "clear":
+            return ep.insert(method="")
+        if a.scenario == "packed":
+            return ep.insert_packed(a.margin)
+        return ep.insert_tight(a.strategy, a.margin)
 
     results = []
     for seed in range(a.seed, a.seed + a.trials):
