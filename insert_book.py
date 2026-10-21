@@ -686,8 +686,12 @@ class Episode:
         m, d, ik = self.m, self.d, self.ik
         R_h = d.xmat[ik.hand].reshape(3, 3)
         R_b = R_h @ self.grasp_pose(grasp_sign, centre, yaw)[1].T @ self.shelf.rot(yaw)
+        # Each pad 0.2 mm off the book, inside its 0.5 mm contact margin (shelf_scene), so both
+        # contacts act from the first step. Right on the margin, one could start a step late: the
+        # finger closed 1.3 mm in that step, and its contact, starting that deep, was too soft to
+        # stop it before it was 9 mm into the book (which flew off when let go).
         for j in ("panda/finger_joint1", "panda/finger_joint2"):
-            d.qpos[m.jnt_qposadr[m.joint(j).id]] = self.t / 2 + 0.0005
+            d.qpos[m.jnt_qposadr[m.joint(j).id]] = self.t / 2 + 0.0002
             d.qvel[m.jnt_dofadr[m.joint(j).id]] = 0
         qa, va = m.jnt_qposadr[self.book_joint], m.jnt_dofadr[self.book_joint]
         d.qpos[qa:qa + 3] = d.xpos[ik.hand] + R_h @ [0, 0, PAD_Z] - R_b @ self.pad_in_book
