@@ -308,7 +308,9 @@ class ArmIK:
         p, R = self.fk(q)
         return np.concatenate([pos - p, 0.5 * sum(np.cross(R[:, i], rot[:, i]) for i in range(3))])
 
-    def solve(self, q, pos, rot, iters=2, max_step=0.2):
+    def solve(self, q, pos, rot, iters=2, max_step=0.2, pull=0.05):
+        """`pull`: fraction of the way toward the rest posture per iteration.
+        It sets how fast the posture settles, not where."""
         q = np.array(q, dtype=float)
         for _ in range(iters):
             e = self.error(q, pos, rot)
@@ -323,7 +325,7 @@ class ArmIK:
                 # The posture pull goes through an exact null-space projector:
                 # a damped one leaks into the task and leaves a steady error.
                 null = np.eye(7) - np.linalg.pinv(Jf, rcond=1e-3) @ Jf
-                dq = Jinv @ e + null @ (0.05 * (self.q_rest - q) * free)
+                dq = Jinv @ e + null @ (pull * (self.q_rest - q) * free)
                 pinned = free & (((q <= self.lo + 1e-6) & (dq < 0)) | ((q >= self.hi - 1e-6) & (dq > 0)))
                 if not pinned.any():
                     break
@@ -346,12 +348,17 @@ class ArmIK:
         """Track a list of (pos, rot) hand poses from q, warm-started like the
         runner does. Returns (end q, worst joint-limit margin on the way, reached
         the end). Gives up early once the margin drops below `floor`, or, if
-        `allowed` is given, once the arm runs into something else."""
+        `allowed` is given, once the arm runs into something else.
+        The runner re-solves every step, hundreds of times between two of
+        these poses, so its posture pull has settled by each one. A few
+        solves per pose at the runner's pull leave the posture lagging behind
+        (by up to 0.1 rad), so the margins came out wrong. A stronger pull
+        settles it in those few at the same posture."""
         worst = self.margin(q)
         if allowed is not None and self.collides(q, allowed):
             return q, worst, False
         for k, (pos, rot) in enumerate(poses):
-            q = self.solve(q, pos, rot, iters=4)
+            q = self.solve(q, pos, rot, iters=4, pull=0.5)
             worst = min(worst, self.margin(q))
             if worst < floor or (allowed is not None and k % 3 == 2 and self.collides(q, allowed)):
                 return q, worst, False
@@ -642,11 +649,11 @@ class Episode:
         run = self.run
         if run is not None:
             self.ik.sync(self.d, finger)
+            self.ik.q_rest = run.q_cmd.copy()                       # carrying on keeps the arm's posture: plan with it
             for start, path, label in candidates:
                 lead = segment((run.pos, run.rot), start, 30)
                 _, worst, ok = self.ik.follow(run.q_cmd, lead + list(path), allowed=allowed)
                 if ok and worst >= 2 * MIN_MARGIN:                  # a little spare: the real path drifts
-                    self.ik.q_rest = run.q_cmd.copy()
                     run.move("move to the start of the next step", *start)
                     return label
         q, label = self.choose_arm(candidates, allowed, finger)
