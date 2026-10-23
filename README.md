@@ -119,6 +119,7 @@ The bookcase is built from the floor up:
    uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
    uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
    uv run mjpython insert_book.py --scenario packed --seed 7 --view      # a packed row it manages
+   uv run python insert_book.py --scenario packed --seed 0 --trials 50 --packed stagger   # the older packed baseline
    ```
    A hand-written baseline. The target book is held in the gripper at a pre-insertion pose in front of the gap.
    The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
@@ -194,21 +195,57 @@ The bookcase is built from the floor up:
      opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
      contact-rich part the proposal's residual policy is meant to learn.
 
-   **Packed**: the neighbours touch, so the fingers have to make room for themselves first.
-   - Stagger: the closed fingers, stacked, push the neighbour on the side with less room 2 cm straight back into
-     the shelf. The side of the other neighbour then shows in front of it, and the fingers push that one aside
-     from there, until the gap at the spines is 4 mm wider than the fingers. They back off its face before coming
-     out, or friction drags it out of the shelf. Then the tight-row widening and insertion take over.
-   - Seeds 0 to 49: 6 succeed (in place after 24 s on average, but the most-moved book moves 9 cm on average).
-     The rest: 11 end up out of place, 10 find no arm configuration for the widening and insertion, 7 jam at the
-     entrance, 5 are left with a gap narrower than the book, 4 have no room behind the other neighbour, 4 keep a
-     gap narrower than the fingers, 2 can't slide the book far enough onto the board, and 1 has too little room
-     in the row.
-   - Why it's hard: the neighbour is pushed at its front corner, so it swivels, comes partly out of the shelf,
-     and then takes up more of the row. An earlier study found the same with other moves: dragging a book's top
-     or spine by friction slides the books rather than tipping them, while a sideways push at the top tips the
-     run 12° at 6 to 58 N and it mostly stays tipped, leaving a V to wedge into. Finding a reliable way to push a
-     neighbour's top without a face to push on is the open problem.
+   **Packed**: the neighbours touch, so room has to be made first, and it can only come from the row's free
+   space at one end: every book between the slot and that space has to slide along.
+   - Shove (`--packed shove`, the default):
+     1. The closed fingers, stacked, push the books in front of which the fingers will go (the other neighbour,
+        and the book past the neighbour on the side with more free space) straight back, until their spines are
+        35 mm behind that neighbour's. If they have less room behind them than 20 mm, the other side is tried.
+     2. That neighbour now sticks out of the row. The fingers go either side of it, 4 mm off its faces, with the
+        hand turned to its yaw and the fingertips 7 mm in front of the books pushed back (under the load the arm
+        sags 6 to 10 mm deeper, and a fingertip on one of their spines pins it by friction), and close on it at
+        5 cm/s. At the simulated gripper's own speed (over 2 m/s from a few mm away) the pads went 18 mm into the
+        book before their contact stopped them, and squeezed it 3 cm back into the shelf.
+     3. They shove it, and every book beyond it, away from the slot until the gap is the book plus 6 mm at its
+        narrowest over the depth the book will take up, pushing on by what is missing up to 3 times. The
+        neighbour still turns about 6° in the fingers (the run pushes back far behind where they hold it), so
+        the gap at the spines is wider than that.
+     4. The whole run slides, which takes 30 to 110 N (the books' weight times their friction, 52 N in the
+        median row). Along the row the arm pushes with 55 N (joint 6 at its 12 N m) to 130 N depending on its
+        configuration, and the strong configurations have joint 5 near its limit. So for this step the arm
+        configuration is chosen for force, keeping 0.02 rad from the joint limits instead of 0.05. Without that,
+        59 of the 100 rows below succeed instead of 69 (14 lost, 4 gained).
+     5. The arm lags behind its target under the load. It holds where it got to, lets go, eases the fingers off
+        the book's faces (else they drag it out with them), takes them out, and pushes the book back in line,
+        square to its spine. Then the book is inserted as in a clear row, or, if the gap is still narrower than
+        the book (the arm couldn't push the run far enough), after widening it as in a tight row.
+   - Seeds 0 to 99: 69 succeed (39 of seeds 0 to 49), against 10 with the stagger. In the 62 rows where the shove
+     opens the gap by itself, 59 are placed. In 25 the arm can't push the run far enough, and the tight-row
+     widening places 10 of them. 13 rows aren't shoved: in 11 the books beside the neighbour have less than
+     20 mm of room behind them, and 2 don't have room for the book on either side alone (they would need both).
+     Of the 18 shoved rows that fail, 9 find no arm configuration (or joint move) for the widening and
+     insertion, 4 jam at the entrance, 3 end up out of place, and 2 are left with a gap too narrow. The
+     most-moved book moves 58 mm on average (the run moves by the widening, 38 mm on average, plus what the arm
+     overshoots, and two books stay 35 mm back), against 69 mm with the stagger. It takes longer: in place after
+     45 s on average, against 25 s, as the arm changes configuration 3 or 4 times.
+   - Tried and dropped, on seeds 0 to 49: turning the hand against the book's turn while shoving, and pulling
+     the book out and taking it again with the whole pad (43 mm instead of 28). It still turns, and no more rows
+     are placed. A stronger grip (140 N, the Franka Hand's maximum) or grippier pads (friction 1.5) didn't help
+     either, nor did moving the robot base (0.65 m from the shelf instead of 0.8, or beside the slot as in the
+     gripper study, which helps the stagger but not this).
+   - What would help, measured on the same 100 rows with hardware changes that aren't in this code (on a study
+     version of the shove that places 67): a suction cup on a plunger between the fingers, to pull the
+     neighbour out where the books beside it can't go back, 77; wrist joints as strong as a KUKA iiwa's (40 N m
+     instead of 12), 73; both, 83.
+   - Stagger (`--packed stagger`): the closed fingers, stacked, push the neighbour on the side with less room 2 cm
+     straight back into the shelf. The side of the other neighbour then shows in front of it, and the fingers push
+     that one aside from there, until the gap at the spines is 4 mm wider than the fingers. They back off its face
+     before coming out, or friction drags it out of the shelf. Then the tight-row widening and insertion take over.
+     Seeds 0 to 49: 6 succeed (in place after 24 s on average, but the most-moved book moves 9 cm on average).
+     The neighbour is pushed at its front corner, so it swivels, comes partly out of the shelf, and then takes up
+     more of the row. An earlier study found the same with other moves: dragging a book's top or spine by
+     friction slides the books rather than tipping them, while a sideways push at the top tips the run 12° at 6
+     to 58 N and it mostly stays tipped, leaving a V to wedge into.
    - `free_space` counts each side's room as its length less the books' thicknesses, not from the books'
      outlines: a pushed book that turned would otherwise seem to fill the row, and the widening would pick the
      wrong side. For upright books (clear and tight rows) both give the same.
