@@ -21,12 +21,25 @@ Steps, for one image (estimate_from_frame):
      smallest rectangle around them in that plane, grown by the pixels lost at
      its edges (the normals need NORMAL_STEP pixels of surface on each side). Its corners are the
      spine corners; book_from_spine derives the rest.
-  5. Name the books by where they stand relative to the slot. The slot's place
-     along the row comes from the shelf map, as a real robot would know it
-     from the catalogue. Books may have shifted a little since the map was
-     made, so the slot is the boundary between two adjacent books (by where
-     their bottoms stand) closest to the map's place for it.
+  5. Name the books by where they stand relative to the slot. The shelf map
+     says, as a real robot would know it from the catalogue, how many books
+     stand left of the slot and about where it is along the row. If the
+     camera sees the whole row (both side panels, and as many books as the
+     map lists), count them. Otherwise, as books may have shifted since the
+     map was made, the slot is the boundary between two adjacent books (by
+     where their bottoms stand) closest to the map's place for it. In a few
+     leaning rows the books settle 3 to 7 cm from where the map has them,
+     and that names every book one place off.
   6. The gap profile from the books (gap_profile), as for every source.
+
+Several images (estimate_from_frames), e.g. from views along the row: steps 1-4
+for each, then each book is taken from the view whose camera is nearest it
+along the row (if two nearly tie, the one that has it whole in view), and only
+books those views missed from the others; then steps 5-6 once. Seen from far
+to the side, books come out too thick, and one that sticks out past its
+neighbour shows its side, which the fit can take for a thin spine further
+back. After the robot has put a book into the slot, `placed_x` (where it let
+go) names the book seen there slot offset 0, and the others around it.
 
 What the camera can't see stays as in every ShelfEstimate: book depth is a
 prior, a book cut off by the image edge or by the robot is still fitted, from
@@ -60,6 +73,32 @@ NORMAL_SMOOTH = 5                         # px: normals from depth averaged over
 PLANE_TOL = 0.003                         # m: points further than this from the fitted spine plane are dropped,
 PLANE_TOL_SPREAD = 3.0                    # ... or than this many times the points' robust spread, if larger
 MIN_POINTS = 100                          # fewer spine points than this: not a usable view of the book
+WHOLE = 0.99                              # a book with this share of its outline a real edge is wholly in view
+NEAREST_TIE = 0.01                        # m: cameras this close to equally near a book both count as nearest
+
+
+@dataclass
+class Sighting:
+    """One book's spine fitted in one image (shelf frame)."""
+    corners: np.ndarray          # (4, 3) bottom-left, bottom-right, top-right, top-left
+    visible: float               # share of its outline that is a real edge of the book (boundary_visible)
+    off_axis: float              # m along the row between the camera and the book: how slanted the view was
+    label: Optional[int] = None  # segment label, for checking
+
+    @property
+    def x(self) -> float:
+        """Where its bottom stands along the row."""
+        return float((self.corners[0, 0] + self.corners[1, 0]) / 2)
+
+    def overlap(self, other: "Sighting") -> float:
+        """Share of the narrower bottom edge, along the row, that the two have
+        in common: near 1 for the same book (also when one view cuts it off),
+        about 0 for neighbours."""
+        a, b = sorted(self.corners[:2, 0]), sorted(other.corners[:2, 0])
+        return max(0.0, min(a[1], b[1]) - max(a[0], b[0])) / max(min(a[1] - a[0], b[1] - b[0]), 1e-6)
+
+    def better_than(self, other: "Sighting") -> bool:
+        return (self.visible >= WHOLE, -self.off_axis) > (other.visible >= WHOLE, -other.off_axis)
 
 
 @dataclass
@@ -192,10 +231,55 @@ class RGBDPerception:
         self.gap_heights = np.asarray(gap_heights, dtype=float)
         self.last_labels: List[Optional[int]] = []   # segment label of each book in the last estimate, for checking
 
+    def capture(self, data: mujoco.MjData) -> CameraFrame:
+        return self.camera.capture(data)
+
     def estimate(self, data: mujoco.MjData) -> ShelfEstimate:
-        return self.estimate_from_frame(self.camera.capture(data))
+        return self.estimate_from_frame(self.capture(data))
 
     def estimate_from_frame(self, frame: CameraFrame) -> ShelfEstimate:
+        return self.estimate_from_frames([frame])
+
+    def estimate_from_frames(self, frames: List[CameraFrame], x_slot: Optional[float] = None,
+                             placed_x: Optional[float] = None) -> ShelfEstimate:
+        """One estimate from several images of the row. x_slot: where the slot
+        is along the row (default: the shelf map's place for it). placed_x:
+        where the robot let go of a book it put into the slot."""
+        cams = [self.shelf.to_shelf(f.pose[:3, 3])[0] for f in frames]
+        views = [self.sightings(f) for f in frames]
+
+        def nearest(k, s):
+            return abs(s.x - cams[k]) <= min(abs(s.x - c) for c in cams) + NEAREST_TIE
+
+        kept = []                                                    # (view, sighting)
+        for k, view in enumerate(views):                             # each book from the view nearest it
+            for s in (s for s in view if nearest(k, s)):
+                same = next((i for i, (j, o) in enumerate(kept) if j != k and s.overlap(o) > 0.5), None)
+                if same is None:
+                    kept.append((k, s))
+                elif s.better_than(kept[same][1]):
+                    kept[same] = (k, s)
+        for k, view in enumerate(views):                             # then books those views missed
+            for s in (s for s in view if not nearest(k, s)):
+                if all(j == k or s.overlap(o) <= 0.1 for j, o in kept):
+                    kept.append((k, s))
+        row, shelf = self.row, self.shelf
+        W_half, z0 = row.shelf_width / 2, row.target_board_top
+        panels = tuple(x if any(self.panel_in_view(f, x) for f in frames) else None for x in (-W_half, W_half))
+        whole_row = None not in panels and len(kept) == len(row.books)
+        books, labels = self.name([s for _, s in kept], slot_x(row) if x_slot is None else x_slot, placed_x,
+                                  n_left=row.target_index if whole_row else None)
+        self.last_labels = labels
+
+        pose = np.eye(4)
+        pose[:3, :3], pose[:3, 3] = shelf.R, shelf.p
+        return ShelfEstimate(
+            shelf_pose=pose, board_top=z0, front_y=row.shelf_depth / 2, clear_height=row.clear_height,
+            shelf_depth=row.shelf_depth, panel_x=panels, books=books, gap_heights=self.gap_heights.copy(),
+            gap_widths=gap_profile(books, panels, z0, self.gap_heights), stamp=frames[-1].stamp, source="rgbd")
+
+    def sightings(self, frame: CameraFrame) -> List[Sighting]:
+        """Steps 1-4 for one image: the spine of every book in it."""
         row, shelf = self.row, self.shelf
         xyz_cam = organized_points(frame)
         R_sc = shelf.R.T @ frame.pose[:3, :3]                     # camera -> shelf rotation
@@ -208,8 +292,9 @@ class RGBDPerception:
                     & (xyz[..., 2] > z0 - 0.002) & (xyz[..., 2] < z0 + row.clear_height))
         robot = robot_mask(self.m, frame)
         f = frame.K[0, 0]
+        cam_x = shelf.to_shelf(frame.pose[:3, 3])[0]
 
-        fitted = []                                               # (corners, visible, label)
+        out = []
         for seg in self.segment(frame):
             keep = seg.mask & facing & on_level & ~robot
             if keep.sum() < MIN_POINTS:
@@ -217,34 +302,37 @@ class RGBDPerception:
             pixel_size = float(np.median(xyz_cam[keep][:, 2])) / f
             corners = fit_spine(xyz[keep], normals[keep], pixel_size, grow_px=NORMAL_STEP)
             if corners is not None:
-                fitted.append((corners, boundary_visible(seg.mask, robot), seg.label))
+                off_axis = abs((corners[0, 0] + corners[1, 0]) / 2 - cam_x)
+                out.append(Sighting(corners, boundary_visible(seg.mask, robot), off_axis, seg.label))
+        return out
 
-        # Name the books by where their bottoms stand relative to the slot: it is
-        # the boundary between adjacent books closest to the slot's place on the map.
-        fitted.sort(key=lambda b: (b[0][0, 0] + b[0][1, 0]) / 2)
-        bottoms = [(c[0, 0] + c[1, 0]) / 2 for c, _, _ in fitted]
-        x_slot = slot_x(row)
-        if not bottoms or x_slot < bottoms[0]:
-            n_left = 0
-        elif x_slot > bottoms[-1]:
-            n_left = len(bottoms)
+    def name(self, seen: List[Sighting], x_slot: float, placed_x: Optional[float], n_left: Optional[int] = None):
+        """Step 5: BookEstimates named by where their bottoms stand relative
+        to the slot, left to right, and their segment labels. The slot is
+        after the first n_left books if given, else the boundary between
+        adjacent books closest to x_slot; or, if a book is seen within half
+        its thickness of placed_x, that book (offset 0)."""
+        seen = sorted(seen, key=lambda s: s.x)
+        bottoms = [s.x for s in seen]
+        placed = None
+        if placed_x is not None and seen:
+            i = int(np.argmin([abs(x - placed_x) for x in bottoms]))
+            if abs(bottoms[i] - placed_x) < np.linalg.norm(seen[i].corners[1] - seen[i].corners[0]) / 2:
+                placed = i
+        if placed is not None:
+            offsets = [i - placed for i in range(len(seen))]
         else:
-            boundaries = [(a + b) / 2 for a, b in zip(bottoms, bottoms[1:])]
-            n_left = 1 + int(np.argmin([abs(x - x_slot) for x in boundaries]))
-        books, labels = [], []
-        for i, (corners, visible, label) in enumerate(fitted):
-            offset = i - n_left if i < n_left else i - n_left + 1
-            books.append(book_from_spine(corners, offset, self.depth, visible))
-            labels.append(label)
-        self.last_labels = labels
-
-        pose = np.eye(4)
-        pose[:3, :3], pose[:3, 3] = shelf.R, shelf.p
-        panels = tuple(x if self.panel_in_view(frame, x) else None for x in (-W_half, W_half))
-        return ShelfEstimate(
-            shelf_pose=pose, board_top=z0, front_y=row.shelf_depth / 2, clear_height=row.clear_height,
-            shelf_depth=row.shelf_depth, panel_x=panels, books=books, gap_heights=self.gap_heights.copy(),
-            gap_widths=gap_profile(books, panels, z0, self.gap_heights), stamp=frame.stamp, source="rgbd")
+            if n_left is None:
+                if not bottoms or x_slot < bottoms[0]:
+                    n_left = 0
+                elif x_slot > bottoms[-1]:
+                    n_left = len(bottoms)
+                else:
+                    boundaries = [(a + b) / 2 for a, b in zip(bottoms, bottoms[1:])]
+                    n_left = 1 + int(np.argmin([abs(x - x_slot) for x in boundaries]))
+            offsets = [i - n_left if i < n_left else i - n_left + 1 for i in range(len(seen))]
+        books = [book_from_spine(s.corners, k, self.depth, s.visible) for s, k in zip(seen, offsets)]
+        return books, [s.label for s in seen]
 
     def panel_in_view(self, frame: CameraFrame, x: float) -> bool:
         """Whether the side panel's inner face at x (shelf frame) is in the

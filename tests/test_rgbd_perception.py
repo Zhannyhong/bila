@@ -94,6 +94,56 @@ def test_gap_matches_the_truth(perfect):
     assert est.min_gap_width(h) == pytest.approx(truth.min_gap_width(h), abs=3 * MM)
 
 
+@pytest.fixture(scope="module")
+def sweep():
+    """Images from 30 cm either side of the slot and in front of it, of a row
+    where the right-hand view sees a book's side past its neighbour (clear 4),
+    with the target book in the model (parked off the shelf)."""
+    import insert_book
+    model, data, row = insert_book.make_episode(ShelfConfig(), "clear", np.random.default_rng(4), PANDA)
+    try:
+        cam = WristCamera(model, noise=DepthNoise(), rng=np.random.default_rng(4))
+    except Exception as e:
+        pytest.skip(f"can't render: {e}")
+    perception = RGBDPerception(model, row, camera=cam)
+    frames, centre = [], None
+    for dx in (-0.3, 0.0, 0.3):
+        q = solve_inspection(model, data, row, dx)[0]
+        centre = q if dx == 0 else centre
+        look_from(model, data, q)
+        frames.append(perception.capture(data))
+    look_from(model, data, centre)
+    yield model, data, row, perception, frames
+    perception.close()
+
+
+def test_sweep_sees_the_whole_row_and_names_it(sweep):
+    model, data, row, perception, frames = sweep
+    est = perception.estimate_from_frames(frames)
+    truth = GroundTruthPerception(model, row).estimate(data)
+    by_geom = {model.geom(b.name + "_geom").id: t for b, t in zip(row.books, truth.books)}
+    assert [b.slot_offset for b in est.books] == [by_geom[g].slot_offset for g in perception.last_labels]
+    assert len(est.books) == len(row.books) and None not in est.panel_x
+    far = [b.thickness - by_geom[g].thickness for b, g in zip(est.books, perception.last_labels) if abs(b.slot_offset) >= 4]
+    assert np.median(far) < 2.5 * MM and np.max(np.abs(far)) < 8 * MM      # from one view: 4.6 mm too thick (median)
+
+
+def test_a_book_put_into_the_slot_is_offset_0(sweep):
+    import mujoco
+    from inspection import slot_x
+    model, data, row, perception, frames = sweep
+    b, x = row.target_book, slot_x(row)
+    qa = model.jnt_qposadr[model.joint(b.name + "_joint").id]
+    centre = perception.shelf.to_world([x, row.shelf_depth / 2 - 0.015 - b.depth / 2, row.target_board_top + b.height / 2])
+    data.qpos[qa:qa + 7] = np.concatenate([centre, [math.cos(row.shelf_yaw / 2), 0, 0, math.sin(row.shelf_yaw / 2)]])
+    mujoco.mj_forward(model, data)
+    est = perception.estimate_from_frames([perception.capture(data)], placed_x=x)
+    assert est.book(0) is not None and abs(est.book(0).thickness - b.thickness) < 3 * MM
+    truth = GroundTruthPerception(model, row).estimate(data)
+    for k in (-2, -1, 1, 2):
+        assert np.linalg.norm(est.book(k).spine_corners - truth.book(k).spine_corners, axis=1).max() < 8 * MM
+
+
 def test_noisy_depth_stays_close(noisy):
     est, truth, truth_books, row = noisy
     assert [b.slot_offset for b in est.books] == [t.slot_offset for t in truth_books]

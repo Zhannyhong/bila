@@ -139,6 +139,21 @@ def book_from_spine(corners, slot_offset: int, depth: float, visible: float) -> 
     )
 
 
+def book_box(b: BookEstimate):
+    """The book's box as the robot models it, in the shelf frame: centre,
+    rotation (columns: across the spine, out of the spine, up) and half-sizes.
+    The box runs `depth` back from the spine face."""
+    c = b.spine_corners
+    across = (c[1] - c[0]) + (c[2] - c[3])
+    up = (c[3] - c[0]) + (c[2] - c[1])
+    x = across / np.linalg.norm(across)
+    z = up - (up @ x) * x                     # square up the axes: noisy corners aren't a perfect rectangle
+    z /= np.linalg.norm(z)
+    y = np.cross(z, x)                        # out of the spine, toward the robot
+    centre = c.mean(axis=0) - y * b.depth / 2
+    return centre, np.column_stack([x, y, z]), np.array([b.thickness, b.depth, b.height]) / 2
+
+
 def slice_x(corners, z: float) -> Optional[Tuple[float, float]]:
     """Where the spine face crosses height z, as (x_min, x_max), seen from the
     front (the face projected on the x-z plane). None if it doesn't reach z."""
