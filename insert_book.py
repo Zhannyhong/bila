@@ -952,7 +952,8 @@ class Episode:
         sides = sorted((-1, 1), key=lambda s: -(room_l if s < 0 else room_r))  # more free space first
         one_sided = [(min(need, room_l), 0.0) if s < 0 else (0.0, min(need, room_r)) for s in sides]
         for dl, dr in ([split] + one_sided) if strategy == "split" else (one_sided + [split]):
-            if min(dl, dr) < 0 or max(dl, dr) <= 0 or dl > room_l + 1e-9 or dr > room_r + 1e-9:
+            # A side not pushed may have no room (less than ROOM_KEEP) without spoiling the plan.
+            if min(dl, dr) < 0 or max(dl, dr) <= 0 or dl > max(room_l, 0.0) + 1e-9 or dr > max(room_r, 0.0) + 1e-9:
                 continue
             tip_in = self.fingertip_depth([xl - dl + FINGER_HALF_W, x_mid, xr + dr - FINGER_HALF_W], obs)
             if (dl > 0 and fl - tip_in < MIN_REACH) or (dr > 0 and fr - tip_in < MIN_REACH):
