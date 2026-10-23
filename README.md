@@ -120,6 +120,9 @@ The bookcase is built from the floor up:
    uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
    uv run mjpython insert_book.py --scenario leaning --seed 12 --view    # a leaner it has to clamp
    uv run mjpython insert_book.py --scenario packed --seed 7 --view      # a packed row it manages
+   uv run python insert_book.py --scenario tight --seed 0 --perception camera   # decide from the wrist camera
+   uv run python insert_book.py --scenario tight --seed 0 --perception camera --camera-noise basic   # cleaner camera
+   uv run mjpython insert_book.py --scenario tight --seed 1 --perception camera --view   # watch it, and what it saw
    ```
    A hand-written baseline. The target book is held in the gripper at a pre-insertion pose in front of the gap.
    The robot rests the book's back on the board's edge and slides it in while holding it. It lets go before its
@@ -244,6 +247,74 @@ The bookcase is built from the floor up:
      outlines: a pushed book that turned would otherwise seem to fill the row, and the widening would pick the
      wrong side. For upright books (clear and tight rows) both give the same.
 
+   **Perception** (`--perception truth` or `camera`): where the script's knowledge of the row comes from.
+   - `truth` (default): the simulation, read whenever it is needed. All results above are with it.
+   - `camera`: the wrist camera's RGB-D images (`rgbd_perception.py`). `--camera-noise realistic` (the default)
+     gives the camera a D405's stereo errors and a calibration error drawn per episode (see the camera section
+     below); `--camera-noise basic` only independent depth noise per pixel. Before
+     touching the row the arm sweeps along it, looking from 30 cm left of the slot, in front of it and 30 cm right
+     (`SWEEP`), and fuses the three images. It looks again from the middle view each time the hand has left the
+     shelf after changing the row: after the widening, after each stand-up, after the stagger push, after letting
+     go of the book and after each push of it. The arm really moves there and back, in joint space, and comes in
+     from just in front of the next step in a straight line.
+   - On a look again, a book past the slot's neighbours that hasn't moved (within 3 mm and 1.5°) keeps what the
+     sweep saw of it, and one that has keeps the size it saw: from the middle view, books further out come out
+     too thick, and summed along the row that took 20 to 30 mm off the free space.
+   - While the fingers push a neighbour aside, how far it went comes from where the fingertips are (joint angles;
+     within 0.7 mm of the truth on the pushes checked): the camera can't see a face the hand is on.
+   - The arm's paths are planned around the books where the last look saw them (books not seen are left out), and
+     once let go of, the inserted book is in the way of its joint moves too. Known without looking: the shelf map
+     (bookcase, side panels, where the slot is and how many books stand left of it), and the book being inserted
+     (its size, and how it is held). The other books' depth is a prior.
+   - With `--view`, after each look the viewer draws what the camera saw over the real books, as `view_scene.py
+     --show-estimate` does: see-through boxes (the slot's neighbours orange), spine corners as dots, and the gap's
+     width at each height (green where the book fits). It stays until the next look, so while the arm works you
+     see what it is acting on. Books the camera didn't see aren't drawn.
+   - Results, seeds 0 to 49 of each scenario. "Truth at the looks" is a control: the same sweep, looks and arm
+     moves as with the camera, but each look reports the exact ground truth.
+
+     | Scenario | truth | truth at the looks | camera, basic noise | camera, realistic |
+     | --- | --- | --- | --- | --- |
+     | clear | 50 | 50 | 50 | 49 |
+     | tight | 48 | 47 | 44 | 33 |
+     | leaning | 50 | 49 | 49 | 42 |
+     | packed | 6 | 7 | 6 | 4 |
+     | all | 154 | 153 | 149 | 128 |
+
+     Looking (going to look, and acting on what a look saw rather than on the row as it is now) costs about one
+     book; leaning seed 37 and the packed rows lost (4, 7, 19, 37) fail the same with exact looks. The basic
+     camera's errors cost about four more, all in tight rows (not significant at 50 rows: paired exact test,
+     p = 0.13 for tight). The realistic camera costs 21 more than the basic one.
+   - Which of the realistic errors costs what, on the 50 tight rows (each seed has the same errors in every
+     column: the camera draws each kind from its own random stream): basic camera 44; with the stereo errors
+     instead 41 without the depth offset, 43 with it; with the calibration error added to the basic camera 35;
+     both 33. Each row's result depends a lot on the error it draws: another set of draws gave 28 for both, so
+     take these to about ±5 rows. The calibration error is what matters. It puts what the camera sees a few mm
+     to one side of where the hand is, and the script mixes the two: it plans the widening to a face position
+     the camera measured and pushes there with the hand, and while pushing it measures the gap from the face it
+     feels to the other face as the camera saw it. Tight seed 12, with a smaller than average draw (0.3° and
+     1.8 mm, against 0.5° and 2.4 mm on average): the
+     camera saw the slot 4 to 5 mm to the left; once the push had stopped, the robot believed the gap 25.4 mm
+     wide when it was 19.8 mm, and the look after it rightly found the gap narrower than the 20.2 mm book. 8 of
+     the 17 tight rows lost end that way. The stereo errors make the gap look 2 to 3 mm narrower (mostly the
+     edge spread), and cost 1 to 3 rows.
+   - What a look gets wrong (basic camera, 95% of errors): the gap at the spines 2.0 mm (median 0.7 mm too wide), the
+     neighbours' faces 1.3 mm, their spines' depth 0.5 mm. Free space on each side 22 mm, and 9 mm too little in
+     the median. Both point at how the spine fit (`fit_spine`) places a spine's edges: it grows every spine by 2
+     pixels on each side for the pixels the normals lose at its edges, the same wherever it is. Measured at the
+     books' bottom corners from the middle view (18 scenes), an edge beside another book comes out 2 mm too far
+     out (0.9 mm if that book is set more than 1 cm further back), and one beside the open slot 0.5 mm too far
+     in. So the gap comes out a little wide, and the other books 1 to 2 mm too thick, which adds up along the row.
+   - The tight rows only the basic camera loses are at the margin, and about 1 mm decides them. Seeds 32 and 38: the
+     gap was seen 0.8 to 1.2 mm too wide, so the neighbour was pushed that much less, and the book then dragged a
+     neighbour 10 cm into the shelf (32) or jammed at the entrance (38). Seed 0: seen 1.4 mm too narrow, so the
+     push is planned that much longer, and it then pushes the fingertips into the book behind the neighbour in
+     the planner's scene, where nothing moves, which counts as running into it (with the truth the plan is only
+     let through because the planner checks every third pose). In an earlier run seed 6 was lost too: free space
+     seen too small stopped the other neighbour from being pushed as well.
+   - Time: looking takes 28 s (clear) to 48 s (packed) per row, 3 to 6 looks, so a book is in place after 43 to 96
+     s instead of 10 to 24 s. About 30 to 50 s of computer time per row instead of 10 to 15.
+
 7. **Next pieces to build on top** (from the design doc)
    - Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.
    - Spawn the target book in the gripper for other code too (`insert_book.py` does it for its own runs;
@@ -338,10 +409,37 @@ u, v, z = project(frame, xyz)             # world points back to pixels
 - Camera frame x right, y down, z forward; pixel row 0 at the top. Depth is along the camera's z, and 0 means
   no reading (beyond 1.5 m, or dropped by the noise model).
 - Images come out upright: at the inspection pose the camera is rolled 180°, so `capture` turns the image and
-  the camera frame round. The pose is read from the simulation when the image is taken.
+  the camera frame round. The pose is read from the simulation when the image is taken (with a calibration
+  error, it is where the robot believes the camera is).
 - Markers (sites, such as the green dot at the target slot) are hidden: no real camera would see them.
-- `WristCamera(model, noise=DepthNoise())` adds D405-like depth errors: random error growing with distance
-  squared (about 1.5 mm at 50 cm) and no reading at object edges. The numbers are a starting guess.
+- `WristCamera(model, noise=DepthNoise())` adds basic depth errors: random error growing with distance squared
+  (Intel's formula for D400 depth with 0.08 px matching error: about 1.7 mm at 50 cm), independent per pixel, and
+  no reading at object edges.
+- **A more realistic camera**: `WristCamera(model, noise=DepthNoise.d405(), calibration=CalibrationError(), rng=...)`.
+  - Stereo errors (`DepthNoise.d405()`): matching error 0.1 px (Intel: below 0.1 on well-textured targets),
+    smooth over 2 px rather than independent per pixel; a disparity offset fixed per camera, 0.7% of the depth
+    at 50 cm (std), kept within the D405's ±2% spec; at depth edges the nearer surface's depth spreads 2 px over
+    the farther one; and no reading where the second imager, 18 mm to the right, can't see the surface (the
+    stereo shadow left of nearer things, and the image's left edge). Intel publishes neither the smoothing nor
+    the edge spread: those two are assumptions.
+  - Calibration error (`CalibrationError()`), drawn once per camera: where the robot thinks the camera sits on
+    the hand is off by 1.5 mm and 0.3° per axis (about 2.6 mm and 0.5° in all; published eye-in-hand RGB-D
+    calibrations are a few mm and 0.5 to 1° off), and the focal length by 0.3% and the image centre by 1 px. Images
+    are taken from where the camera really is; `frame.pose` and `frame.K` are what the robot believes.
+  - Each of a camera's errors comes from its own random stream, split off `rng` without drawing from it: a seed
+    gives the same calibration error with or without the stereo errors, the same depth offset with or without
+    the calibration error, and the same per-image noise as the basic camera. Comparisons of one seed across
+    error models are then paired.
+  - The calibration error is fixed for a camera's life (every image of an episode shares it) and drawn anew per
+    episode (per `WristCamera`): results average over calibrations, as training should. To see how success falls
+    with the error's size, scale `CalibrationError`'s standard deviations; to model one robot's calibration, set
+    the camera's `mount_error` and `K_believed` after making it.
+  - What it does to an estimate (sweep, 48 scenes, against the basic camera): corners 14 mm off at 95% (2.5 to
+    3.7), spines' depth 9 mm (0.5), books 2.4 to 3.8 mm too thick (−0.6 to +1.9), the gap 3 mm too narrow in the
+    median (0.7 mm too wide). One error at a time, from the middle view: the stereo shadow changes nothing (it
+    hides background, not spines); the edge spread makes books 2.4 mm thicker (the book's own side face, next to
+    its spine, takes the spine's depth); the depth offset moves spines in or out by 7 mm (95%); the calibration
+    error moves everything sideways, 11 mm at 95%.
 - Checked: every book pixel turned into a 3D point lies on that book's box (99% within 2 mm). A capture takes
   about 0.25 s; points for a whole image about 0.15 s.
 - `uv run python visualize.py --scenario leaning --seed 0 --camera` saves the wrist camera's image from the
@@ -362,12 +460,26 @@ with RGBDPerception(model, row) as perception:
   median normal, and the smallest rectangle around them in it. Its corners are the spine corners.
 - Normals come from depth averaged over 5 x 5 pixels, and the plane keeps points within 3 mm or 3 times their
   spread: both matter with depth noise.
-- Books are named by where they stand relative to the target slot: the boundary between adjacent books closest
-  to the slot's place on the shelf map (books can shift a little while settling).
+- Books are named by where they stand relative to the target slot. If the camera sees the whole row (both side
+  panels, and as many books as the shelf map lists), by counting: the map knows how many books stand left of the
+  slot. Otherwise the slot is the boundary between adjacent books closest to the slot's place on the map. Books
+  can shift while settling: in 2 of 50 leaning rows they settled 3 to 7 cm from the map's place, and the
+  boundary rule named every book one place off.
 - A side panel out of the camera's view is `None`, and if a slot neighbour isn't seen the gap on that side is
   unknown (NaN), rather than measured past books the camera didn't see.
 - About 1.5 to 2 s per estimate (capture plus fitting).
 - The camera renders without anti-aliasing: blended pixels at object edges decoded to wrong object ids.
+- **Several images** (`estimate_from_frames`, e.g. from views 30 cm either side of the slot and in front of it):
+  each book is taken from the view whose camera is nearest it along the row, and from the others only if those
+  views missed it. Seen from far to the side, books come out too thick, and a book that sticks out past its
+  neighbour shows its side, which the fit can take for a thin spine 15 mm further back (keeping the best view of
+  every book instead counted 2 books twice in 32 scenes). On 48 scenes (12 of each of clear, tight, leaning and
+  packed, with depth noise), against one image from in front of the slot: books named right in 48 (48), the whole
+  row and both side panels in view in 48 (19); for books 4 or more from the slot, 95% of corner errors under
+  3.7 mm (8.6) and thicknesses 1.2 mm too thick in the median (4.6). The neighbours and the books next to them
+  come from the middle view either way.
+- After the robot has put a book into the slot, `placed_x=` (where it let go) names the book seen there
+  slot offset 0, and the others around it; offset 0 counts on neither side of the gap.
 
 **How well it works** (`eval_perception.py`, 48 scenes, 12 of each scenario, 722 books matched to the truth):
 

@@ -6,6 +6,8 @@ Scripted insertion of the target book, for the clear, tight, leaning and packed 
     uv run mjpython insert_book.py --scenario tight --seed 0 --view     # watch it (macOS needs mjpython)
     uv run mjpython insert_book.py --scenario leaning --seed 12 --view  # a leaner it has to clamp
     uv run mjpython insert_book.py --scenario packed --seed 7 --view    # a packed row it manages
+    uv run python insert_book.py --scenario tight --seed 0 --perception camera   # decide from the wrist camera
+    uv run mjpython insert_book.py --scenario tight --seed 0 --perception camera --view   # ... and see what it saw
 
 Insertion (shelf frame: x along the row, y out of the shelf, z up)
   1. Hold the book at the pre-insertion pose: lined up with the gap, its back
@@ -88,6 +90,28 @@ and comes partly out of the shelf.
 The slide and the final push stop if the wrist force sensor feels the book
 stop giving way, rather than forcing a jammed book.
 
+Perception (--perception): where the script's knowledge of the row comes from.
+  - truth (default): the simulation, read whenever it is needed.
+  - camera: the wrist camera (rgbd_perception). --camera-noise realistic (the
+    default) gives it a D405's stereo errors and a calibration error drawn per
+    episode (camera.py: DepthNoise.d405, CalibrationError); basic only
+    independent depth noise per pixel.
+    Before touching the row, the arm sweeps along it and looks from three
+    inspection views (SWEEP), and the images are fused. It looks again, from
+    the middle view, each time the hand has left the shelf after changing the
+    row: after widening the gap, after each stand-up, after the stagger
+    push, after letting go of the book and after each push of it. The arm
+    really moves there and back: from a view, in joint space to just in
+    front of the next step, then straight in. While the fingers push a
+    neighbour aside, how far it went comes from where the fingertips are
+    (joint angles): the camera can't see a face the hand is on. Arm paths are
+    planned around the books where the last look saw them, and once let go
+    of, the inserted book is in the way of the arm's joint moves. Known
+    without looking: the shelf map, the book being inserted (its size, and
+    how it is held); the other books' depth is a prior. With --view, the
+    viewer draws what the last look saw over the scene (visualize.py's
+    draw_in_viewer: see-through boxes, spine corners, the gap's width).
+
 Control: Menagerie's position actuators, fed joint targets by differential IK
 along a min-jerk Cartesian path, with gravity compensation on the arm. The
 gripper is made as strong as the real Franka Hand (70 N continuous): Menagerie's
@@ -164,6 +188,11 @@ STAND_TRIES = 3             # lifts before giving up on standing it up
 STAND_TO = (0.5, 0.2, -0.2)  # lift it to this fraction of its tipping angle short of upright, per try
 LIFT_SPEED = 0.06           # m/s, peak, of the fingers lifting it
 SIDE_GAP = 0.003            # a book going into a wide gap stands this far off the neighbour it leans on
+
+# Looking with the wrist camera (--perception camera)
+SWEEP = (-0.3, 0.0, 0.3)    # m along the row from the slot: the views of the first look, in order
+HOLD_STILL = 0.2            # s the arm holds still at a view before the image is taken
+STILL = (0.003, math.radians(1.5))   # a book seen again within this (m, rad) of before hasn't moved
 
 # Scoring
 ALIGN_TOL = 0.010           # in place: spine within this of the more protruding neighbour's spine, or
@@ -305,11 +334,15 @@ class ArmIK:
         self.fingers = {g for g in self.robot if body(g) in ("panda/left_finger", "panda/right_finger")}
         self.finger_qadr = [model.jnt_qposadr[model.joint(j).id] for j in ("panda/finger_joint1", "panda/finger_joint2")]
         self.ignore = set()                 # geoms the arm may touch anywhere (the book it handles)
+        self.belief = []                    # (qpos address, pose): books to plan around where they are thought to be
 
     def sync(self, data, finger=None):
         """Copy the scene (books, fingers) from the simulation, for collision
-        checks; with `finger`, plan with each finger that far open instead."""
+        checks, with the books in `belief` where they are thought to be
+        instead; with `finger`, plan with each finger that far open instead."""
         self.d.qpos[:] = data.qpos
+        for adr, pose in self.belief:
+            self.d.qpos[adr:adr + 7] = pose
         if finger is not None:
             self.d.qpos[self.finger_qadr] = finger
 
@@ -527,11 +560,33 @@ def segment(a, b, n):
     return [interpolate(*a, *b, s) for s in np.linspace(0, 1, n + 1)[1:]]
 
 
+def still(b, before) -> bool:
+    """Whether a book seen again (BookEstimate) stands where it was seen
+    before, within what the camera gets wrong (STILL)."""
+    bottom = lambda c: (c[0, 0] + c[1, 0]) / 2
+    return (abs(bottom(b.spine_corners) - bottom(before.spine_corners)) < STILL[0]
+            and abs(b.spine_y - before.spine_y) < STILL[0]
+            and abs(b.lean - before.lean) < STILL[1] and abs(b.yaw - before.yaw) < STILL[1])
+
+
+def resized(b, like):
+    """A seen book (BookEstimate) with the thickness and height of `like`, its
+    spine face scaled about its centre."""
+    from perception import book_from_spine                     # perception imports this module
+    c = b.spine_corners
+    centre = c.mean(axis=0)
+    across = ((c[1] - c[0]) + (c[2] - c[3])) / 2 * like.thickness / b.thickness
+    up = ((c[3] - c[0]) + (c[2] - c[1])) / 2 * like.height / b.height
+    corners = [centre - across / 2 - up / 2, centre + across / 2 - up / 2,
+               centre + across / 2 + up / 2, centre - across / 2 + up / 2]
+    return book_from_spine(corners, b.slot_offset, b.depth, b.visible)
+
+
 class Episode:
     """One insertion attempt in a settled scene: geometry, hand poses, the
     steps of each sequence, and the score."""
 
-    def __init__(self, model, data, row, viewer=None, log=print):
+    def __init__(self, model, data, row, viewer=None, log=print, eyes=None):
         self.m, self.d, self.row, self.viewer, self.log = model, data, row, viewer, log
         self.shelf = ShelfFrame(row)
         self.xs, self.ys, self.zs = self.shelf.R.T                   # shelf axes in world
@@ -558,14 +613,34 @@ class Episode:
         self.intended = set()      # row books the sequence sets out to move (a leaner it stands up): not disturbance
         self.lean_on_neighbour = False   # put a book that could tip over in a wide gap against a neighbour
         self._perception = None
+        # Perception: with eyes=None the row is read from the simulation whenever it
+        # is needed; else from what a camera saw (an RGBDPerception, see look).
+        self.eyes = eyes
+        self.est = None            # what the last look saw
+        self.felt = {}             # slot faces felt by the fingertips since (-1 left, +1 right): x
+        self.views = None          # [(dx, arm angles)] of the inspection views the arm reaches
+        self.far = False           # the arm is at a view: go to the next step in joint space
+        self.placed = None         # (position, rotation) where the hand let go of the book in the slot
 
-    # --- Geometry, measured from the simulation --------------------------------
+    # --- Geometry, measured from the simulation (or as the camera saw it) ------
     def obstacles(self):
-        return obstacles(self.m, self.d, self.shelf, self.row)
+        if self.eyes is None:
+            return obstacles(self.m, self.d, self.shelf, self.row)
+        out = [(c[:, 0].min(), c[:, 0].max(), c[:, 1].max())
+               for c in (self.seen_box(b) for b in self.seen().books if b.slot_offset != 0)]
+        for name in ("side_panel_pos_x", "side_panel_neg_x"):       # on the shelf map: they don't move
+            c = self.shelf.box(self.m, self.d, self.m.geom(name).id)
+            out.append((c[:, 0].min(), c[:, 0].max(), c[:, 1].max()))
+        return out
 
     def slot(self):
         """The slot as it is now: x of the left and right neighbours' faces at
-        their spines, and y of their spines (shelf frame)."""
+        their spines, and y of their spines (shelf frame). With eyes: as the
+        last look saw them, with any face the fingertips have felt since."""
+        if self.eyes is not None:
+            est = self.seen()
+            L, R = est.book(-1).spine_corners, est.book(+1).spine_corners
+            return (self.felt.get(-1, L[:, 0].max()), self.felt.get(+1, R[:, 0].min()), L[:, 1].max(), R[:, 1].max())
         ti = self.row.target_index
         L = self.shelf.box(self.m, self.d, self.row_geoms[ti - 1])
         R = self.shelf.box(self.m, self.d, self.row_geoms[ti])
@@ -577,14 +652,29 @@ class Episode:
         to the side panel, less the thickness of every book on that side (the
         spaces between them plus the row's end, for upright books). Measured
         from the books' outlines instead, a book pushed until it turned would
-        seem to take up more of the row than it does."""
+        seem to take up more of the row than it does. With eyes: the books the
+        camera saw, and if it didn't see the side panel, no room past the last
+        book it saw."""
         W, ti, books = self.row.shelf_width, self.row.target_index, self.row.books
         xl, xr, _, _ = self.slot()
+        if self.eyes is not None:
+            est, rooms = self.seen(), []
+            for side, face in ((-1, xl), (1, xr)):
+                beyond = [b for b in est.books if side * b.slot_offset > 0]
+                end = est.panel_x[0 if side < 0 else 1]
+                if end is None:
+                    edges = [x for b in beyond for x in b.spine_corners[:, 0]] or [face]
+                    end = min(edges) if side < 0 else max(edges)
+                rooms.append(side * (end - face) - sum(b.thickness for b in beyond))
+            return tuple(rooms)
         return (xl + W / 2 - sum(b.thickness for b in books[:ti]),
                 W / 2 - xr - sum(b.thickness for b in books[ti:]))
 
     def estimate(self):
-        """What a camera would report about the row now (ground truth)."""
+        """What the robot knows about the row now: with eyes, what the last
+        look saw; else what a camera would report (ground truth)."""
+        if self.eyes is not None:
+            return self.seen()
         from perception import GroundTruthPerception           # perception imports this module
         if self._perception is None:
             self._perception = GroundTruthPerception(self.m, self.row)
@@ -622,6 +712,136 @@ class Episode:
 
     def push_limit(self, x, obs):
         return tip_limit(obs, x, [(FINGER_HALF_W, 0.0), (HAND_HALF_T, FINGERTIP_Z - PALM_Z)])
+
+    # --- Looking (with eyes) ----------------------------------------------------------
+    def seen(self):
+        """What the last look saw; the first time, look (the sweep)."""
+        if self.est is None:
+            self.look()
+        return self.est
+
+    def look(self, placed_x=None):
+        """Take the hand out of the shelf, move the arm to an inspection view
+        and estimate the row from the camera. The first look sweeps along the
+        row (an image from each view in SWEEP that the arm reaches, fused);
+        later ones look from the middle view only, and keep what the sweep saw
+        of the books further out. placed_x: where the hand let go of the book
+        it inserted. Raises RuntimeError if no view is reachable, or the
+        camera doesn't see both of the slot's neighbours."""
+        from dataclasses import replace
+        from inspection import solve_inspection                     # these import this module
+        from perception import gap_profile
+        if self.run is None:                                         # the first look: start from where the arm is
+            self.place_arm(self.d.qpos[self.ik.qadr].copy())
+        run, t0 = self.run, self.run.t
+        if self.views is None:
+            self.views = [(dx, v[0]) for dx in SWEEP if (v := solve_inspection(self.m, self.d, self.row, dx))]
+            if not self.views:
+                raise RuntimeError("the arm can't reach any view of the row for the camera")
+            views, x_slot = self.views, None                         # the slot where the shelf map has it
+        else:
+            views, x_slot = [min(self.views, key=lambda v: abs(v[0]))], self.slot_now()
+        frames = []
+        for dx, q in views:
+            where = f"{100 * abs(dx):.0f} cm {'left' if dx < 0 else 'right'} of the slot" if dx else "in front of the slot"
+            self.reposition(q, f"move the camera {where}")
+            run.wait("hold still for the camera", HOLD_STILL)
+            frames.append(self.eyes.capture(self.d))
+        est = self.eyes.estimate_from_frames(frames, x_slot=x_slot, placed_x=placed_x)
+        if self.est is not None:
+            # Past the slot's neighbours (which the middle view sees as squarely as the sweep did), a
+            # book that hasn't moved keeps what the looks before saw of it, and one that has keeps the
+            # size they saw: the sweep saw each book from the view nearest it, and from the middle view
+            # books further out come out too thick. The books further out than this view sees are kept
+            # as before too.
+            old = {b.slot_offset: b for b in self.est.books if abs(b.slot_offset) > 1}
+            reach = {s: max([abs(b.slot_offset) for b in est.books if s * b.slot_offset > 0], default=0)
+                     for s in (-1, 1)}
+            books = [b if b.slot_offset not in old else old[b.slot_offset] if still(b, old[b.slot_offset])
+                     else resized(b, old[b.slot_offset]) if old[b.slot_offset].visible >= b.visible else b
+                     for b in est.books]
+            books += [b for b in old.values() if 0 < reach[1 if b.slot_offset > 0 else -1] < abs(b.slot_offset)]
+            books.sort(key=lambda b: b.slot_offset)
+            panels = tuple(p if p is not None else old for p, old in zip(est.panel_x, self.est.panel_x))
+            est = replace(est, books=books, panel_x=panels,
+                          gap_widths=gap_profile(books, panels, est.board_top, est.gap_heights))
+        self.info["looks"] = self.info.get("looks", 0) + 1
+        self.info["look_time_s"] = self.info.get("look_time_s", 0.0) + run.t - t0
+        n = [sum(1 for b in est.books if s * b.slot_offset > 0) for s in (-1, 1)]
+        self.log(f"         the camera sees {n[0]} books left of the slot and {n[1]} right"
+                 f"{', and the book put into it' if est.book(0) else ''}")
+        if est.book(-1) is None or est.book(+1) is None:
+            raise RuntimeError("the camera didn't see both of the slot's neighbours")
+        self.est, self.felt, self.far = est, {}, True
+        self.believe()
+        if self.viewer is not None:                                  # draw what the camera saw over the scene
+            from visualize import draw_in_viewer
+            with self.viewer.lock():
+                self.viewer.user_scn.ngeom = 0
+                draw_in_viewer(self.viewer.user_scn, est, (self.t, self.h))
+
+    def slot_now(self):
+        """Where the slot is along the row, at the board: between the
+        neighbours' bottoms as last seen, moved by however far the fingertips
+        have pushed them since."""
+        est = self.est
+        faces = {-1: est.book(-1).spine_corners[:, 0].max(), 1: est.book(+1).spine_corners[:, 0].min()}
+        return est.slot_x() + sum(self.felt[s] - faces[s] for s in self.felt) / 2
+
+    def believe(self):
+        """Plan the arm's moves around the books where the last look saw them:
+        each spine where it was seen, with the rest of the box (the books'
+        real size, in the planner's model) behind it; and as if the books the
+        camera didn't see weren't there. The book it let go of in the slot:
+        where the camera saw it, else where the hand let go of it."""
+        from perception import book_box
+        ti, by_offset, belief = self.row.target_index, {b.slot_offset: b for b in self.est.books}, []
+
+        def pose_of(b, geom):
+            _, R, _ = book_box(b)
+            centre = b.spine_corners.mean(axis=0) - R[:, 1] * self.m.geom_size[geom][1]
+            return np.concatenate([self.shelf.to_world(centre), mat2quat(self.shelf.R @ R)])
+
+        for i, (geom, body) in enumerate(zip(self.row_geoms, self.row_bodies)):
+            b = by_offset.get(i - ti if i < ti else i - ti + 1)
+            pose = np.array([100.0 + i, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]) if b is None else pose_of(b, geom)
+            belief.append((self.m.jnt_qposadr[self.m.body_jntadr[body]], pose))
+        if self.placed is not None:
+            b = self.est.book(0)
+            pose = (pose_of(b, self.book_geom) if b is not None else
+                    np.concatenate([self.placed[0], mat2quat(self.placed[1])]))
+            belief.append((self.m.jnt_qposadr[self.book_joint], pose))
+        self.ik.belief = belief
+
+    def feel(self, side):
+        """With eyes: where the slot's face on `side` is now, from where the
+        fingertips pushing it are (joint angles). The camera can't see a face
+        the hand is on."""
+        if self.eyes is not None:
+            pos, rot = self.ik.fk(self.d.qpos[self.ik.qadr])
+            self.felt[side] = self.shelf.to_shelf(pos + rot @ [0, 0, FINGERTIP_Z])[0] + side * FINGER_HALF_W
+
+    def seen_box(self, b):
+        """Corners (8, 3; shelf frame) of a seen book's box, as the robot models it."""
+        from perception import book_box
+        centre, R, half = book_box(b)
+        return centre + (np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)]) * half) @ R.T
+
+    def held_pose(self):
+        """World position and rotation of the book in the hand, from where the
+        hand is (joint angles) and how it took the book."""
+        pos, rot = self.ik.fk(self.d.qpos[self.ik.qadr])
+        return pos + rot @ self.in_hand_p, rot @ self.in_hand_R
+
+    def held_box(self):
+        """Corners (8, 3; shelf frame) of the book in the hand (held_pose)."""
+        return self.book_corners(*self.held_pose())
+
+    def book_corners(self, p, R):
+        """Corners (8, 3; shelf frame) of the book to insert at world pose (p, R)."""
+        s = np.array([self.t, self.depth, self.h]) / 2
+        local = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)]) * s
+        return self.shelf.to_shelf(local @ R.T + p)
 
     # --- Hand poses ----------------------------------------------------------------
     # Holding: the fingers close across the book's thickness, approaching along
@@ -670,15 +890,24 @@ class Episode:
         tip_goal = max(target, self.push_limit(x_slot, obs))
         return slide + self.push_path(slide[-1], push_sign, x_slot, y_hold + self.depth / 2, tip_goal)[2]
 
-    def choose_arm(self, candidates, allowed=frozenset(), finger=None):
+    def choose_arm(self, candidates, allowed=frozenset(), finger=None, reach_from=None):
         """Many arm configurations reach a start pose. Near a joint limit the IK
         swings the other joints round, and the arm can jump to another
         configuration mid-move and knock the row. So follow each candidate's
         whole planned path, drop those where the arm runs into anything (other
         than `allowed` geoms its fingers may press on), and keep the one that
         stays farthest from the joint limits. candidates: (start pose, path, label).
-        `finger`: plan with the fingers this far open (default: as they are)."""
+        `finger`: plan with the fingers this far open (default: as they are).
+        `reach_from`: only configurations a joint move gets to from these arm
+        angles (see joint_route), with the fingers as they are."""
         ik, seed_rng, best = self.ik, np.random.default_rng(0), None
+
+        def reachable(q):
+            ik.sync(self.d)
+            ok = self.joint_route(reach_from, q) is not None
+            ik.sync(self.d, finger)
+            return ok
+
         ik.sync(self.d, finger)
         for rnd in range(IK_ROUNDS):                   # more random starts only if the first ones fall short
             seeds = [seed_rng.uniform(ik.lo, ik.hi) for _ in range(IK_SEEDS)]
@@ -691,7 +920,7 @@ class Episode:
                         continue
                     ik.q_rest = q
                     _, worst, ok = ik.follow(q, path, floor=-np.inf if best is None else best[0], allowed=allowed)
-                    if ok and (best is None or worst > best[0]):
+                    if ok and (best is None or worst > best[0]) and (reach_from is None or reachable(q)):
                         best = (worst, q, label)
             if best is not None and best[0] >= MIN_MARGIN:
                 break
@@ -719,8 +948,28 @@ class Episode:
         the hand carries on from where it is, if some candidate's start and
         path can be reached from there with joint limits to spare and without
         hitting anything; otherwise the arm moves for real to the best
-        configuration (reposition). Raises RuntimeError if none is possible."""
+        configuration (reposition). From an inspection view it always moves in
+        joint space, to just in front of the start, and then straight in, so
+        the arm doesn't swing through the books (or the one it let go of) on
+        its way. Raises RuntimeError if none is possible."""
         run = self.run
+        if run is not None and self.far:
+            fronts = [f for _, _, f in self.obstacles()] + [self.D / 2]
+            if self.placed is not None:
+                b = self.est.book(0)
+                fronts.append(b.spine_corners[:, 1].max() if b is not None else self.book_corners(*self.placed)[:, 1].max())
+            out = max(fronts) + 0.08
+            staged = []
+            for start, path, label in candidates:
+                back = max(0.0, out - self.tip_y(start))
+                ahead = (start[0] + self.ys * back, start[1])
+                staged.append((ahead, segment(ahead, start, 10) + list(path), (label, start, back)))
+            q, (label, start, back) = self.choose_arm(staged, allowed, finger, reach_from=run.q_cmd.copy())
+            self.reposition(q)
+            if back > 0:
+                run.move("move in to the start of the next step", *start)
+            self.far = False
+            return label
         if run is not None:
             self.ik.sync(self.d, finger)
             self.ik.q_rest = run.q_cmd.copy()                       # carrying on keeps the arm's posture: plan with it
@@ -737,7 +986,7 @@ class Episode:
             self.reposition(q)                                       # q puts the hand at that start pose
         return label
 
-    def reposition(self, q):
+    def reposition(self, q, name="move the arm to its next configuration"):
         """Take the hand straight out of the shelf, then move the arm in joint
         space to q, by way of the tucked home pose if the direct move would hit
         anything: the next step may need another arm configuration."""
@@ -747,19 +996,34 @@ class Episode:
         if out > tip:
             run.move("take the hand out of the shelf", run.pos + self.ys * (out - tip))
         ik.sync(self.d)
-        home = np.array(PANDA_HOME[:7])
-
-        def clear(q0, q1):
-            return not any(ik.collides(q0 + s * (q1 - q0)) for s in np.linspace(0, 1, 25)[1:])
-
-        if clear(run.q_cmd, q):
-            run.move_joints("move the arm to its next configuration", q)
-        elif clear(run.q_cmd, home) and clear(home, q):
-            run.move_joints("tuck the arm", home)
-            run.move_joints("move the arm to its next configuration", q)
-        else:
+        route = self.joint_route(run.q_cmd, q)
+        if route is None:
             raise RuntimeError("No collision-free joint move to the next arm configuration")
+        if len(route) > 1:
+            run.move_joints("tuck the arm", route[0])
+        run.move_joints(name, q)
         ik.q_rest = np.array(q, dtype=float)
+
+    def joint_route(self, q0, q):
+        """Waypoints of a joint move from q0 to q that runs into nothing in the
+        planner's scene: [q] straight there, or [home, q] by way of the tucked
+        home pose; None if neither is clear. A book let go of in the slot is
+        in the way too (the hand may only push it, in a straight move)."""
+        ik, home, ignore = self.ik, np.array(PANDA_HOME[:7]), self.ik.ignore
+
+        def clear(a, b):
+            return not any(ik.collides(a + s * (b - a)) for s in np.linspace(0, 1, 25)[1:])
+
+        if self.placed is not None:
+            ik.ignore = ignore - {self.book_geom}
+        try:
+            if clear(q0, q):
+                return [q]
+            if clear(q0, home) and clear(home, q):
+                return [home, q]
+            return None
+        finally:
+            ik.ignore = ignore
 
     def take_book(self, grasp_sign, centre, yaw=0.0, name="close the gripper on the book"):
         """Put the book between the open fingers, held as at (centre, yaw), and
@@ -810,11 +1074,13 @@ class Episode:
         # low and central on the spine, carries on from there.
         if not run.move("slide it in along the board", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
                         speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE):
-            c = self.shelf.box(self.m, self.d, self.book_geom)
+            c = self.shelf.box(self.m, self.d, self.book_geom) if self.eyes is None else self.held_box()
             if c[:, 1].mean() > self.D / 2 - CLEAR:                 # centre not over the board: can't let go
                 raise RuntimeError("the book jammed at the slot's entrance")
         run.wait("open the gripper", 0.4, grip=GRIP_OPEN)
         t_release = run.t
+        if self.eyes is not None:
+            return (t_release, *self.push_home_seen(x_slot, push_sign, t_release))
 
         # Sliding in drags the neighbours back into the shelf, which moves the
         # spine to line up with: aim at where they are now.
@@ -861,6 +1127,46 @@ class Episode:
         run.move("back out", *self.push_pose(sign, x_book, max(self.D / 2, tip_goal) + 0.05))
         run.wait("let it settle", 1.0)
         return t_release, t_done, blocked
+
+    def push_home_seen(self, x_slot, push_sign, t_release):
+        """seat's push, with eyes: back off, look where the book and its
+        neighbours are now, and push the book into place from the front if it
+        isn't, looking again after each push (as without eyes, it drags the
+        neighbours back, which moves where it has to go). Where the hand let
+        go of it stands in for the book if the camera doesn't find it there.
+        Returns (time in place, whether the hand was blocked)."""
+        run, released = self.run, self.held_box()
+        self.placed = self.held_pose()
+        self.believe()
+        tip_back = max(self.D / 2 + 0.015, released[:, 1].max() + 0.02)
+        run.move("back off", run.pos + self.ys * (tip_back - self.tip_y((run.pos, run.rot))))
+        t_done, blocked, pushed, tip_goal = t_release, False, True, None
+        for k in range(5):                                           # a push, then up to 3 more, as without eyes
+            self.look(placed_x=x_slot)
+            target = self.seat_target()[0]
+            book = self.est.book(0)
+            c = released if book is None else book.spine_corners
+            x_book, spine = c[:, 0].mean(), c[:, 1].max()
+            if spine <= target + 0.002:
+                self.log("         it is in place")
+                break
+            goal = max(target, self.push_limit(x_book, self.obstacles()))
+            if k == 4 or (k > 0 and (not pushed or goal >= tip_goal - 0.001)):   # stuck, or the hand can't go deeper
+                break
+            tip_goal, blocked = goal, goal > target
+            tip_back = max(self.D / 2 + 0.015, spine + 0.02)
+            sign = self.begin([(self.push_pose(s, x_book, tip_back),
+                                [self.push_pose(s, x_book, y) for y in np.linspace(tip_back, tip_goal, 30)], s)
+                               for s in (push_sign, -push_sign)])
+            run.move("reach the spine", *self.push_pose(sign, x_book, spine + 0.005))
+            what = "push it into place" if k == 0 else "push it further (the neighbours went back with it)"
+            pushed = run.move(what if not blocked else
+                              f"{what} (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
+                              *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=PUSH_STOP_FORCE)
+            t_done = run.t
+            run.move("back out", *self.push_pose(sign, x_book, max(self.D / 2, tip_goal) + 0.05))
+        run.wait("let it settle", 1.0)
+        return t_done, blocked
 
     def score(self, t_start, t_release, t_done, blocked, **info) -> dict:
         m, d = self.m, self.d
@@ -1012,10 +1318,15 @@ class Episode:
         run.move("back to the middle", *self.push_pose(ps, x_slot, tip_in))
         run.move("take the fingers out", *self.push_pose(ps, x_slot, tip_out))
         gap_time = run.t - t_start
+        if self.eyes is not None:
+            self.look()
         xl, xr, _, _ = self.slot()
         self.log(f"         the gap is now {1000 * (xr - xl):.1f} mm at the spines, for a {1000 * self.t:.1f} mm book")
         if xr - xl < self.t:                                         # the push fell short: it can't go in straight
             return self.skip("the push left the gap narrower than the book")
+        if self.eyes is not None:                                    # the arm is at the view: plan the insertion afresh
+            self.info.update(gap_time_s=gap_time, push_left_m=dl, push_right_m=dr)
+            return self.insert(self.info["method"])
         x_slot = (xl + xr) / 2
         pre = self.book_pre(x_slot)
         run.move("turn the hand to the pre-insertion pose", *self.grasp_pose(gs, pre))
@@ -1077,6 +1388,7 @@ class Episode:
         for k in range(tries):
             self.run.move(f"push the {name} neighbour{' further' if k else ''} to its mark",
                           *self.push_pose(push_sign, cmd - side * FINGER_HALF_W, tip_in), speed=GAP_PUSH_SPEED)
+            self.feel(side)
             xl, xr, _, _ = self.slot()
             short = side * (target - (xl if side < 0 else xr))
             if short < 0.001 or cmd == limit:
@@ -1200,6 +1512,8 @@ class Episode:
                        [self.col_pose(sign, x, tip_in, z) for x, z in arc], speed=LIFT_SPEED)
             run.move("take the fingers out", *self.col_pose(sign, arc[-1][0], tip_out, arc[-1][1]))
             run.wait("let it settle", 0.5)
+            if self.eyes is not None:
+                self.look()
             b = self.estimate().book(side)
             self.log(f"         it now leans {math.degrees(-side * b.lean):+.1f} deg into the slot")
             if -side * b.lean < math.radians(LEAN_MIN_DEG):
@@ -1217,9 +1531,14 @@ class Episode:
         ti = self.row.target_index
         li = ti - 1 if side < 0 else ti
         geom, body, bk = self.row_geoms[li], self.row_bodies[li], self.row.books[li]
-        t, depth, h = bk.thickness, bk.depth, bk.height
-        R = self.shelf.R.T @ self.d.xmat[body].reshape(3, 3)          # its axes, shelf frame
-        c = self.shelf.to_shelf(self.d.xpos[body])
+        if self.eyes is None:
+            t, depth, h = bk.thickness, bk.depth, bk.height
+            R = self.shelf.R.T @ self.d.xmat[body].reshape(3, 3)      # its axes, shelf frame
+            c = self.shelf.to_shelf(self.d.xpos[body])
+        else:                                                         # its box as the camera saw it (depth: the prior)
+            from perception import book_box
+            c, R, half = book_box(self.seen().book(side))
+            t, depth, h = 2 * half
         out = -side                                                   # toward the slot along x
         xb = R[:, 0] * (1 if R[0, 0] * out > 0 else -1)               # across it, toward the slot
         yb = R[:, 1] * (1 if R[1, 1] > 0 else -1)                     # front to back, toward the spine
@@ -1274,6 +1593,8 @@ class Episode:
             p_end, R_end = pose(swing)
             run.move("take the fingers out", p_end + R_end @ [0, 0, -0.07])
             run.wait("let it settle", 0.5)
+            if self.eyes is not None:
+                self.look()
             b = self.estimate().book(side)
             self.log(f"         it now leans {math.degrees(-side * b.lean):+.1f} deg into the slot")
             if -side * b.lean < math.radians(LEAN_MIN_DEG):
@@ -1317,7 +1638,8 @@ class Episode:
         w = FINGER_HALF_W
         xl, xr, fl, fr = self.slot()
         x_f, n_spine, o_spine = (xr, fr, fl) if side > 0 else (xl, fl, fr)
-        o = self.shelf.box(self.m, self.d, self.row_geoms[ti - 1 if side > 0 else ti])
+        o = (self.shelf.box(self.m, self.d, self.row_geoms[ti - 1 if side > 0 else ti]) if self.eyes is None
+             else self.seen_box(self.seen().book(-side)))
         room_back = o[:, 1].min() + self.D / 2 - BACK_GAP              # how far it can go back
         push_back = min(max(0.0, STAGGER - (n_spine - o_spine)), room_back)
         if n_spine - (o_spine - push_back) < MIN_REACH + 0.002:
@@ -1355,6 +1677,7 @@ class Episode:
         for k in range(3):                                          # the arm gives way under load: push on
             run.move(f"push it aside{' further' if k else ''}", *self.col_pose(sign, goal, tip_aside, z),
                      speed=GAP_PUSH_SPEED)
+            self.feel(side)
             xl, xr, _, _ = self.slot()
             short = opening - (xr - xl)
             if short < 0.001:
@@ -1365,6 +1688,8 @@ class Episode:
         run.move("ease off its face", *self.col_pose(sign, goal - side * EASE_OFF, tip_aside, z))
         run.move("take the fingers out", *self.col_pose(sign, goal - side * EASE_OFF, tip_out, z))
         run.wait("let it settle", 0.3)
+        if self.eyes is not None:
+            self.look()
         return True
 
     def skip(self, reason) -> dict:
@@ -1394,15 +1719,17 @@ def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries
 def report(res: dict) -> str:
     verdict = "SUCCESS" if res["success"] else "FAIL"
     how = f" [{res['method']}]" if res.get("method") else ""
+    looked = f" | looked {res['looks']} times ({res['look_time_s']:.0f} s)" if res.get("looks") else ""
     if "skipped" in res:
-        return f"  SKIPPED{how}: {res['skipped']} | other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm"
+        return (f"  SKIPPED{how}: {res['skipped']} | other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm"
+                f"{looked}")
     place = (f"spine {1000 * res['offset_m']:+.1f} mm from the neighbour's" if res["rule"] == "flush" else
              f"deeper than its neighbours, spine {1000 * res['offset_m']:.1f} mm inside the front edge")
     return (f"  {verdict}{how}: tilt {res['tilt_deg']:.1f} deg, {place}"
             f"{' (hand blocked)' if res['blocked'] else ''}, {'released' if res['released'] else 'STILL TOUCHING'}\n"
             f"  other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm (all together "
             f"{1000 * res['total_shift_m']:.0f} mm), most tilted {res['neighbour_tilt_change_deg']:.1f} deg"
-            f" | let go after {res['time_to_release_s']:.1f} s, in place after {res['time_to_seat_s']:.1f} s")
+            f" | let go after {res['time_to_release_s']:.1f} s, in place after {res['time_to_seat_s']:.1f} s{looked}")
 
 
 def main():
@@ -1413,6 +1740,11 @@ def main():
     ap.add_argument("--strategy", choices=("one-sided", "split"), default="one-sided",
                     help="tight: push one neighbour aside, or split the widening between both")
     ap.add_argument("--margin", type=float, default=GAP_MARGIN, help="tight: room left around the book, m")
+    ap.add_argument("--perception", choices=("truth", "camera"), default="truth",
+                    help="where the script's knowledge of the row comes from: the simulation, or the wrist camera")
+    ap.add_argument("--camera-noise", choices=("realistic", "basic"), default="realistic",
+                    help="camera: a D405's stereo errors and a calibration error (camera.py: DepthNoise.d405, "
+                         "CalibrationError), or only independent depth noise per pixel")
     ap.add_argument("--panda", default=DEFAULT_PANDA, help="Menagerie panda.xml")
     ap.add_argument("--view", action="store_true", help="watch in the MuJoCo viewer (run with mjpython on macOS)")
     a = ap.parse_args()
@@ -1434,6 +1766,14 @@ def main():
               f"gap {1000 * (row.gap_right - row.gap_left):.0f} mm for a {1000 * b.thickness:.0f} mm book "
               f"({1000 * b.depth:.0f} mm deep, {b.mass:.2f} kg)")
         log = print if a.trials == 1 else (lambda *_: None)
+        eyes = None
+        if a.perception == "camera":
+            from camera import CalibrationError, DepthNoise, WristCamera
+            from rgbd_perception import RGBDPerception               # it imports this module
+            rng = np.random.default_rng(seed)
+            cam = (WristCamera(model, noise=DepthNoise.d405(), rng=rng, calibration=CalibrationError())
+                   if a.camera_noise == "realistic" else WristCamera(model, noise=DepthNoise(), rng=rng))
+            eyes = RGBDPerception(model, row, cam)
         if a.view:
             import mujoco.viewer
             with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -1441,7 +1781,7 @@ def main():
                 # the gap) when it opens a file, so do it here.
                 with viewer.lock():
                     mujoco.mjv_defaultFreeCamera(model, viewer.cam)
-                res = attempt(Episode(model, data, row, viewer, log))
+                res = attempt(Episode(model, data, row, viewer, log, eyes))
                 print(report(res))
                 print("Close the viewer window to exit.")
                 while viewer.is_running():
@@ -1449,13 +1789,15 @@ def main():
                     viewer.sync()
                     time.sleep(model.opt.timestep)
         else:
-            ep = Episode(model, data, row, None, log)
+            ep = Episode(model, data, row, None, log, eyes)
             try:
                 res = attempt(ep)
                 print(report(res))
             except RuntimeError as e:                 # no safe way to do it in this scene, or it jammed
                 res = {"success": False, "error": str(e), **ep.info}
                 print(f"  FAIL{' [' + ep.info['method'] + ']' if 'method' in ep.info else ''}: {e}")
+        if eyes is not None:
+            eyes.close()
         results.append(res)
 
     if a.trials > 1:
