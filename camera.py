@@ -23,7 +23,15 @@ the target slot) are hidden, as no real camera would see them.
 Images come out upright: if the camera is rolled so that its image would show
 the world upside down (as at the inspection pose), the image and the camera
 frame are both turned 180 deg about the viewing axis. The pose in the frame is
-the camera's actual pose when the image was taken, read from the simulation.
+the camera's pose when the image was taken, read from the simulation; with a
+CalibrationError, it and K are what the robot believes instead (the image is
+still taken from where the camera really is).
+
+Errors: WristCamera(model, noise=DepthNoise(), ...) is the basic depth model
+(random error per pixel, no reading at edges). DepthNoise.d405() adds a stereo
+camera's errors: smooth (not per-pixel) random error, a depth offset per
+camera, edge fattening and the stereo shadow. calibration=CalibrationError()
+adds a hand-eye and intrinsics error per camera.
 
 Off-screen rendering needs an OpenGL context: in WSL, set MUJOCO_GL=egl.
 """
@@ -34,6 +42,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import cv2
 import mujoco
 import numpy as np
 
@@ -69,32 +78,119 @@ def intrinsics(fovy_deg: float, width: int, height: int) -> np.ndarray:
 @dataclass
 class DepthNoise:
     """Errors of a stereo depth camera like the D405, applied to a perfect depth
-    image (all optional; the defaults are a rough guess at the D405, to be set
-    from measurements):
+    image. The defaults are the basic model; DepthNoise.d405() adds the stereo
+    errors after it:
       - random error growing with distance squared: std = z^2 * subpixel / (f * baseline),
-        with the D405's 18 mm baseline, ~0.08 px matching error and its focal length at
-        1280 px wide (~670 px): about 1.5 mm at 50 cm;
+        Intel's formula for D400 depth (its tuning guide uses 0.08 px; below 0.1 on
+        well-textured targets), with the D405's 18 mm baseline and its focal length at
+        1280 px wide (~670 px): about 1.7 mm at 50 cm;
       - no reading where depth jumps by more than `edge_jump` to a neighbouring pixel
-        (stereo matching fails at object edges), and outside [min_range, max_range]."""
+        (stereo matching fails at object edges), and outside [min_range, max_range].
+    Stereo errors (off by default):
+      - `correlation_px`: the random error is smooth over about this many pixels
+        (Gaussian), as matching over a window of pixels makes it, instead of
+        independent per pixel, so fitting a plane to many pixels averages less of it away;
+      - `offset_px`: std of a disparity offset fixed per camera (drawn by WristCamera):
+        depth comes out too near or too far everywhere, by more further away. D405
+        spec: depth within 2% at 50 cm;
+      - `fatten_px`: at a depth edge, the nearer surface's depth spreads this far
+        over the farther one (a matching window straddling the edge takes the nearer
+        depth);
+      - `shadow`: no reading where the second imager, `baseline` to the right of the
+        first, can't see the surface: beside the left of anything nearer than what is
+        behind it, and along the image's left edge.
+    These act on the image as the camera takes it, before WristCamera turns it upright."""
     subpixel: float = 0.08
     baseline: float = 0.018
     focal_px: float = 670.0
     edge_jump: float = 0.01
     min_range: float = 0.07
     max_range: float = 1.0
+    correlation_px: float = 0.0
+    offset_px: float = 0.0
+    fatten_px: int = 0
+    shadow: bool = False
 
-    def apply(self, depth: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-        z = depth.astype(np.float64)
+    @classmethod
+    def d405(cls) -> "DepthNoise":
+        """The stereo errors of a D405 on book spines (matte, partly printed): a
+        matching error of 0.1 px, smooth over 2 px; a disparity offset of 0.17 px
+        std (0.7% at 50 cm, so 95% of cameras within 1.4%, inside the 2% spec);
+        edges fattened by 2 px; and the stereo shadow. The correlation and the
+        fattening are assumptions: Intel publishes neither."""
+        return cls(subpixel=0.10, correlation_px=2.0, offset_px=0.17, fatten_px=2, shadow=True)
+
+    def draw_offset(self, rng: np.random.Generator) -> float:
+        """A camera's disparity offset (px), kept within the 2% spec at 50 cm."""
+        limit = 0.02 * self.focal_px * self.baseline / 0.5
+        return float(np.clip(rng.normal(0.0, self.offset_px), -limit, limit)) if self.offset_px else 0.0
+
+    def apply(self, depth: np.ndarray, rng: np.random.Generator, offset: float = 0.0) -> np.ndarray:
+        """`offset`: this camera's disparity offset, px (see draw_offset)."""
+        z = true = depth.astype(np.float64)
         valid = (z >= self.min_range) & (z <= self.max_range)
-        std = z ** 2 * self.subpixel / (self.focal_px * self.baseline)
-        noisy = z + rng.normal(0.0, 1.0, z.shape) * std
+        fb = self.focal_px * self.baseline
+        if self.fatten_px:
+            far = np.where(z > 0, z, np.inf)
+            k = 2 * self.fatten_px + 1
+            nearest = cv2.erode(far, np.ones((k, k), np.uint8), borderType=cv2.BORDER_REPLICATE)
+            spread = valid & (z - nearest > self.edge_jump)
+            z = np.where(spread, nearest, z)
+        visible = np.ones_like(valid)
+        if self.shadow:
+            # A pixel at column u shows up at u - disparity in the second image. It is
+            # hidden there if something to its right lands at or left of it, or it lands
+            # outside the image.
+            u = np.arange(z.shape[1], dtype=np.float64)
+            at = u - np.where(true > 0, fb / np.maximum(true, 1e-9), 0.0)
+            ahead = np.minimum.accumulate(at[:, ::-1], axis=1)[:, ::-1]          # min over u' >= u
+            ahead = np.concatenate([ahead[:, 1:], np.full((z.shape[0], 1), np.inf)], axis=1)   # u' > u
+            visible = (ahead >= at - 0.5) & (at >= 0)
+        std = z ** 2 * self.subpixel / fb
+        err = rng.normal(0.0, 1.0, z.shape)
+        if self.correlation_px:
+            ks = int(8 * self.correlation_px + 1) | 1
+            k1 = cv2.getGaussianKernel(ks, self.correlation_px)
+            err = cv2.GaussianBlur(err, (ks, ks), self.correlation_px) / float(np.sum(k1 ** 2))   # back to unit std
+        noisy = z + err * std
+        if offset:
+            noisy = fb / (fb / np.maximum(noisy, 1e-9) + offset)
         jump = np.zeros_like(valid)
         dz_x, dz_y = np.abs(np.diff(z, axis=1)) > self.edge_jump, np.abs(np.diff(z, axis=0)) > self.edge_jump
         jump[:, 1:] |= dz_x
         jump[:, :-1] |= dz_x
         jump[1:, :] |= dz_y
         jump[:-1, :] |= dz_y
-        return np.where(valid & ~jump, noisy, 0.0).astype(np.float32)
+        return np.where(valid & visible & ~jump, noisy, 0.0).astype(np.float32)
+
+
+@dataclass
+class CalibrationError:
+    """How far off a camera's calibration is, as standard deviations; WristCamera
+    draws one error per camera, and images then report where the robot thinks the
+    camera is, and its believed intrinsics, while being taken from where it really
+    is with its real lens:
+      - hand-eye: where the camera sits on the hand. Published eye-in-hand RGB-D
+        calibrations are off by a few mm and about 0.5 to 1 deg;
+      - intrinsics: focal length and image centre (assumed: factory calibration)."""
+    translation: float = 0.0015                  # m, per axis
+    rotation: float = math.radians(0.3)          # rad, per axis (about 0.5 deg in all)
+    focal: float = 0.003                         # fraction of the focal length
+    centre_px: float = 1.0                       # px, per axis
+
+    def draw(self, rng: np.random.Generator, K: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """(camera <- believed camera transform (4, 4), believed intrinsics)."""
+        w = rng.normal(0.0, self.rotation, 3)
+        R = np.zeros(9)
+        q = np.zeros(4)
+        mujoco.mju_axisAngle2Quat(q, w / max(np.linalg.norm(w), 1e-12), np.linalg.norm(w))
+        mujoco.mju_quat2Mat(R, q)
+        E = np.eye(4)
+        E[:3, :3], E[:3, 3] = R.reshape(3, 3), rng.normal(0.0, self.translation, 3)
+        Kb = K.copy()
+        Kb[0, 0] = Kb[1, 1] = K[0, 0] * (1 + rng.normal(0.0, self.focal))
+        Kb[:2, 2] += rng.normal(0.0, self.centre_px, 2)
+        return E, Kb
 
 
 class WristCamera:
@@ -103,7 +199,8 @@ class WristCamera:
     when done (or use `with WristCamera(model) as cam:`)."""
 
     def __init__(self, model: mujoco.MjModel, width: int = WIDTH, height: int = HEIGHT, name: str = CAMERA,
-                 noise: Optional[DepthNoise] = None, rng: Optional[np.random.Generator] = None):
+                 noise: Optional[DepthNoise] = None, rng: Optional[np.random.Generator] = None,
+                 calibration: Optional[CalibrationError] = None):
         self.m, self.name = model, name
         self.cam = model.camera(name).id
         self.K = intrinsics(model.cam_fovy[self.cam], width, height)
@@ -118,6 +215,15 @@ class WristCamera:
         self.options = mujoco.MjvOption()
         self.options.sitegroup[:] = 0           # hide markers (e.g. the target slot's dot)
         self.noise, self.rng = noise, rng if rng is not None else np.random.default_rng()
+        # This camera's own errors, fixed for its life: its depth offset, and how far
+        # off its calibration is (where the robot thinks it sits, and its intrinsics).
+        # Each comes from its own stream, split off rng without drawing from it, so
+        # a seed gives the same of each whichever others are on, and the same
+        # per-image noise as without them.
+        offset_rng, calibration_rng = self.rng.spawn(2)
+        self.offset = noise.draw_offset(offset_rng) if noise is not None else 0.0
+        self.mount_error, self.K_believed = (calibration.draw(calibration_rng, self.K) if calibration is not None
+                                             else (np.eye(4), self.K))
 
     def capture(self, data: mujoco.MjData) -> CameraFrame:
         r = self.renderer
@@ -135,16 +241,17 @@ class WristCamera:
 
         depth[depth > MAX_RANGE] = 0.0
         if self.noise is not None:
-            depth = self.noise.apply(depth, self.rng)
+            depth = self.noise.apply(depth, self.rng, self.offset)
 
         pose = np.eye(4)
         pose[:3, :3] = data.cam_xmat[self.cam].reshape(3, 3) @ TO_OPENCV
         pose[:3, 3] = data.cam_xpos[self.cam]
+        pose = pose @ self.mount_error      # where the robot thinks the camera is
         if pose[2, 1] > 0:                  # the image's "down" points up in the world: the camera is upside down
             rgb, depth, seg = rgb[::-1, ::-1], depth[::-1, ::-1], seg[::-1, ::-1]
             pose[:3, :3] = pose[:3, :3] @ TURN_180
         return CameraFrame(np.ascontiguousarray(rgb), np.ascontiguousarray(depth), np.ascontiguousarray(seg),
-                           self.K.copy(), pose, float(data.time))
+                           self.K_believed.copy(), pose, float(data.time))
 
     def close(self):
         self.renderer.close()

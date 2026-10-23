@@ -112,6 +112,72 @@ def test_depth_noise_grows_with_distance_and_drops_edges():
     assert np.all(a[:10, :10] == 0)                              # nor too close
 
 
+def test_d405_noise_is_smooth_and_averages_less():
+    depth = np.full((300, 300), 0.5, dtype=np.float32)
+    noise = DepthNoise.d405()
+    a = noise.apply(depth, np.random.default_rng(0))[20:-20, 40:-20] - 0.5        # past the left edge's shadow
+    expected = 0.5 ** 2 * noise.subpixel / (noise.focal_px * noise.baseline)
+    assert np.std(a) == pytest.approx(expected, rel=0.15)
+    assert np.corrcoef(a[:, :-1].ravel(), a[:, 1:].ravel())[0, 1] > 0.8         # neighbours err alike
+    patches = a[:240, :240].reshape(12, 20, 12, 20).mean(axis=(1, 3))
+    assert np.std(patches) > 5 * expected / 20                                  # independent: expected / 20
+
+
+def test_depth_offset_is_fixed_per_camera_and_within_spec():
+    noise = DepthNoise.d405()
+    offsets = [noise.draw_offset(np.random.default_rng(k)) for k in range(400)]
+    fb = noise.focal_px * noise.baseline
+    errors = [fb / (fb / 0.5 + d) - 0.5 for d in offsets]                       # at 50 cm
+    assert max(abs(e) for e in errors) <= 0.02 * 0.5 + 1e-9                     # the 2% spec
+    assert np.std(errors) == pytest.approx(0.007 * 0.5, rel=0.2)
+    flat = np.full((50, 50), 0.5, dtype=np.float32)
+    quiet = DepthNoise(subpixel=0.0)
+    assert quiet.apply(flat, np.random.default_rng(0), offset=0.17).mean() == pytest.approx(fb / (fb / 0.5 + 0.17))
+
+
+def test_fattening_and_the_stereo_shadow():
+    """A near strip (50 cm) in front of a far wall (80 cm), no random error."""
+    depth = np.full((40, 300), 0.8, dtype=np.float32)
+    depth[:, 150:200] = 0.5
+    noise = DepthNoise(subpixel=0.0, fatten_px=2, shadow=True)
+    fb = noise.focal_px * noise.baseline
+    out = noise.apply(depth, np.random.default_rng(0))[20]
+    assert np.all(out[198:201] == pytest.approx(0.5))                           # the near depth spreads 2 px right
+    assert out[202] == 0 and out[203] == pytest.approx(0.8)                     # then no reading at the new edge
+    band = int(round(fb / 0.5 - fb / 0.8))                                      # ~9 px hidden from the second imager
+    assert np.all(out[150 - band + 1:148] == 0) and out[150 - band - 2] == pytest.approx(0.8)
+    edge = int(np.ceil(fb / 0.8))                                               # and the image's left edge
+    assert np.all(out[:edge - 1] == 0) and out[edge + 1] == pytest.approx(0.8)
+
+
+def test_calibration_error_moves_the_reported_pose_not_the_image(shot):
+    from camera import CalibrationError
+    model, data, _, frame = shot
+    cam = WristCamera(model, calibration=CalibrationError(), rng=np.random.default_rng(3))
+    with cam:
+        off = cam.capture(data)
+    np.testing.assert_array_equal(off.depth, frame.depth)                       # the same picture ...
+    E = np.linalg.inv(frame.pose) @ off.pose                                    # ... from a believed pose
+    shift, turn = np.linalg.norm(E[:3, 3]), math.degrees(math.acos((np.trace(E[:3, :3]) - 1) / 2))
+    assert 0 < shift < 0.01 and 0 < turn < 2
+    assert off.K[0, 0] != frame.K[0, 0] and abs(off.K[0, 0] / frame.K[0, 0] - 1) < 0.02
+
+
+def test_each_error_has_its_own_stream(shot):
+    """A seed gives the same calibration error and depth offset whichever other
+    errors are on, and the same per-image noise as the basic camera."""
+    from camera import CalibrationError
+    model, data, _, _ = shot
+    make = lambda noise, calibration: WristCamera(model, noise=noise, rng=np.random.default_rng(7),
+                                                  calibration=calibration)
+    with make(DepthNoise(), CalibrationError()) as a, make(DepthNoise.d405(), CalibrationError()) as b, \
+            make(DepthNoise.d405(), None) as c, make(DepthNoise(), None) as d:
+        np.testing.assert_array_equal(a.mount_error, b.mount_error)
+        np.testing.assert_array_equal(a.K_believed, b.K_believed)
+        assert b.offset == c.offset != 0
+        np.testing.assert_array_equal(a.capture(data).depth, d.capture(data).depth)
+
+
 def test_plot_frame_saves_a_picture(shot, tmp_path):
     import matplotlib
     matplotlib.use("Agg")
