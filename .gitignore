@@ -18,3 +18,7 @@ scenes/
 # macOS, and iCloud Drive placeholders for offloaded files
 .DS_Store
 *.icloud
+.vscode/
+debug_outputs/
+.pytest_cache/
+generated_assets

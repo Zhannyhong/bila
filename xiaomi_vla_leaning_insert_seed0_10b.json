@@ -1,0 +1,71 @@
+{
+  "allowed_skills": [
+    {
+      "backend": "insert_book.run_leaning_prep",
+      "description": "Use the leaning-book controller to push the blocking neighbour upright and widen the slot if needed.",
+      "name": "recover_leaning_slot"
+    },
+    {
+      "backend": "robot_runtime.observe_and_route",
+      "description": "Call perception again after contact changes the row so the next insertion skill uses the updated slot estimate.",
+      "name": "reobserve_gap"
+    },
+    {
+      "backend": "insert_book.Episode.insert",
+      "description": "Insert the target book when the re-observed slot is already wide enough.",
+      "name": "insert_if_clear"
+    },
+    {
+      "backend": "insert_book.Episode.insert_tight",
+      "description": "Widen the re-observed slot with the fingertip strategy, then insert the target book.",
+      "name": "insert_if_tight"
+    },
+    {
+      "backend": "operator_escalation",
+      "description": "Stop when the row remains unreachable, unstable, or unsafe after recovery attempts.",
+      "name": "abort_and_request_help"
+    }
+  ],
+  "controller_bindings": {
+    "insert_if_clear": "insert_book.Episode.insert",
+    "insert_if_tight": "insert_book.Episode.insert_tight",
+    "recover_leaning_slot": "insert_book.run_leaning_prep",
+    "reobserve_gap": "robot_runtime.observe_and_route"
+  },
+  "initial_route": "leaning",
+  "model_id": "XiaomiRobotics/Xiaomi-Robotics-1-10B",
+  "notes": [
+    "This scenario uses the Xiaomi VLA as a high-level skill selector, not as a direct torque or joint controller.",
+    "The scenario is intentionally narrow so VLA decisions can be compared against scripted routing on the same perception interface."
+  ],
+  "observation_sources": [
+    "scene_cam",
+    "wrist_cam",
+    "joint_state",
+    "wrist_force_torque",
+    "ShelfEstimate"
+  ],
+  "scenario_id": "xiaomi_vla_leaning_insert_seed_0",
+  "state_summary": {
+    "left_neighbor_label": "Foundational Systems (QD486 C93)",
+    "needs_unlean_first": true,
+    "observed_lean_into_slot_deg": 22.6,
+    "observed_min_gap_mm": 12.5,
+    "recommended_follow_up": "reobserve_then_insert",
+    "right_neighbor_label": "Selected Craft (Z130 B72)",
+    "seat_rule": "flush",
+    "seed": 0,
+    "target_book_depth_mm": 174.4,
+    "target_book_height_mm": 291.6,
+    "target_book_label": "Essential Signals (QC539 C74)",
+    "target_book_thickness_mm": 47.8,
+    "target_level": 2
+  },
+  "success_criteria": [
+    "The leaning neighbour no longer blocks the slot after recovery.",
+    "The target book is inserted upright and released.",
+    "Other books stay within the repository's disturbance tolerance.",
+    "The policy re-observes after recovery before selecting the insertion skill."
+  ],
+  "task_instruction": "Shelve the target book Essential Signals (QC539 C74) between Foundational Systems (QD486 C93) and Selected Craft (Z130 B72). First recover the leaning neighbour that intrudes into the slot, then re-observe the row, and finally choose the correct insertion skill without toppling other books."
+}
