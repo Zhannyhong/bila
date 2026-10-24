@@ -198,45 +198,136 @@ The bookcase is built from the floor up:
    **Packed**: the neighbours touch, so room has to be made first, and it can only come from the row's free
    space at one end: every book between the slot and that space has to slide along.
    - Shove (`--packed shove`, the default):
-     1. The closed fingers, stacked, push the books in front of which the fingers will go (the other neighbour,
-        and the book past the neighbour on the side with more free space) straight back, until their spines are
-        35 mm behind that neighbour's. If they have less room behind them than 20 mm, the other side is tried.
+     1. The fingers, stacked and 1 mm apart, push the books in front of which the fingers will go (the other
+        neighbour, and the book past the neighbour on the side with more free space) straight back, until their
+        spines are 35 mm behind that neighbour's. If they can't go back 12 mm, the other side is tried. (Fully
+        closed, the fingers press on each other with all the gripper's force, and a knock pushed one pad into the
+        other, where they stuck.) If neither can, or what is left to pinch is too little, the neighbour is
+        walked out of the row (`walk_out`): the books beside it go back as far as they can, the fingers pinch
+        what little of it sticks out, their tips 1.5 mm in front of those books (it only pulls, so the arm
+        doesn't sag in), pull it 10 mm out, and pinch again deeper, until it is 35 mm out. Pinches of 2 mm
+        held it. It goes back to where it stood once shoved.
      2. That neighbour now sticks out of the row. The fingers go either side of it, 4 mm off its faces, with the
-        hand turned to its yaw and the fingertips 7 mm in front of the books pushed back (under the load the arm
-        sags 6 to 10 mm deeper, and a fingertip on one of their spines pins it by friction), and close on it at
-        5 cm/s. At the simulated gripper's own speed (over 2 m/s from a few mm away) the pads went 18 mm into the
-        book before their contact stopped them, and squeezed it 3 cm back into the shelf.
+        hand turned to its yaw, the fingertips 7 mm in front of the books pushed back (down to 4 mm if they could go
+        back less than 19 mm) and the palm 12 mm in front of the other books: under the load the arm sags 6 to 10 mm
+        deeper, and a fingertip on a spine pins that book by friction, a palm drags it along. They close on it
+        at 5 cm/s. At the simulated gripper's own speed (over 2 m/s from a few mm away) the pads went 18 mm into
+        the book before their contact stopped them, and squeezed it 3 cm back into the shelf.
      3. They shove it, and every book beyond it, away from the slot until the gap is the book plus 6 mm at its
-        narrowest over the depth the book will take up, pushing on by what is missing up to 3 times. The
-        neighbour still turns about 6° in the fingers (the run pushes back far behind where they hold it), so
-        the gap at the spines is wider than that.
-     4. The whole run slides, which takes 30 to 110 N (the books' weight times their friction, 52 N in the
-        median row). Along the row the arm pushes with 55 N (joint 6 at its 12 N m) to 130 N depending on its
-        configuration, and the strong configurations have joint 5 near its limit. So for this step the arm
-        configuration is chosen for force, keeping 0.02 rad from the joint limits instead of 0.05. Without that,
-        59 of the 100 rows below succeed instead of 69 (14 lost, 4 gained).
-     5. The arm lags behind its target under the load. It holds where it got to, lets go, eases the fingers off
+        narrowest over the depth the book will take up. The whole run slides, which takes 30 to 110 N (the
+        books' weight times their friction, 52 N in the median row). Along the row the arm pushes with 55 N
+        (joint 6 at its 12 N m) to 130 N depending on its configuration, so the configuration is chosen for
+        force (`choose_strong`). The strong ones have joint 5 near its limit, so they keep 0.02 rad from the
+        joint limits instead of 0.05, and they reach it 1.5 to 2 cm into the push.
+     4. If the gap is still short, the arm lets go and pinches again, up to 5 times, each with the
+        configuration chosen afresh: the hand level or pointing 15° or 30° down into the shelf (which moves the
+        load off joint 5), and pushing only 15 mm if that is much stronger. Before each, the books the fingers
+        will be in front of go back, as the run has turned and fanned out.
+     5. The neighbour still turns, 6° in the median row: the run pushes back far behind where the fingers hold
+        it, and a 70 N pinch resists about 5 N m of turning (with 140 N it turned nearly as much). Where the run
+        takes more than about 60 N, the neighbour pivots on its back corner rather than sliding the run, and
+        pushing harder only turns it more.
+        So if the gap is still short and the run has 5 books or more, the far half of the run is shoved on its
+        own (pinching the book halfway along), then the near half into the gap that leaves.
+     6. The arm holds where it got to (it lags behind its target under the load), lets go, eases the fingers off
         the book's faces (else they drag it out with them), takes them out, and pushes the book back in line,
-        square to its spine. Then the book is inserted as in a clear row, or, if the gap is still narrower than
-        the book (the arm couldn't push the run far enough), after widening it as in a tight row.
-   - Seeds 0 to 99: 69 succeed (39 of seeds 0 to 49), against 10 with the stagger. In the 62 rows where the shove
-     opens the gap by itself, 59 are placed. In 25 the arm can't push the run far enough, and the tight-row
-     widening places 10 of them. 13 rows aren't shoved: in 11 the books beside the neighbour have less than
-     20 mm of room behind them, and 2 don't have room for the book on either side alone (they would need both).
-     Of the 18 shoved rows that fail, 9 find no arm configuration (or joint move) for the widening and
-     insertion, 4 jam at the entrance, 3 end up out of place, and 2 are left with a gap too narrow. The
-     most-moved book moves 58 mm on average (the run moves by the widening, 38 mm on average, plus what the arm
-     overshoots, and two books stay 35 mm back), against 69 mm with the stagger. It takes longer: in place after
-     45 s on average, against 25 s, as the arm changes configuration 3 or 4 times.
-   - Tried and dropped, on seeds 0 to 49: turning the hand against the book's turn while shoving, and pulling
-     the book out and taking it again with the whole pad (43 mm instead of 28). It still turns, and no more rows
-     are placed. A stronger grip (140 N, the Franka Hand's maximum) or grippier pads (friction 1.5) didn't help
-     either, nor did moving the robot base (0.65 m from the shelf instead of 0.8, or beside the slot as in the
-     gripper study, which helps the stagger but not this).
-   - What would help, measured on the same 100 rows with hardware changes that aren't in this code (on a study
-     version of the shove that places 67): a suction cup on a plunger between the fingers, to pull the
+        square to its spine. Then the book goes in as in a clear row, along the middle of the straight way in
+        (a turned neighbour narrows it and moves its middle off the gap's at the spines) if that clears the
+        book by 3 mm.
+     7. Otherwise the neighbour has turned: its front went with the fingers and its back stayed, so the gap is
+        wide at the spines and shut at the back. The fingers can't open it: they reach only about 4 cm behind
+        the spines, and pushing a spine turns the book further. The tight-row widening first pushes the other
+        neighbour into the room on its side, aiming at the narrowest gap. That neighbour went back for the
+        shove, and the palm has to stay in front of the books it sweeps past, so the books there that stand
+        proud of it (the shoved neighbour among them) first go back level with it: else the fingertips reach
+        only its front. In rows where the side shoved has barely room for the book, the run's turned books
+        take up more of it than when upright, and the room on the other side is needed too. Then the book
+        itself opens the rest (`wedge_slot`): held, it slides in where its back corners meet a neighbour's
+        face deepest (along the straighter neighbour's face if only one turned, between the two if both did),
+        as usual until 15 mm before that, then at 2 cm/s, stopping only above 60 N (at 90 N it slipped back
+        in the fingers). Its back corner meets the turned face deep in the shelf, near the middle of the
+        books' friction, and pushes it aside, so the neighbour and the run beyond straighten. Let go, the book
+        is pushed home until the wrist feels 100 N (at 40 N, wedged books stayed 3 to 9 cm out). If the
+        fingertips can't reach a neighbour, or no arm configuration does the widening, the book is wedged in
+        straight away.
+     8. If neither side alone has room for the book, one side is shoved as far as its room allows, and the
+        widening takes the rest from the other.
+   - Results, seeds 0 to 199 (ground truth, the Panda with the thin fingers):
+
+     | | seeds 0 to 99 | seeds 100 to 199 |
+     | --- | --- | --- |
+     | stagger | 10 | 5 |
+     | first shove (one pinch, level; commit `eb33682`) | 69 | 60 |
+     | shove, finished with the tight-row widening | 82 | 72 |
+     | shove, finished with the widening and the wedge | 90 | 78 |
+     | ... the books beside the other neighbour levelled first | 92 | 80 |
+     | ... the widening planned with the books it pushes moving | 94 | 81 |
+     | ... and the neighbour walked out where it can't be pinched | 96 | 89 |
+
+     The staged pinches and the split were made looking at seeds 0 to 99; on seeds 100 to 199 they place 15
+     rows the first shove didn't and lose 3 (paired exact test, p = 0.008). The wedge was made looking at the
+     turned-neighbour failures of both halves, so seeds 100 to 199 are no longer a fresh test for it: it
+     places 14 rows more and loses none; levelling the books beside the other neighbour, 5 more, losing 1;
+     planning the widening with the books it pushes moving, 3 more; walking the neighbour out, 10 more,
+     losing none. The most-moved book moves 65 mm on
+     average, and a book is in place after about 88 s (the first shove: 45 s, the stagger: 25 s): the arm
+     changes configuration for each pinch and push.
+   - Of the 15 rows lost, 6 have a neighbour that can't be pinched even to walk it out: in 5 it stands level
+     with or behind the books beside it once they are back, and in 1 a book further along stands so far out
+     that the palm can't come close enough. The other 9 follow a turned neighbour: 4 jam at the entrance, 3
+     are left narrower than the book even at the spines, and 2 wedged books stay 3 to 9 cm out.
+   - Fixes made on the way, outside the packed code:
+     - `reposition` keeps the arm's posture while it takes the hand out of the shelf. Choosing the next
+       configuration had already set the IK's rest posture to it, and its pull swung the arm round mid-move
+       (2.9 rad off in 30 steps), into the shelf. Clear, tight and stagger trials are unchanged.
+     - `take_book` starts the pads 0.2 mm off the book, as on `packed-scenario` (97cc3ec): 0.5 mm off, the
+       book could be squeezed out of the hand-over.
+     - A joint move that can't go direct or by way of the tucked home pose tries random waypoints, and
+       `choose_arm` tries 3 more rounds of starts if the first 3 found nothing.
+     - The tight-row widening plans the fingers free to touch every book on a side they push, not only the
+     neighbour: those go ahead of the fingers, but not in the planner's static scene, where a push longer
+     than the neighbour is thick ran the fingers into the next book (the same as `push_back` ignoring the
+     book it pushes). Tight rows are unchanged (48 of seeds 0 to 49).
+   - `face_x` takes a book's face from its own axes. It took the two corners furthest along the row, which
+       are the back face's once the book has turned more than atan(thickness / depth), about 7°.
+   - Tried and dropped: shoving long runs in two from the start (they lose rows a single shove manages);
+     turning the hand against the book's turn; pulling the book out and taking it again with the whole pad
+     (43 mm instead of 28); a 140 N grip; grippier pads; moving the robot base; turning the neighbour further
+     before the wedge, so the book meets it deeper (the run's fronts have used up the row's free space by
+     then: 0 to 13 mm were left); planning the hand around turned books' outlines rather than their bounding
+     boxes (no change); shoving heavy runs in segments of 3 books, the farthest first (they pivot as well:
+     one row more, two fewer); squeezing the wedged book at 140 N to slide it harder, or pushing it home
+     with up to 150 N (no change); widening again, both sides, when the first widening falls short (no
+     change); dragging a tall neighbour out by its top under a low board (it tips 6 to 7° until its top
+     meets the board, then the fingers slip over it).
+   - Tilting the neighbour out by its top (fingers pressing just behind its spine and pulling) works: its top
+     comes out with the hand, 5 cm at 16°, its bottom staying put. But let go, it falls back upright, and a
+     parallel gripper can't hold it tilted and pinch it at once. Rocking it (pushing its spine high up, then
+     letting it fall) only walks it back into the shelf. So rows where the books beside the neighbour have no
+     room behind them need another way to pull it out, such as a suction cup or a second arm.
+   - A second Panda (a study, not in this code), on a base it places beside or above the first, as a mobile
+     arm would, and out of reach until it is needed (parked beside the first, its tucked arm blocked the
+     first's moves). Where the neighbour can't be walked out (it stands level with or behind the books
+     beside it), the first arm puts its open fingers where the neighbour's top will come out, the second
+     presses its closed fingers on the top just behind the spine and tips the neighbour forward about its
+     front bottom edge (up to 20°, less under a low board above: its top back corner rises), the first
+     closes on it, the second leaves, and the first pulls it 35 mm out while standing it up. And where the
+     wedged book stalls with its middle still out of the shelf, the second arm pinches its top from above,
+     outside the shelf, and both push it in. Seeds 0 to 199: 190 (one arm: 185): it places the 5 rows
+     that can't be walked out and one stalled wedge, and 3 rows flip either way between the runs. Before the walk-out, the second arm placed 11 of the 20 rows
+     one arm couldn't pinch; on the 5 with a tall neighbour under a low board, a search over 8 pinches of the
+     first and 24 bases of the second (192 pairs per row) found none that both arms can do, but walking
+     the neighbour out places 3 of them with one arm. Pinching the neighbour with both arms, one above the
+     other, to shove harder gained nothing (-6 to +0.1 mm): a turned run's back doesn't follow pushes at
+     its front however hard.
+   - What would help, measured with hardware changes that aren't in this code (on an earlier version of the
+     shove that placed 67 of seeds 0 to 99): a suction cup on a plunger between the fingers, to pull the
      neighbour out where the books beside it can't go back, 77; wrist joints as strong as a KUKA iiwa's (40 N m
-     instead of 12), 73; both, 83.
+     instead of 12), 73; both, 83. On the current sequence (168 of seeds 0 to 199): the suction cup (60 kPa,
+     4 cm past the fingertips, pulling the neighbour 35 mm out where one arm can't pinch it), 182: 14 of the
+     20 rows one arm can't pinch, 3 more than a second arm, losing none, but it loses its hold on two thin
+     books (on a 16 mm spine it holds only 8 to 9 N); the gripper at the Franka Hand's 140 N peak throughout,
+     169. Of the 18 rows the cup leaves, 16 are runs whose neighbour turns and 2 are those thin books.
    - Stagger (`--packed stagger`): the closed fingers, stacked, push the neighbour on the side with less room 2 cm
      straight back into the shelf. The side of the other neighbour then shows in front of it, and the fingers push
      that one aside from there, until the gap at the spines is 4 mm wider than the fingers. They back off its face
