@@ -113,11 +113,12 @@ The bookcase is built from the floor up:
    `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
    then 7 per filler book only if `static_other_levels=False`.
 
-6. **Scripted insertion (clear, tight and packed scenarios)**
+6. **Scripted insertion (clear, tight, leaning and packed scenarios)**
    ```bash
    uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
    uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
    uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
+   uv run mjpython insert_book.py --scenario leaning --seed 12 --view    # a leaner it has to clamp
    uv run mjpython insert_book.py --scenario packed --seed 7 --view      # a packed row it manages
    ```
    A hand-written baseline. The target book is held in the gripper at a pre-insertion pose in front of the gap.
@@ -147,6 +148,9 @@ The bookcase is built from the floor up:
      1.2 kg), against 4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. Insertion results are the same. A short
      pad is worse: with a 19 mm one, the board's drag turned a book 6° in the grasp on one clear row (seed 9) and
      it fell over.
+   - The fingers start 0.2 mm off the book when they close on it, inside its 0.5 mm contact margin. Right on
+     the margin, one pad's contact could start a step late, and that finger ended up 9 mm inside the book (on
+     leaning seed 5, which then flew off when let go).
    - Clear, seeds 0 to 99: all 100 succeed, in place after 10 s on average. No episode moved another book more
      than 0.25 mm.
 
@@ -193,6 +197,33 @@ The bookcase is built from the floor up:
    - Why it's hard: the fingertips push a neighbour only near its spine, so it swivels instead of sliding. The gap
      opens at the spines but barely at the back, and the book has to widen the rest as it slides in. That is the
      contact-rich part the proposal's residual policy is meant to learn.
+
+   **Leaning**: a neighbour leans into the slot (more than 5°), so it is stood back up first. Then the row is
+   handled as a tight one: widened if the gap is short, then the insertion.
+   - Lift: the closed fingers, stacked so they take 10 mm along the row, go under the leaning book as far up its
+     face as they fit, and lift it along an arc about the bottom corner it pivots on. They press square on its
+     face, so it turns rather than slides. They stop just short of upright, within its tipping angle
+     (atan(thickness / height)) and still leaning slightly into the slot, so it stands up the rest of the way by
+     itself instead of going over onto its other side. Up to 3 lifts, each closer to upright.
+   - Clamp, when the fingers can't get under it at any height: they pinch it across its thickness near the spine,
+     with the hand rolled to its lean, and swing it about its bottom edge to just short of upright. Only one
+     finger has to fit between it and the far book. The other goes between it and the book on its own side,
+     which gets pushed along a little.
+   - A thin book let go in a gap more than twice its thickness can lean over, so it goes 3 mm off the taller
+     upright neighbour instead of in the middle.
+   - Seeds 0 to 49: every leaner is stood up, 47 by the lift and 3 by the clamp (seeds 12, 26 and 37), and all
+     50 books are placed, in place after 21.9 s on average. 45 rows need no widening after the stand-up and 5 are
+     widened with the fingertip. Leaving out the book that was stood up, the most-moved book moves 3.1 mm on
+     average (median 0.3 mm, worst 41 mm on seed 26, where the clamp pushes the leaner's own side along).
+   - The lift's fingers come in up to 4 mm off the leaning book's face, and as much lower, as far as the room
+     beside them allows. When the room was only checked where they press on the book, they passed within
+     0.1 mm of the far neighbour on seed 5 and dragged it 4 cm into the shelf. In 6 rows the most-moved book
+     then moved 27 to 44 mm, against 0 to 10 mm now.
+   - The rod on `feat/leaning-controller` (8 cm past the fingertips, pushing the leaner sideways at the top of
+     the wedge under it) stands up 46 of these 50 and doesn't insert. By its test right after the stand-up
+     (leaner under 8°, no other book tilted 10° or more, gap at least the book plus 4 mm without widening), 45
+     pass here. The other 5 just need the widening that follows. The same fingers stand the book up,
+     widen the gap and insert it, with no tool change.
 
    **Packed**: the neighbours touch, so the fingers have to make room for themselves first.
    - Stagger: the closed fingers, stacked, push the neighbour on the side with less room 2 cm straight back into

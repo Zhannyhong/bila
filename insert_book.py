@@ -1,9 +1,10 @@
 """
-Scripted insertion of the target book, for the clear, tight and packed scenarios.
+Scripted insertion of the target book, for the clear, tight, leaning and packed scenarios.
 
     uv run python insert_book.py --scenario clear --seed 0              # one episode, headless
     uv run python insert_book.py --scenario tight --seed 0 --trials 50  # success rate over seeds 0..49
     uv run mjpython insert_book.py --scenario tight --seed 0 --view     # watch it (macOS needs mjpython)
+    uv run mjpython insert_book.py --scenario leaning --seed 12 --view  # a leaner it has to clamp
     uv run mjpython insert_book.py --scenario packed --seed 7 --view    # a packed row it manages
 
 Insertion (shelf frame: x along the row, y out of the shelf, z up)
@@ -55,6 +56,26 @@ the book's thickness plus GAP_MARGIN.
     back corner, the held book slips in the grasp at 10-15 N, short of what
     sliding the books takes. A book wedge (back corner first) pushed the
     neighbours back into the shelf instead of aside, and placed none.
+
+Leaning scenario: a neighbour leans into the slot (more than LEAN_MIN_DEG), so
+it is stood back up first, then the row is handled as a tight one.
+  - Lift (stand_up): the closed fingers, stacked so they take 10 mm along the
+    row, go under the leaning book as far up its face as they fit, and lift it
+    along an arc about the bottom corner it pivots on, pressing square on its
+    face so it turns rather than slides. They stop within its tipping angle
+    (atan(thickness / height)) of upright, still leaning slightly into the
+    slot, and it stands up the rest of the way by itself. Up to STAND_TRIES
+    lifts, each closer to upright.
+  - Clamp (clamp_up, when the fingers can't get under it at any height): the
+    fingers pinch it across its thickness near the spine, with the hand
+    rolled to its lean, and swing it about its bottom edge to just short of
+    upright. Only one finger has to fit between it and the far book. The
+    other goes between it and the book on its own side, which is pushed
+    along a little.
+  - A book going into a gap more than twice its thickness could lean over
+    once let go, so it goes SIDE_GAP off the taller upright neighbour instead
+    of in the middle.
+  On seeds 0..49 every leaner stands up (3 by clamping) and all 50 books go in.
 
 Packed scenario: the neighbours touch, so the fingers can't get in. First
 make room for them (stagger_open): the closed fingers, stacked, push the
@@ -136,6 +157,13 @@ GAP_PUSH_SPEED = 0.03
 STAGGER = 0.020             # push the other neighbour back until the face to push shows this deep in front of it
 STAGGER_OPEN = 0.004        # open the gap this much wider than the fingers, then widen as in a tight row
 EASE_OFF = 0.004            # back the fingertips off a pushed face this far before taking them out
+
+# Leaning scenario
+LEAN_MIN_DEG = 5.0          # a neighbour leaning further than this into the slot gets stood back up
+STAND_TRIES = 3             # lifts before giving up on standing it up
+STAND_TO = (0.5, 0.2, -0.2)  # lift it to this fraction of its tipping angle short of upright, per try
+LIFT_SPEED = 0.06           # m/s, peak, of the fingers lifting it
+SIDE_GAP = 0.003            # a book going into a wide gap stands this far off the neighbour it leans on
 
 # Scoring
 ALIGN_TOL = 0.010           # in place: spine within this of the more protruding neighbour's spine, or
@@ -308,7 +336,9 @@ class ArmIK:
         p, R = self.fk(q)
         return np.concatenate([pos - p, 0.5 * sum(np.cross(R[:, i], rot[:, i]) for i in range(3))])
 
-    def solve(self, q, pos, rot, iters=2, max_step=0.2):
+    def solve(self, q, pos, rot, iters=2, max_step=0.2, pull=0.05):
+        """`pull`: fraction of the way toward the rest posture per iteration.
+        It sets how fast the posture settles, not where."""
         q = np.array(q, dtype=float)
         for _ in range(iters):
             e = self.error(q, pos, rot)
@@ -323,7 +353,7 @@ class ArmIK:
                 # The posture pull goes through an exact null-space projector:
                 # a damped one leaks into the task and leaves a steady error.
                 null = np.eye(7) - np.linalg.pinv(Jf, rcond=1e-3) @ Jf
-                dq = Jinv @ e + null @ (0.05 * (self.q_rest - q) * free)
+                dq = Jinv @ e + null @ (pull * (self.q_rest - q) * free)
                 pinned = free & (((q <= self.lo + 1e-6) & (dq < 0)) | ((q >= self.hi - 1e-6) & (dq > 0)))
                 if not pinned.any():
                     break
@@ -346,12 +376,17 @@ class ArmIK:
         """Track a list of (pos, rot) hand poses from q, warm-started like the
         runner does. Returns (end q, worst joint-limit margin on the way, reached
         the end). Gives up early once the margin drops below `floor`, or, if
-        `allowed` is given, once the arm runs into something else."""
+        `allowed` is given, once the arm runs into something else.
+        The runner re-solves every step, hundreds of times between two of
+        these poses, so its posture pull has settled by each one. A few
+        solves per pose at the runner's pull leave the posture lagging behind
+        (by up to 0.1 rad), so the margins came out wrong. A stronger pull
+        settles it in those few at the same posture."""
         worst = self.margin(q)
         if allowed is not None and self.collides(q, allowed):
             return q, worst, False
         for k, (pos, rot) in enumerate(poses):
-            q = self.solve(q, pos, rot, iters=4)
+            q = self.solve(q, pos, rot, iters=4, pull=0.5)
             worst = min(worst, self.margin(q))
             if worst < floor or (allowed is not None and k % 3 == 2 and self.collides(q, allowed)):
                 return q, worst, False
@@ -429,6 +464,24 @@ class Runner:
                 return False
         return True
 
+    def follow(self, name, poses, speed=TRANSIT_SPEED):
+        """Move the hand through a list of (pos, rot) poses as one min-jerk
+        move along the whole path (straight lines and slerps between them)."""
+        self.log(f"  {self.t:5.2f} s  {name}")
+        pts = [(self.pos.copy(), self.rot.copy())] + list(poses)
+        seg = [max(np.linalg.norm(b[0] - a[0]), np.linalg.norm(rotation_between(a[1], b[1])) * speed / TURN_SPEED)
+               for a, b in zip(pts, pts[1:])]
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        n = int(round(max(0.3, 1.875 * cum[-1] / speed) / self.m.opt.timestep))
+        for k in range(1, n + 1):
+            u = k / n
+            s = cum[-1] * u ** 3 * (10 - 15 * u + 6 * u * u)
+            i = min(int(np.searchsorted(cum, s, side="right")) - 1, len(seg) - 1)
+            f = 0.0 if seg[i] <= 0 else (s - cum[i]) / seg[i]
+            self.pos, self.rot = interpolate(*pts[i], *pts[i + 1], min(max(f, 0.0), 1.0))
+            self.q_cmd = self.ik.solve(self.q_cmd, self.pos, self.rot)
+            self.step()
+
     def move_joints(self, name, q_goal, speed=JOINT_SPEED):
         """Move the arm in joint space to q_goal along a min-jerk path (peak
         joint speed `speed`, rad/s). Only for moves clear of the shelf: nothing
@@ -455,6 +508,13 @@ class Runner:
 # 3. The scripted sequences
 # ---------------------------------------------------------------------------
 GRIP_CLOSED, GRIP_OPEN = 0.0, 255.0
+
+
+def axis_rot(axis, ang):
+    """Rotation matrix for `ang` rad about `axis` (Rodrigues)."""
+    a = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
+    K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+    return np.eye(3) + math.sin(ang) * K + (1 - math.cos(ang)) * K @ K
 
 
 def hand_pose_for_point(point_hand, point_world, rot):
@@ -495,6 +555,9 @@ class Episode:
         self.ik.ignore = {self.book_geom}
         self.run = None
         self.info = {}
+        self.intended = set()      # row books the sequence sets out to move (a leaner it stands up): not disturbance
+        self.lean_on_neighbour = False   # put a book that could tip over in a wide gap against a neighbour
+        self._perception = None
 
     # --- Geometry, measured from the simulation --------------------------------
     def obstacles(self):
@@ -519,6 +582,24 @@ class Episode:
         xl, xr, _, _ = self.slot()
         return (xl + W / 2 - sum(b.thickness for b in books[:ti]),
                 W / 2 - xr - sum(b.thickness for b in books[ti:]))
+
+    def estimate(self):
+        """What a camera would report about the row now (ground truth)."""
+        from perception import GroundTruthPerception           # perception imports this module
+        if self._perception is None:
+            self._perception = GroundTruthPerception(self.m, self.row)
+        return self._perception.estimate(self.d)
+
+    def gap_at(self, z, est=None):
+        """(x_left, x_right) of the slot at height z above the board, at the
+        spine plane: the right-most edge of anything left of it and the
+        left-most edge of anything right of it (side panels included)."""
+        from perception import slice_x
+        est = est or self.estimate()
+        zz = self.z0 + z
+        left = [s[1] for b in est.books if b.slot_offset < 0 and (s := slice_x(b.spine_corners, zz))]
+        right = [s[0] for b in est.books if b.slot_offset > 0 and (s := slice_x(b.spine_corners, zz))]
+        return max(left + [-self.row.shelf_width / 2]), min(right + [self.row.shelf_width / 2])
 
     def seat_target(self):
         """Where the book's spine should end up (y), and which rule applies:
@@ -642,11 +723,11 @@ class Episode:
         run = self.run
         if run is not None:
             self.ik.sync(self.d, finger)
+            self.ik.q_rest = run.q_cmd.copy()                       # carrying on keeps the arm's posture: plan with it
             for start, path, label in candidates:
                 lead = segment((run.pos, run.rot), start, 30)
                 _, worst, ok = self.ik.follow(run.q_cmd, lead + list(path), allowed=allowed)
                 if ok and worst >= 2 * MIN_MARGIN:                  # a little spare: the real path drifts
-                    self.ik.q_rest = run.q_cmd.copy()
                     run.move("move to the start of the next step", *start)
                     return label
         q, label = self.choose_arm(candidates, allowed, finger)
@@ -686,8 +767,12 @@ class Episode:
         m, d, ik = self.m, self.d, self.ik
         R_h = d.xmat[ik.hand].reshape(3, 3)
         R_b = R_h @ self.grasp_pose(grasp_sign, centre, yaw)[1].T @ self.shelf.rot(yaw)
+        # Each pad 0.2 mm off the book, inside its 0.5 mm contact margin (shelf_scene), so both
+        # contacts act from the first step. Right on the margin, one could start a step late: the
+        # finger closed 1.3 mm in that step, and its contact, starting that deep, was too soft to
+        # stop it before it was 9 mm into the book (which flew off when let go).
         for j in ("panda/finger_joint1", "panda/finger_joint2"):
-            d.qpos[m.jnt_qposadr[m.joint(j).id]] = self.t / 2 + 0.0005
+            d.qpos[m.jnt_qposadr[m.joint(j).id]] = self.t / 2 + 0.0002
             d.qvel[m.jnt_dofadr[m.joint(j).id]] = 0
         qa, va = m.jnt_qposadr[self.book_joint], m.jnt_dofadr[self.book_joint]
         d.qpos[qa:qa + 3] = d.xpos[ik.hand] + R_h @ [0, 0, PAD_Z] - R_b @ self.pad_in_book
@@ -793,8 +878,9 @@ class Episode:
         robot = self.ik.robot
         touching = any((con.geom1 == self.book_geom and con.geom2 in robot) or
                        (con.geom2 == self.book_geom and con.geom1 in robot) for con in d.contact[:d.ncon])
-        shifts = np.linalg.norm(d.xpos[self.row_bodies] - self.start_pos, axis=1)
-        dtilt = np.abs(np.array([book_tilt_deg(d.xquat[i]) for i in self.row_bodies]) - self.start_tilt)
+        others = [i for i in range(len(self.row_bodies)) if i not in self.intended]
+        shifts = np.linalg.norm(d.xpos[self.row_bodies] - self.start_pos, axis=1)[others]
+        dtilt = np.abs(np.array([book_tilt_deg(d.xquat[i]) for i in self.row_bodies]) - self.start_tilt)[others]
         res = {
             "upright": tilt <= UPRIGHT_DEG, "in_place": in_place, "released": not touching,
             "rule": rule, "offset_m": offset, "tilt_deg": tilt, "back_gap_m": back_gap, "blocked": blocked,
@@ -810,6 +896,14 @@ class Episode:
     def insert(self, method="none needed"):
         xl, xr, _, _ = self.slot()
         x_slot = (xl + xr) / 2
+        if self.lean_on_neighbour and xr - xl > 2 * self.t:
+            # Room for it to lean past its tipping angle, centred: stand it
+            # against the taller upright neighbour instead.
+            est = self.estimate()
+            up = [s for s in (-1, 1) if est.book(s) and abs(est.book(s).lean) < math.radians(3)]
+            if up:
+                s = max(up, key=lambda s: est.book(s).height)
+                x_slot = xl + self.t / 2 + SIDE_GAP if s < 0 else xr - self.t / 2 - SIDE_GAP
         pre = self.book_pre(x_slot)
         obs = self.obstacles()
         candidates = [(self.grasp_pose(gs, pre), self.insertion_plan(gs, ps, x_slot, pre[1], obs), (gs, ps))
@@ -990,6 +1084,204 @@ class Episode:
             if side * (cmd - limit) > 0:
                 cmd = limit
 
+    # --- Leaning scenario: stand the neighbour back up, then insert -----------------
+    def insert_leaning(self, strategy="one-sided", margin=GAP_MARGIN):
+        """Stand the neighbour that leans into the slot back up (stand_up, or
+        clamp_up if the fingers can't get under it), then carry on as in a
+        tight row (insert, widening first if the gap is short)."""
+        est = self.estimate()
+        lean = [s for s in (-1, 1) if est.book(s) is not None and -s * est.book(s).lean > math.radians(LEAN_MIN_DEG)]
+        how = None
+        if lean:
+            side = lean[0]
+            self.info["lean_deg"] = math.degrees(abs(est.book(side).lean))
+            self.intended.add(self.row.target_index - 1 if side < 0 else self.row.target_index)
+            up = self.stand_up(side)
+            if up is None:                                           # no way under it: clamp it instead
+                up = self.clamp_up(side)
+            if not up:
+                return self.skip(self.info.get("stand", "the neighbour fell back into the slot"))
+            how = self.info.pop("method")                            # insert_tight labels its own step
+            self.lean_on_neighbour = True
+
+        def label(then):
+            return f"{how}, then {then}" if how and then else how or then
+
+        try:
+            res = self.insert_tight(strategy, margin)
+        except RuntimeError:
+            self.info["method"] = label(self.info.get("method"))
+            raise
+        res["method"] = label(res.get("method"))
+        return res
+
+    def deepest_tip(self, xs, z_axis):
+        """fingertip_depth, and, if the turned hand reaches below the board's
+        top, no deeper than keeps its palm in front of the board's edge."""
+        tip = self.fingertip_depth(xs, self.obstacles())
+        if z_axis - HAND_HALF_L < self.z0 + CLEAR:
+            tip = max(tip, self.D / 2 + CLEAR - (FINGERTIP_Z - PALM_Z))
+        return tip
+
+    def stand_up(self, side):
+        """Stand the neighbour on `side` (-1 left, +1 right), which leans into
+        the slot, back up: the closed fingers, stacked (10 mm along the row),
+        go under it and lift it along an arc about the bottom corner it pivots
+        on, to nearly upright, pressing square on its face, so it turns rather
+        than slides. They meet it as far up as they fit. A book within its
+        tipping angle (atan(thickness / height)) of upright stands up by
+        itself, so this only has to get it near there. Returns True if it
+        stays up once the hand has left, False if it falls back, and None if
+        the fingers can't get under it at all (nothing has moved then)."""
+        ti = self.row.target_index
+        geom = self.row_geoms[ti - 1 if side < 0 else ti]
+        thick, w = FINGER_THICK, FINGER_HALF_W
+        out = -side                                                  # toward the slot, from the leaner
+        for attempt in range(STAND_TRIES):
+            est = self.estimate()
+            b = est.book(side)
+            c = b.spine_corners
+            pivot = c[1] if side < 0 else c[0]                       # slot-side bottom corner
+            lean = -side * b.lean                                    # > 0: into the slot
+            # Take it to within its tipping angle of upright, still leaning
+            # slightly into the slot, so it lands on its base by itself rather
+            # than coasting over the top onto its other side. Closer to
+            # upright on each retry.
+            beta = -STAND_TO[attempt] * math.atan(b.thickness / b.height)
+            plan, why = None, {}
+            for r in np.arange(0.9 * b.height, 0.15 * b.height, -0.01):
+                # Contact point on its slot-side face, r up from the pivot. The
+                # fingers' top corner sits there, the fingers on the slot side.
+                cx, cz = pivot[0] + out * r * math.sin(lean), pivot[2] - self.z0 + r * math.cos(lean)
+                if cz - 2 * thick < 0.005:
+                    continue
+                # Room beyond the fingers pressed 1 mm into its face, down to
+                # where they come in from (up to 4 mm lower).
+                far = [self.gap_at(z, est)[1 if side < 0 else 0] for z in np.linspace(cz - 2 * thick - 0.005, cz, 5)]
+                room = (min(far) - cx if side < 0 else cx - max(far)) - (2 * w - 0.001) - FIT_CLEAR
+                if room < 0.001:
+                    why["no room under it"] = why.get("no room under it", 0) + 1
+                    continue                                         # the fingers don't fit under it here
+                arc = [(pivot[0] + out * r * math.sin(th) + out * (w - 0.001),
+                        self.z0 + r * math.cos(th) - thick - 0.001) for th in np.linspace(lean, -beta, 30)]
+                xs = [a[0] for a in arc]
+                tip_in = self.deepest_tip([min(xs), max(xs)], min(a[1] for a in arc))
+                if b.spine_y - tip_in < MIN_REACH:
+                    why["can't reach behind its spine"] = why.get("can't reach behind its spine", 0) + 1
+                    continue
+                tip_out = max(front for _, _, front in self.obstacles()) + 0.02
+                off = min(0.004, room)                               # come in just clear of its face
+                start, cands = (arc[0][0] + out * off, arc[0][1] - off), []
+                for sign in (1, -1):
+                    path = ([self.col_pose(sign, start[0], y, start[1]) for y in np.linspace(tip_out, tip_in, 15)[1:]]
+                            + [self.col_pose(sign, x, tip_in, z) for x, z in arc]
+                            + [self.col_pose(sign, arc[-1][0], y, arc[-1][1])
+                               for y in np.linspace(tip_in, tip_out, 10)[1:]])
+                    cands.append((self.col_pose(sign, start[0], tip_out, start[1]), path, sign))
+                try:
+                    sign = self.begin(cands, allowed={geom}, finger=0.0)
+                except RuntimeError:
+                    why["no arm path"] = why.get("no arm path", 0) + 1
+                    continue
+                plan = (r, start, arc, tip_in, tip_out, sign)
+                break
+            if plan is None:
+                self.info["stand"] = "the fingers can't get under the leaning book" + (
+                    f" ({max(why, key=why.get)})" if why else "")
+                return None if attempt == 0 else False
+            r, start, arc, tip_in, tip_out, sign = plan
+            self.info["method"] = "lift the leaner"
+            run = self.run
+            if run.grip != GRIP_CLOSED:
+                run.wait("close the gripper", 0.3, grip=GRIP_CLOSED)
+            run.move("put the closed fingers under the leaning book", *self.col_pose(sign, start[0], tip_in, start[1]))
+            run.follow(f"lift it up, {1000 * r:.0f} mm up its face",
+                       [self.col_pose(sign, x, tip_in, z) for x, z in arc], speed=LIFT_SPEED)
+            run.move("take the fingers out", *self.col_pose(sign, arc[-1][0], tip_out, arc[-1][1]))
+            run.wait("let it settle", 0.5)
+            b = self.estimate().book(side)
+            self.log(f"         it now leans {math.degrees(-side * b.lean):+.1f} deg into the slot")
+            if -side * b.lean < math.radians(LEAN_MIN_DEG):
+                return True
+        return False
+
+    def clamp_up(self, side):
+        """Stand the neighbour on `side` (-1 left, +1 right), which leans into
+        the slot, back up by holding it: the fingers pinch it across its
+        thickness near the spine, with the hand turned to its lean, and the
+        hand swings it about the bottom edge it pivots on to just short of
+        upright. Only one finger has to fit between it and the far book. The
+        other goes between it and the book on its own side, which is pushed
+        along a little. Returns True if it stays up once let go."""
+        ti = self.row.target_index
+        li = ti - 1 if side < 0 else ti
+        geom, body, bk = self.row_geoms[li], self.row_bodies[li], self.row.books[li]
+        t, depth, h = bk.thickness, bk.depth, bk.height
+        R = self.shelf.R.T @ self.d.xmat[body].reshape(3, 3)          # its axes, shelf frame
+        c = self.shelf.to_shelf(self.d.xpos[body])
+        out = -side                                                   # toward the slot along x
+        xb = R[:, 0] * (1 if R[0, 0] * out > 0 else -1)               # across it, toward the slot
+        yb = R[:, 1] * (1 if R[1, 1] > 0 else -1)                     # front to back, toward the spine
+        zb = R[:, 2] * (1 if R[2, 2] > 0 else -1)                     # up it
+        lean = math.atan2(out * zb[0], zb[2])                         # > 0: into the slot
+        pivot = c + xb * t / 2 - zb * h / 2                           # slot-side bottom edge
+        turn = axis_rot(yb, 0.01) @ zb                                # which way about yb stands it up
+        swing = (1 if math.atan2(out * turn[0], turn[2]) < lean else -1) * (lean - 0.5 * math.atan(t / h))
+        opening = min(0.04, t / 2 + 0.004)                            # each finger this far off the axis
+        # Grip as deep as PAD_INSET, but keep the palm (and the wide hand)
+        # in front of every spine nearby.
+        spine = (c + yb * depth / 2)[1]
+        front = max(f for lo, hi, f in self.obstacles()
+                    if hi > c[0] - HAND_HALF_L - 0.02 and lo < c[0] + HAND_HALF_L + 0.02)
+        inset = min(PAD_INSET, spine - (front + CLEAR - (PAD_Z - PALM_Z)))
+        if inset < 0.012:
+            self.info["stand"] = "neighbours stick out too far for the pads to get onto the leaning book"
+            return False
+        tip_out = max(f for _, _, f in self.obstacles()) + 0.03
+        allowed = {geom, self.row_geoms[ti - 1], self.row_geoms[ti]} | set(
+            self.row_geoms[:li] if side < 0 else self.row_geoms[li + 1:])   # its own side is pushed along
+        why = "no height where the fingers fit around it"
+        for r in np.arange(0.85 * h, 0.3 * h, -0.01):
+            g = c - zb * h / 2 + zb * r + yb * (depth / 2 - inset)       # where the pads hold it
+            cands = []
+            for gs in (1, -1):
+                hy, hz = gs * (self.shelf.R @ xb), -(self.shelf.R @ yb)
+                rot = np.column_stack([np.cross(hy, hz), hy, hz])
+
+                def pose(ang, out_y=0.0, g=g, rot=rot):
+                    Q = axis_rot(yb, ang)
+                    Rk = self.shelf.R @ Q @ self.shelf.R.T @ rot
+                    return self.shelf.to_world(pivot + Q @ (g - pivot) + yb * out_y) - Rk @ [0, 0, PAD_Z], Rk
+
+                out_y = tip_out - (g[1] - (FINGERTIP_Z - PAD_Z))       # fingertips in front of every spine
+                path = ([pose(0.0, out_y * (1 - s)) for s in np.linspace(0, 1, 15)[1:]]
+                        + [pose(swing * s) for s in np.linspace(0, 1, 25)[1:]])
+                cands.append((pose(0.0, out_y), path, (pose, out_y)))
+            try:
+                pose, out_y = self.begin(cands, allowed=allowed, finger=opening)
+            except RuntimeError as e:
+                why = str(e)
+                continue
+            self.info["method"] = "clamp the leaner"
+            run = self.run
+            run.wait("open the gripper to the book's thickness", 0.3, grip=GRIP_OPEN * opening / 0.04)
+            run.move("put the fingers around the leaning book", *pose(0.0))
+            run.wait("clamp it", 0.5, grip=GRIP_CLOSED)
+            run.follow(f"swing it up about its bottom edge, held {1000 * r:.0f} mm up",
+                       [pose(swing * s) for s in np.linspace(0, 1, 25)[1:]], speed=LIFT_SPEED)
+            run.wait("let go", 0.4, grip=GRIP_OPEN * opening / 0.04)
+            p_end, R_end = pose(swing)
+            run.move("take the fingers out", p_end + R_end @ [0, 0, -0.07])
+            run.wait("let it settle", 0.5)
+            b = self.estimate().book(side)
+            self.log(f"         it now leans {math.degrees(-side * b.lean):+.1f} deg into the slot")
+            if -side * b.lean < math.radians(LEAN_MIN_DEG):
+                return True
+            self.info["stand"] = "it fell back into the slot after the clamp let go"
+            return False
+        self.info["stand"] = f"can't clamp the leaning book either ({why})"
+        return False
+
     # --- Packed scenario: no gap at all ----------------------------------------------
     def insert_packed(self, margin=GAP_MARGIN):
         """Open a slot where the neighbours touch (stagger_open), just wide
@@ -1078,7 +1370,8 @@ class Episode:
         """Leave the book out: a failure, with how far the other books moved
         (only a push that fell short moves them)."""
         self.log(f"  skipped: {reason}")
-        shifts = np.linalg.norm(self.d.xpos[self.row_bodies] - self.start_pos, axis=1)
+        others = [i for i in range(len(self.row_bodies)) if i not in self.intended]
+        shifts = np.linalg.norm(self.d.xpos[self.row_bodies] - self.start_pos, axis=1)[others]
         return {"success": False, "skipped": reason, "neighbour_shift_m": float(shifts.max()),
                 "total_shift_m": float(shifts.sum()), **self.info}
 
@@ -1113,7 +1406,7 @@ def report(res: dict) -> str:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scenario", choices=("clear", "tight", "packed"), default="clear")
+    ap.add_argument("--scenario", choices=("clear", "tight", "leaning", "packed"), default="clear")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--trials", type=int, default=1, help="run seeds seed .. seed+trials-1 and summarise")
     ap.add_argument("--strategy", choices=("one-sided", "split"), default="one-sided",
@@ -1128,6 +1421,8 @@ def main():
             return ep.insert(method="")
         if a.scenario == "packed":
             return ep.insert_packed(a.margin)
+        if a.scenario == "leaning":
+            return ep.insert_leaning(a.strategy, a.margin)
         return ep.insert_tight(a.strategy, a.margin)
 
     results = []
