@@ -7,10 +7,10 @@ What it builds
     top board, side panels and back panel (the single cubby of the Isaac
     Gym version, stacked into a full bookcase).
   - A target level: a row of free-moving books (boxes) with a target slot,
-    in one of four scenario families: clear, tight, leaning, collapsed.
+    in one of five scenario families: clear, tight, leaning, collapsed, packed.
   - Filler rows on the other levels (static by default, for speed).
-  - Optional Franka Panda (from MuJoCo Menagerie) with a wrist camera
-    and a 6-axis force/torque sensor, plus a fixed scene camera.
+  - Optional Franka Panda (from MuJoCo Menagerie) with thin 10 mm fingers,
+    a wrist camera and a 6-axis force/torque sensor, plus a fixed scene camera.
 
 Frame convention (same as the Isaac Gym task)
   x = along the row, y = depth (back panel at -y, open front at +y), z = up.
@@ -39,7 +39,7 @@ from typing import List, Optional
 
 import numpy as np
 
-SCENARIOS = ("clear", "tight", "leaning", "collapsed")
+SCENARIOS = ("clear", "tight", "leaning", "collapsed", "packed")
 
 
 # ---------------------------------------------------------------------------
@@ -235,8 +235,8 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
         gap = target.thickness * _u(rng, cfg.tight_gap_factor)
     elif scenario == "leaning":
         gap = cfg.leaning_reserve          # final width is set below, from the lean angle
-    else:  # collapsed: the slot is closed, but a hole opens next to the run
-        gap = 0.0
+    else:  # collapsed: the slot is closed, but a hole opens next to the run.
+        gap = 0.0                          # packed: the slot's neighbours touch, upright
     hole = cfg.collapsed_reserve if scenario == "collapsed" else 0.0   # final width set below
 
     # Fill the row with books until the shelf is (nearly) full.
@@ -313,6 +313,8 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     gap_left = gap_right = None
     for i, b in enumerate(books):
         if i == ti:
+            if scenario == "packed":       # no spacing either: the neighbours' faces touch
+                x = books[ti - 1].x + books[ti - 1].thickness / 2
             gap_left = x
             x += gap
             gap_right = x
@@ -364,10 +366,22 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
 # ---------------------------------------------------------------------------
 # 3. Panda with wrist camera and F/T sensor (a modified copy of Menagerie's)
 # ---------------------------------------------------------------------------
+# Thin fingers for the Franka Hand, in place of Menagerie's (21 mm wide, too
+# wide for the narrower tight gaps): plain bars, 10 mm wide across their travel
+# and 12 mm thick out from the gripping face, as long as Menagerie's, with a
+# pad strip along all of the finger that reaches past the palm (46 mm, against
+# Menagerie's 17 mm pad), so the narrow finger still stops a book turning in
+# the grasp. insert_book.py holds books right up against the palm to use it all.
+FINGER_HALF_W = 0.005       # half-width across the finger's travel
+FINGER_THICK = 0.012        # thickness out from the gripping face
+FINGER_LEN = 0.0539         # length from where it is mounted (as Menagerie's)
+PAD_LEN = 0.046             # pad strip on the gripping side, from the tip back to the palm
+
+
 def make_panda_with_sensors(panda_xml: str) -> str:
     """Write `panda_shelf.xml` next to Menagerie's panda.xml (so mesh paths
-    still resolve) with a wrist camera, an F/T sensor site and no keyframe.
-    Returns the new file's path."""
+    still resolve) with a wrist camera, an F/T sensor site, thin fingers and
+    no keyframe. Returns the new file's path."""
     tree = ET.parse(panda_xml)
     root = tree.getroot()
     for kf in root.findall("keyframe"):
@@ -382,13 +396,41 @@ def make_panda_with_sensors(panda_xml: str) -> str:
     # fingers and pitched ~15 deg inward (placement checked in renders). MuJoCo cameras look down their -z.
     ET.SubElement(hand, "camera", name="wrist_cam", pos="0.09 0 0.08",
                   xyaxes="0 1 0 0.97 0 0.26", fovy="58")
+    # Thin fingers: a bar, recessed 2 mm on the gripping side, with a 2 mm pad
+    # strip there at its tip. In a finger's frame, z runs along it from where
+    # it is mounted and y points away from the other finger (Menagerie turns
+    # the right one 180 deg about z, so the same shape serves both).
+    bar = ((FINGER_HALF_W, (FINGER_THICK - 0.002) / 2, FINGER_LEN / 2),
+           (0, 0.002 + (FINGER_THICK - 0.002) / 2, FINGER_LEN / 2))
+    pad = ((FINGER_HALF_W, 0.001, PAD_LEN / 2), (0, 0.001, FINGER_LEN - PAD_LEN / 2))
+    for name in ("left_finger", "right_finger"):
+        finger = root.find(f".//body[@name='{name}']")
+        for g in finger.findall("geom"):
+            finger.remove(g)
+        for half, pos in (bar, pad):
+            ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), material="black",
+                          **{"class": "visual"})
+            ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), **{"class": "collision"})
     sensor = root.find("sensor")
     if sensor is None:
         sensor = ET.SubElement(root, "sensor")
     ET.SubElement(sensor, "force", name="ft_force", site="ft_site")
     ET.SubElement(sensor, "torque", name="ft_torque", site="ft_site")
     out = os.path.join(os.path.dirname(os.path.abspath(panda_xml)), "panda_shelf.xml")
-    tree.write(out)
+    # Several processes may build scenes at once (parallel trials, RL workers):
+    # leave an identical file alone, and swap a new one in whole, so no reader
+    # ever sees it half written.
+    xml = ET.tostring(root)
+    try:
+        with open(out, "rb") as fh:
+            if fh.read() == xml:
+                return out
+    except FileNotFoundError:
+        pass
+    tmp = f"{out}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(xml)
+    os.replace(tmp, out)
     return out
 
 
