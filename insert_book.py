@@ -119,7 +119,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import mujoco
 
-from shelf_scene import (FINGER_HALF_W, FINGER_LEN, FINGER_THICK, PANDA_HOME, ShelfConfig, _f, book_tilt_deg,
+from shelf_scene import (FINGER_HALF_W, FINGER_LEN, FINGER_THICK, PANDA_HOME, ShelfConfig, _f, add_book_geoms,
+                         add_book_visual_assets, add_page_visual_assets, book_children, book_tilt_deg,
                          build_scene, sample_row, settle)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -229,11 +230,15 @@ def build_model(cfg: ShelfConfig, row, panda_xml: str) -> mujoco.MjModel:
     park = (row.shelf_pos[0] + row.shelf_width / 2 + 0.5, 0.4, b.height / 2 + 0.0005)
     body = ET.SubElement(root.find("worldbody"), "body", name=b.name, pos=_f(*park))
     ET.SubElement(body, "freejoint", name=b.name + "_joint")
-    ET.SubElement(body, "geom", name=b.name + "_geom", **{"class": "book"},
-                  size=_f(b.thickness / 2, b.depth / 2, b.height / 2), mass=f"{b.mass:.5g}",
-                  friction=_f(b.friction, 0.005, 0.0001), rgba=_f(*b.rgba))
+    asset = root.find("asset")
+    visual_materials = add_book_visual_assets(asset, [b]) if cfg.book_meshes else {}
+    page_materials = add_page_visual_assets(asset, [b]) if cfg.book_meshes else {}
+    add_book_geoms(body, b, visual_materials, page_materials)
     key = root.find("keyframe/key")
-    key.set("qpos", key.get("qpos") + " " + _f(*park, 1, 0, 0, 0))   # its joint comes last in qpos
+    # Its joints come last in qpos: the freejoint, then one hinge per page
+    # section after the welded back one, all closed.
+    hinges = _f(*([0.0] * max(0, len(b.parts) - 1)))
+    key.set("qpos", key.get("qpos") + " " + _f(*park, 1, 0, 0, 0) + (" " + hinges if hinges else ""))
 
     # Gravity compensation has to be set before compiling: MuJoCo skips it
     # when the compiled model has no compensated bodies.
@@ -350,6 +355,7 @@ class ArmIK:
         self.fingers = {g for g in self.robot if body(g) in ("panda/left_finger", "panda/right_finger")}
         self.finger_qadr = [model.jnt_qposadr[model.joint(j).id] for j in ("panda/finger_joint1", "panda/finger_joint2")]
         self.ignore = set()                 # geoms the arm may touch anywhere (the book it handles)
+        self.book_of = {}                   # page-section geom -> its book's geom: see book_children
 
     def sync(self, data, finger=None):
         """Copy the scene (books, fingers) from the simulation, for collision
@@ -367,6 +373,7 @@ class ArmIK:
             if (c.geom1 in self.robot) == (c.geom2 in self.robot) or c.dist > -0.001:
                 continue
             arm, other = (c.geom1, c.geom2) if c.geom1 in self.robot else (c.geom2, c.geom1)
+            other = self.book_of.get(other, other)      # a page section counts as its book
             if other not in self.ignore and not (arm in self.fingers and other in allowed):
                 return True
         return False
@@ -607,6 +614,12 @@ class Episode:
         self.z_rest = self.z0 + self.h / 2 + 0.0005                  # book centre height on the board
         self.ik = ArmIK(model, PANDA_HOME[:7])
         self.ik.ignore = {self.book_geom}
+        # An articulated book keeps its box as a non-colliding envelope: the
+        # geoms that do touch are the page sections'. Name them after their
+        # book, so the sequences below can go on naming a book by its box.
+        for bk in [b] + list(row.books):
+            for child in book_children(bk):
+                self.ik.book_of[model.geom(child + "_geom").id] = model.geom(bk.name + "_geom").id
         self.run = None
         self.info = {}
         self.intended = set()      # row books the sequence sets out to move (a leaner it stands up): not disturbance
@@ -967,9 +980,10 @@ class Episode:
         else:
             offset = self.D / 2 - spine                              # how far inside the front edge
             in_place = offset >= EDGE_IN
-        robot = self.ik.robot
-        touching = any((con.geom1 == self.book_geom and con.geom2 in robot) or
-                       (con.geom2 == self.book_geom and con.geom1 in robot) for con in d.contact[:d.ncon])
+        robot, book_of = self.ik.robot, self.ik.book_of
+        touching = any((book_of.get(con.geom1, con.geom1) == self.book_geom and con.geom2 in robot) or
+                       (book_of.get(con.geom2, con.geom2) == self.book_geom and con.geom1 in robot)
+                       for con in d.contact[:d.ncon])
         others = [i for i in range(len(self.row_bodies)) if i not in self.intended]
         shifts = np.linalg.norm(d.xpos[self.row_bodies] - self.start_pos, axis=1)[others]
         dtilt = np.abs(np.array([book_tilt_deg(d.xquat[i]) for i in self.row_bodies]) - self.start_tilt)[others]
@@ -2056,6 +2070,10 @@ def main():
     ap.add_argument("--packed", choices=("shove", "stagger"), default="shove",
                     help="packed: shove the neighbour and the books beyond it, or stagger the neighbours")
     ap.add_argument("--panda", default=DEFAULT_PANDA, help="Menagerie panda.xml")
+    ap.add_argument("--book-meshes", action="store_true",
+                    help="draw the converted repo book covers (run dae_to_obj.py first)")
+    ap.add_argument("--book-pages", type=int, default=0, metavar="N",
+                    help="split every book's pages into N sections hinged on the spine (0 = one rigid box)")
     ap.add_argument("--view", action="store_true", help="watch in the MuJoCo viewer (run with mjpython on macOS)")
     a = ap.parse_args()
 
@@ -2069,8 +2087,9 @@ def main():
         return ep.insert_tight(a.strategy, a.margin)
 
     results = []
+    cfg = ShelfConfig(book_meshes=a.book_meshes, book_pages=a.book_pages)
     for seed in range(a.seed, a.seed + a.trials):
-        model, data, row = make_episode(ShelfConfig(), a.scenario, np.random.default_rng(seed), a.panda)
+        model, data, row = make_episode(cfg, a.scenario, np.random.default_rng(seed), a.panda)
         b = row.target_book
         print(f"seed {seed}: target level {row.target_level} (board top {row.target_board_top:.2f} m), "
               f"gap {1000 * (row.gap_right - row.gap_left):.0f} mm for a {1000 * b.thickness:.0f} mm book "
