@@ -16,7 +16,6 @@ uv run pytest tests/test_scenes.py::test_name -x
 uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
 uv run python view_scene.py --scenario leaning --seed 0
 uv run python insert_book.py --scenario tight --seed 0 [--trials 50]   # clear|tight|leaning|packed
-uv run python scripted_controller.py --seed 0 | --seeds 50             # leaning baseline (pusher rod)
 ```
 
 - On macOS anything with `--view` must run under `mjpython` (`uv run mjpython insert_book.py ... --view`).
@@ -29,9 +28,7 @@ All modules are flat at the repo root; tests import them directly.
 
 - **`shelf_scene.py`** is the core. `ShelfConfig` (randomization ranges) → `sample_row(cfg, scenario, rng)` → `Row` (levels, books, target slot, `nudges`) → `build_scene(cfg, row, panda_xml)` emits MJCF XML → compile → `settle()` applies the nudges and runs physics so leaning/collapsed poses are real resting poses. `make_episode` wraps this and resamples rows that don't settle. Scenarios: `SCENARIOS = ("clear", "tight", "leaning", "collapsed", "packed")`.
 - **`insert_book.py`** (largest file) has its own `make_episode`/`build_model`, `ArmIK`, `Runner`, and an `Episode` class holding the staged scripted insertion and gap-widening strategies (`--strategy`, `--packed shove|stagger`). Its module docstring describes the stages in detail.
-- **`scripted_controller.py`**: leaning baseline. Modifies the scene via `mujoco.MjSpec.from_string(...)` to add a pusher rod before compiling, then uses damped-least-squares IK per tick. `ScriptedLeaningController.step()` is designed as the base for a residual RL policy.
 - **`perception.py`**: `ShelfEstimate` = only what a wrist RGB-D camera could see (spine faces, gap profile). `GroundTruthPerception` / `NoisyPerception`. Decision code should consume a `ShelfEstimate`, not `MjData`.
-- `docs/code-translations/` holds pseudocode Markdown companions for each Python file; update the matching `.md` when changing a file's logic.
 - `PBBM-robot-librarian/` is an external (ROS) reference repo for book assets, not part of this codebase. Its `librarian_common/librarian_resources/books.csv` (`depth` there = our `thickness`) and `spines/id_N.png` are used as spine labels in `notebooks/01_mujoco_librarian_pomdp.ipynb`, which also holds the prototype POMDP env (`LibrarianEnv`); `notebooks/02_how_pbbm_shelves_books.ipynb` explains PBBM's pipeline.
 
 ## Invariants worth knowing

@@ -2074,6 +2074,8 @@ def main():
                     help="draw the converted repo book covers (run dae_to_obj.py first)")
     ap.add_argument("--book-pages", type=int, default=0, metavar="N",
                     help="split every book's pages into N sections hinged on the spine (0 = one rigid box)")
+    ap.add_argument("--catalogue", action="store_true",
+                    help="fill the rows with the repo's real books (size, mass, cover, pages) instead of sampled ones")
     ap.add_argument("--view", action="store_true", help="watch in the MuJoCo viewer (run with mjpython on macOS)")
     a = ap.parse_args()
 
@@ -2087,7 +2089,7 @@ def main():
         return ep.insert_tight(a.strategy, a.margin)
 
     results = []
-    cfg = ShelfConfig(book_meshes=a.book_meshes, book_pages=a.book_pages)
+    cfg = ShelfConfig(book_meshes=a.book_meshes, book_pages=a.book_pages, catalogue=a.catalogue)
     for seed in range(a.seed, a.seed + a.trials):
         model, data, row = make_episode(cfg, a.scenario, np.random.default_rng(seed), a.panda)
         b = row.target_book
