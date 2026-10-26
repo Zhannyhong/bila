@@ -17,6 +17,9 @@ What it builds
   - Optional articulated books: ShelfConfig(book_pages=N) splits every book's
     pages into N sections that hinge on the spine, as in the repo's
     urdf/articulated_*.xacro, so the fore edges can fan open.
+  - Optional real books: ShelfConfig(catalogue=True) fills the rows with the
+    repo's books (CATALOGUE), each with its own size, mass and cover, and the
+    Voynich and Lagemann books hinged into their own page sections.
 
 Frame convention (same as the Isaac Gym task)
   x = along the row, y = depth (back panel at -y, open front at +y), z = up.
@@ -89,6 +92,8 @@ class ShelfConfig:
     end_slack: tuple = (0.03, 0.15)      # free space left at one row end
     book_meshes: bool = False            # draw the repo's book covers (dae_to_obj.py) on the boxes
     book_pages: int = 0                  # split every book's pages into this many hinged sections (0 or 1 = one rigid box)
+    catalogue: bool = False              # real books from the repo (CATALOGUE: size, mass, cover, pages) instead of
+                                         # sampled ones; thickness/book_depth/book_height/density/book_pages then unused
 
     # Contact settings randomized per episode
     solref_timeconst: tuple = (0.005, 0.02)
@@ -138,6 +143,7 @@ class Book:
     rgba: tuple = (0.5, 0.5, 0.5, 1.0)
     inset: float = 0.0        # spine this far behind the shelf's front edge
     parts: List[PageSection] = field(default_factory=list)  # [] = one rigid box
+    asset: str = ""           # converted mesh it wears (CATALOGUE books); "" = picked from its name
 
 
 @dataclass
@@ -185,7 +191,77 @@ def _page_sections(name: str, thickness: float, mass: float, count: int) -> List
     return [PageSection(f"{name}_p{i + 1}", thickness / count, mass / count) for i in range(count)]
 
 
-def _make_book(cfg, rng, name):
+# The repo's books (tams_books_world/urdf/book_*.xacro and books_demo.xacro), as
+# (mesh, thickness, depth front to back, height, kg). The repo's xsize is our
+# depth and its ysize our thickness. Its book_memory.xacro and book_rojas.xacro
+# reuse the goedel mesh; books_demo.xacro gives them their own, used here.
+CATALOGUE = [
+    ("book-ai86", 0.029, 0.153, 0.230, 0.828),
+    ("book-bits", 0.010, 0.148, 0.207, 0.500),
+    ("book-bobh", 0.010, 0.126, 0.184, 0.210),
+    ("book-dyson", 0.018, 0.130, 0.198, 0.228),
+    ("book-goedel", 0.055, 0.162, 0.234, 1.100),
+    ("book-hamburg", 0.005, 0.108, 0.185, 0.062),
+    ("book-haykin", 0.032, 0.177, 0.230, 1.316),
+    ("book-ifip", 0.022, 0.150, 0.225, 0.828),
+    ("book-javaff", 0.034, 0.157, 0.235, 0.906),
+    ("book-jekyll", 0.007, 0.110, 0.180, 0.056),
+    ("book-khoros", 0.025, 0.173, 0.213, 0.700),
+    ("book-knuth", 0.037, 0.167, 0.240, 1.080),
+    ("book-knuth-40", 0.014, 0.161, 0.240, 0.400),
+    ("book-knuth-41", 0.017, 0.161, 0.240, 0.498),
+    ("book-knuth-42", 0.009, 0.161, 0.240, 0.274),
+    ("book-lakoff", 0.035, 0.168, 0.240, 0.977),
+    ("book-logic", 0.020, 0.173, 0.245, 0.623),
+    ("book-lskm", 0.024, 0.217, 0.250, 0.978),
+    ("book-mead-conway", 0.025, 0.200, 0.243, 0.972),
+    ("book-memory", 0.028, 0.148, 0.227, 0.666),
+    ("book-minsky", 0.019, 0.215, 0.280, 0.764),
+    ("book-moeller", 0.023, 0.153, 0.236, 0.592),
+    ("book-pdp1", 0.032, 0.150, 0.228, 0.897),
+    ("book-pdp2", 0.036, 0.150, 0.228, 1.008),
+    ("book-ri53", 0.012, 0.124, 0.190, 0.280),
+    ("book-rice", 0.045, 0.122, 0.171, 0.528),
+    ("book-rojas", 0.030, 0.155, 0.232, 0.666),
+    ("book-schmidt", 0.038, 0.200, 0.275, 1.764),
+    ("book-selfish", 0.020, 0.130, 0.196, 0.246),
+    ("book-titan", 0.058, 0.103, 0.153, 0.828),
+    ("book-ttl2", 0.046, 0.148, 0.210, 1.370),
+    ("book-twki", 0.017, 0.125, 0.195, 0.283),
+    ("book-watson", 0.010, 0.115, 0.190, 0.114),
+    ("book-weizen", 0.020, 0.108, 0.175, 0.300),
+    ("book-wiering", 0.035, 0.155, 0.235, 0.964),
+    ("book-winograd", 0.037, 0.168, 0.240, 0.777),
+    ("book-zuse", 0.021, 0.172, 0.247, 0.764),
+]
+# The repo's articulated books (urdf/articulated_*.xacro): (mesh, depth, height,
+# [(thickness, kg) per page section, front cover first]). Their hinges come
+# from add_book_parts. The caterpillar (31 cm deep) fits no shelf here.
+ARTICULATED = [
+    ("book-voynich", 0.160, 0.230, [(0.023, 0.80), (0.014, 0.50), (0.008, 0.28), (0.012, 0.42)]),
+    ("book-lagemann", 0.165, 0.242, [(0.003, 0.092), (0.002, 0.055), (0.003, 0.092), (0.009, 0.313)]),
+]
+
+
+def _catalogue_book(cfg, rng, name, max_h, max_d, target):
+    """A copy of one of the repo's books (picked uniformly, so a row can hold
+    the same book more than once) that fits under max_h and within max_d. The
+    target book also keeps to cfg.thickness, the range the scenarios and the
+    fingers are tuned for. Friction and colour are still sampled."""
+    books = [(m, t, d, h, kg, []) for m, t, d, h, kg in CATALOGUE] + \
+            [(m, sum(t for t, _ in p), d, h, sum(kg for _, kg in p), p) for m, d, h, p in ARTICULATED]
+    fits = [e for e in books if e[3] <= max_h and e[2] <= max_d
+            and (not target or cfg.thickness[0] <= e[1] <= cfg.thickness[1])]
+    mesh, t, d, h, kg, sections = fits[int(rng.integers(len(fits)))]
+    colour = tuple(float(c) for c in rng.uniform(0.15, 0.9, 3)) + (1.0,)
+    b = Book(name, t, d, h, kg, _u(rng, cfg.book_friction), 0.0, colour, asset=mesh)
+    b.parts = [PageSection(f"{name}_p{i + 1}", pt, pm) for i, (pt, pm) in enumerate(sections)]
+    return b
+
+
+def _make_book(cfg, rng, name, max_h=math.inf, max_d=math.inf, target=False):
+    if cfg.catalogue:
+        return _catalogue_book(cfg, rng, name, max_h, max_d, target)
     t = _u(rng, cfg.thickness)
     d = _u(rng, cfg.book_depth)
     h = _u(rng, cfg.book_height)
@@ -227,7 +303,7 @@ def sample_filler(cfg: ShelfConfig, rng: np.random.Generator, level: int,
     fill = _u(rng, cfg.fill_other_levels)
     books, used = [], 0.0
     while True:
-        b = _make_book(cfg, rng, f"l{level}_book_{len(books)}")
+        b = _make_book(cfg, rng, f"l{level}_book_{len(books)}", H - 0.02, D - cfg.depth_clearance)
         b.height = min(b.height, H - 0.02)
         b.depth = min(b.depth, D - cfg.depth_clearance)
         s = _u(rng, cfg.spacing)
@@ -256,7 +332,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     D = _u(rng, cfg.depth)
     plinth, level_heights, target_level, tops = sample_levels(cfg, rng)
     H = level_heights[target_level]
-    target = _make_book(cfg, rng, "target_book")
+    target = _make_book(cfg, rng, "target_book", H - 0.03, D - cfg.depth_clearance, target=True)
     target.height = min(target.height, H - 0.03)
     target.depth = min(target.depth, D - cfg.depth_clearance)
 
@@ -278,7 +354,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     books: List[Book] = []
     used = 0.0
     while True:
-        b = _make_book(cfg, rng, f"book_{len(books)}")
+        b = _make_book(cfg, rng, f"book_{len(books)}", H - 0.02, D - cfg.depth_clearance)
         b.height = min(b.height, H - 0.02)       # must fit under the top board
         b.depth = min(b.depth, D - cfg.depth_clearance)
         s = _u(rng, cfg.spacing)
@@ -590,7 +666,10 @@ def add_book_visual_assets(asset, books) -> dict:
     for b in books:
         if b.parts:
             continue
-        a = book_asset(b.name)
+        # A CATALOGUE book wears its own mesh, or none if it was not converted.
+        a = next((x for x in book_assets() if x["name"] == b.asset), None) if b.asset else book_asset(b.name)
+        if a is None:
+            continue
         scale = _f(b.depth / 2, b.thickness / 2, b.height / 2)   # see VISUAL_YAW
         out[b.name] = _declare_faces(asset, declared, a["name"], a["faces"], scale, b.name)
     return out
@@ -608,8 +687,8 @@ def add_page_visual_assets(asset, books) -> dict:
     for b in books:
         if not b.parts:
             continue
-        a = book_asset(b.name, sections=len(b.parts))
-        for part, section in zip(b.parts, page_section_assets(a["name"])):
+        name = b.asset or book_asset(b.name, sections=len(b.parts))["name"]
+        for part, section in zip(b.parts, page_section_assets(name)):
             scale = _f(b.depth / 2, part.thickness / 2, b.height / 2)   # see VISUAL_YAW
             out[part.name] = _declare_faces(asset, declared, section["name"], section["faces"],
                                             scale, part.name)
@@ -908,6 +987,8 @@ def main():
                     help="draw the converted repo book meshes (run dae_to_obj.py first)")
     ap.add_argument("--book-pages", type=int, default=0, metavar="N",
                     help="split every book's pages into N sections hinged on the spine (0 = one rigid box)")
+    ap.add_argument("--catalogue", action="store_true",
+                    help="fill the rows with the repo's real books (size, mass, cover, pages) instead of sampled ones")
     ap.add_argument("--out", default="scenes")
     a = ap.parse_args()
 
@@ -915,6 +996,7 @@ def main():
     cfg = REPO_DEFAULTS if a.repo_defaults else ShelfConfig()
     cfg.book_meshes = a.book_meshes
     cfg.book_pages = a.book_pages
+    cfg.catalogue = a.catalogue
     scen = SCENARIOS if a.scenario == "all" else (a.scenario,)
     for sc in scen:
         rng = np.random.default_rng(a.seed)
