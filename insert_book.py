@@ -130,7 +130,7 @@ DEFAULT_PANDA = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "pa
 # hand, measured from its collision mesh). Hand frame: z = approach (along the
 # fingers), y = finger travel.
 FINGERTIP_Z = 0.0584 + FINGER_LEN   # end of the fingers (Menagerie mounts them 58.4 mm out)
-PAD_Z = 0.1026              # where the pads hold the book (where Menagerie's pad centre is)
+PAD_Z = FINGERTIP_Z - 0.0097   # where the pads hold the book: as far behind the tips as Menagerie's pad centre
 PALM_Z = 0.066              # face of the hand between the fingers
 FINGER_OPEN_SPAN = 0.04 + FINGER_THICK       # outer face of a fully open finger, from the hand axis
 FINGER_OPEN_MID = 0.04 + FINGER_THICK / 2    # centre of a fully open finger, from the hand axis
@@ -139,7 +139,10 @@ HAND_HALF_L = 0.105         # hand half-length, along finger travel
 
 # Grasp and sequence settings
 GRIP_FORCE = 70.0           # N on each side of the book (the real Franka Hand's continuous force)
-PALM_GAP = 0.002            # the book's spine sits this far off the palm, deep in the grasp
+PALM_GAP = FINGERTIP_Z - PALM_Z - 0.044   # the book's spine sits this far off the palm: 4.4 cm short of the
+                            # fingertips (2 mm off the palm with Menagerie-length fingers). The fingers can't
+                            # follow the book in between its neighbours, so the tips must not reach far past
+                            # its spine, or the slide stops with the book still off the board.
 PAD_INSET = PAD_Z - PALM_Z - PALM_GAP   # ... so the pads hold it this far behind its spine
 PAD_HEIGHT = 0.115          # ... and this high above the book's bottom. Low, so sliding the book on
                             # the board can't tip it: board friction at its back-bottom corner tips it
@@ -216,6 +219,8 @@ ALIGN_TOL = 0.010           # in place: spine within this of the more protruding
 EDGE_IN = 0.010             # ... if the book is deeper than that neighbour, at least this behind the front edge
 EDGE_AIM = 0.005            # push a deeper book this much further in than EDGE_IN needs
 UPRIGHT_DEG = 5.0           # upright within 5 deg (project proposal)
+COLLISION_MIN_FORCE = 1.0   # N: the robot pressing on the shelf's structure, the cart or the floor harder than this
+                            # is a collision (lighter contact is grazing)
 
 
 # ---------------------------------------------------------------------------
@@ -240,9 +245,15 @@ def build_model(cfg: ShelfConfig, row, panda_xml: str) -> mujoco.MjModel:
     hinges = _f(*([0.0] * max(0, len(b.parts) - 1)))
     key.set("qpos", key.get("qpos") + " " + _f(*park, 1, 0, 0, 0) + (" " + hinges if hinges else ""))
 
+    return compile_robot_scene(ET.tostring(root, encoding="unicode"))
+
+
+def compile_robot_scene(xml: str) -> mujoco.MjModel:
+    """Compile a scene with the Panda in it, with gravity compensation on the
+    arm and a gripper as strong as the real Franka Hand."""
     # Gravity compensation has to be set before compiling: MuJoCo skips it
     # when the compiled model has no compensated bodies.
-    spec = mujoco.MjSpec.from_string(ET.tostring(root, encoding="unicode"))
+    spec = mujoco.MjSpec.from_string(xml)
     for body in spec.bodies:
         if body.name.startswith("panda/"):
             body.gravcomp = 1.0
@@ -458,6 +469,18 @@ class Runner:
         self.t0 = data.time
         self.wall0, self.next_frame = time.perf_counter(), 0.0
         self.ft = int(model.sensor("panda/ft_force").adr[0])       # wrist force sensor (hand frame)
+        # By name: a scene may add actuators of its own (a cart's lift) ahead of the arm's.
+        self.arm_act = [model.actuator(f"panda/actuator{i}").id for i in range(1, 8)]
+        self.grip_act = model.actuator("panda/actuator8").id
+        # Unintended contact: the robot (its base aside, which sits on its mount) touching the shelf's
+        # structure, the cart or the floor. Books don't count: pushing them is what the skills are for,
+        # and score() measures what that does to them.
+        name = lambda g: model.body(model.geom_bodyid[g]).name
+        self.arm_geom = np.array([name(g).startswith("panda/") and name(g) != "panda/link0" for g in range(model.ngeom)])
+        self.structure_geom = np.array([name(g) in ("world", "shelf", "robot_mount", "lift") for g in range(model.ngeom)])
+        self.collision = {"steps": 0, "max_force_n": 0.0, "impulse_ns": 0.0, "parts": set(), "during": set()}
+        self.doing = ""
+        self._f6 = np.zeros(6)
 
     def wrist_force(self):
         return self.d.sensordata[self.ft:self.ft + 3].copy()
@@ -473,9 +496,10 @@ class Runner:
         return self.d.time - self.t0
 
     def step(self):
-        self.d.ctrl[:7] = self.q_cmd
-        self.d.ctrl[7] = self.grip
+        self.d.ctrl[self.arm_act] = self.q_cmd
+        self.d.ctrl[self.grip_act] = self.grip
         mujoco.mj_step(self.m, self.d)
+        self.watch_contacts()
         if self.viewer is not None and self.t >= self.next_frame:     # draw at 60 fps, in real time
             self.next_frame += 1 / 60
             if not self.viewer.is_running():
@@ -484,6 +508,29 @@ class Runner:
             lag = self.t - (time.perf_counter() - self.wall0)
             if lag > 0:
                 time.sleep(lag)
+
+    def watch_contacts(self):
+        """Record this step's unintended contacts (over COLLISION_MIN_FORCE) in self.collision."""
+        m, d, n = self.m, self.d, self.d.ncon
+        if not n:
+            return
+        g = d.contact.geom[:n]
+        hit = np.flatnonzero((self.arm_geom[g[:, 0]] & self.structure_geom[g[:, 1]]) |
+                             (self.arm_geom[g[:, 1]] & self.structure_geom[g[:, 0]]))
+        worst = 0.0
+        for i in hit:
+            mujoco.mj_contactForce(m, d, int(i), self._f6)
+            if self._f6[0] > COLLISION_MIN_FORCE:
+                worst = max(worst, self._f6[0])
+                arm, other = g[i] if self.arm_geom[g[i, 0]] else g[i][::-1]
+                self.collision["parts"].add(f"{m.body(m.geom_bodyid[arm]).name[6:]} vs "
+                                            f"{m.geom(other).name or m.body(m.geom_bodyid[other]).name}")
+        if worst:
+            c = self.collision
+            c["steps"] += 1
+            c["max_force_n"] = max(c["max_force_n"], worst)
+            c["impulse_ns"] += worst * m.opt.timestep
+            c["during"].add(self.doing)
 
     def move(self, name, pos, rot=None, speed=TRANSIT_SPEED, grip=None, stop_force=None):
         """Move the hand frame to (pos, rot) in a straight line, with a slerp
@@ -494,6 +541,7 @@ class Runner:
         weight of a held book.) The force is smoothed over ~50 ms first, as a
         book chattering on the board's edge gives short spikes of 20-30 N.
         Returns False then."""
+        self.doing = name
         self.log(f"  {self.t:5.2f} s  {name}")
         if grip is not None:
             self.grip = grip
@@ -519,6 +567,7 @@ class Runner:
     def follow(self, name, poses, speed=TRANSIT_SPEED):
         """Move the hand through a list of (pos, rot) poses as one min-jerk
         move along the whole path (straight lines and slerps between them)."""
+        self.doing = name
         self.log(f"  {self.t:5.2f} s  {name}")
         pts = [(self.pos.copy(), self.rot.copy())] + list(poses)
         seg = [max(np.linalg.norm(b[0] - a[0]), np.linalg.norm(rotation_between(a[1], b[1])) * speed / TURN_SPEED)
@@ -538,6 +587,7 @@ class Runner:
         """Move the arm in joint space to q_goal along a min-jerk path (peak
         joint speed `speed`, rad/s). Only for moves clear of the shelf: nothing
         here checks what the hand passes."""
+        self.doing = name
         self.log(f"  {self.t:5.2f} s  {name}")
         q0, q_goal = self.q_cmd.copy(), np.asarray(q_goal, dtype=float)
         T = max(0.3, 1.875 * float(np.max(np.abs(q_goal - q0))) / speed)
@@ -549,6 +599,7 @@ class Runner:
         self.pos, self.rot = self.ik.fk(self.q_cmd)
 
     def wait(self, name, duration, grip=None):
+        self.doing = name
         self.log(f"  {self.t:5.2f} s  {name}")
         if grip is not None:
             self.grip = grip
@@ -993,9 +1044,10 @@ class Episode:
             "neighbour_shift_m": float(shifts.max()), "total_shift_m": float(shifts.sum()),
             "neighbour_tilt_change_deg": float(dtilt.max()),
             "time_to_release_s": t_release - t_start, "time_to_seat_s": t_done - t_start,
-            **self.info, **info,
+            **self.info, **info, **self.collisions(),
         }
         res["success"] = res["upright"] and res["in_place"] and res["released"]
+        res["safe_success"] = res["success"] and not res["collision_s"]   # ... and never touched the shelf or cart
         return res
 
     # --- Clear scenario: the book starts grasped -------------------------------------
@@ -2027,8 +2079,16 @@ class Episode:
         self.log(f"  skipped: {reason}")
         others = [i for i in range(len(self.row_bodies)) if i not in self.intended]
         shifts = np.linalg.norm(self.d.xpos[self.row_bodies] - self.start_pos, axis=1)[others]
-        return {"success": False, "skipped": reason, "neighbour_shift_m": float(shifts.max()),
-                "total_shift_m": float(shifts.sum()), **self.info}
+        return {"success": False, "safe_success": False, "skipped": reason, "neighbour_shift_m": float(shifts.max()),
+                "total_shift_m": float(shifts.sum()), **self.info, **self.collisions()}
+
+    def collisions(self) -> dict:
+        """What the robot hit that it shouldn't have (Runner.watch_contacts), so far."""
+        c = self.run.collision if self.run is not None else {"steps": 0, "max_force_n": 0.0, "impulse_ns": 0.0,
+                                                             "parts": (), "during": ()}
+        return {"collision_s": c["steps"] * self.m.opt.timestep, "collision_max_force_n": c["max_force_n"],
+                "collision_impulse_ns": c["impulse_ns"], "collision_parts": sorted(c["parts"]),
+                "collision_during": sorted(c["during"])}
 
 
 # ---------------------------------------------------------------------------
@@ -2045,18 +2105,27 @@ def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries
     raise RuntimeError(f"No stable {scenario} row in {max_tries} tries")
 
 
+def report_collisions(res: dict) -> str:
+    if not res.get("collision_s"):
+        return ""
+    return (f"\n  COLLIDED for {res['collision_s']:.2f} s, up to {res['collision_max_force_n']:.0f} N: "
+            f"{', '.join(res['collision_parts'][:4])} (during: {'; '.join(res['collision_during'][:3])})")
+
+
 def report(res: dict) -> str:
     verdict = "SUCCESS" if res["success"] else "FAIL"
     how = f" [{res['method']}]" if res.get("method") else ""
     if "skipped" in res:
-        return f"  SKIPPED{how}: {res['skipped']} | other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm"
+        return (f"  SKIPPED{how}: {res['skipped']} | other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm"
+                + report_collisions(res))
     place = (f"spine {1000 * res['offset_m']:+.1f} mm from the neighbour's" if res["rule"] == "flush" else
              f"deeper than its neighbours, spine {1000 * res['offset_m']:.1f} mm inside the front edge")
     return (f"  {verdict}{how}: tilt {res['tilt_deg']:.1f} deg, {place}"
             f"{' (hand blocked)' if res['blocked'] else ''}, {'released' if res['released'] else 'STILL TOUCHING'}\n"
             f"  other books: most moved {1000 * res['neighbour_shift_m']:.1f} mm (all together "
             f"{1000 * res['total_shift_m']:.0f} mm), most tilted {res['neighbour_tilt_change_deg']:.1f} deg"
-            f" | let go after {res['time_to_release_s']:.1f} s, in place after {res['time_to_seat_s']:.1f} s")
+            f" | let go after {res['time_to_release_s']:.1f} s, in place after {res['time_to_seat_s']:.1f} s"
+            + report_collisions(res))
 
 
 def main():
@@ -2117,14 +2186,17 @@ def main():
                 res = attempt(ep)
                 print(report(res))
             except RuntimeError as e:                 # no safe way to do it in this scene, or it jammed
-                res = {"success": False, "error": str(e), **ep.info}
+                res = {"success": False, "safe_success": False, "error": str(e), **ep.info, **ep.collisions()}
                 print(f"  FAIL{' [' + ep.info['method'] + ']' if 'method' in ep.info else ''}: {e}")
         results.append(res)
 
     if a.trials > 1:
         n = len(results)
         ok = sum(r["success"] for r in results)
-        print(f"\n{ok}/{n} succeeded. Of the rest: "
+        hit = [r for r in results if r.get("collision_s")]
+        print(f"\n{sum(r.get('safe_success', False) for r in results)}/{n} succeeded without touching the shelf or cart; "
+              f"{len(hit)}/{n} touched it ({sum(r['success'] for r in hit)} of those still placed the book)")
+        print(f"{ok}/{n} succeeded. Of the rest: "
               f"{sum(r.get('blocked', False) and not r['success'] for r in results)} with the hand blocked short, "
               f"{sum(not r.get('upright', True) for r in results)} not upright, "
               f"{sum(not r.get('released', True) for r in results)} not released")

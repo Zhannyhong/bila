@@ -4,7 +4,7 @@
 It starts from the shelf in ContactExplorer's singulation task
 (`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full,
 randomized bookcase standing on the floor. It also adds a Franka Panda with thin
-10 mm fingers, a wrist camera and a force/torque sensor. Optionally it draws the real book covers
+10 mm-wide, 12 cm-long fingers, a wrist camera and a force/torque sensor. Optionally it draws the real book covers
 ported over from the PBBM robot librarian repo (see [Book covers](#book-covers-optional)) and cuts every
 book into page sections hinged on the spine (see [Book pages](#book-pages-optional)).
 
@@ -15,6 +15,7 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 | `shelf_scene.py` | Builds a randomized bookcase and target row for one of five scenarios, adds the Panda, settles the row with physics; can split every book into page sections hinged on the spine |
 | `dae_to_obj.py` | Converts the PBBM repo's Collada book covers (and, for the shaped books, their page sections) to the OBJ/PNG assets `shelf_scene.py` draws (run once, optional) |
 | `view_scene.py` | Opens a settled scenario in the MuJoCo viewer |
+| `cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython cart_demo.py --scenario tight --view`) |
 | `insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
 | `perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
 | `notebooks/` | Beginner's guide to the simulator and the RL/POMDP setup with PBBM's book labels (`01_...`), and a breakdown of how the PBBM robot shelved books (`02_...`) |
@@ -311,8 +312,9 @@ In place means:
    - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
      while it slides.
    - The fingers are thin bars in place of Menagerie's (`shelf_scene.py`, `make_panda_with_sensors`): 10 mm wide
-     across their travel, 12 mm thick, as long as Menagerie's, with a pad strip along all 46 mm of each finger
-     that reaches past the palm. The real Franka Hand takes custom fingers, so these could be machined.
+     across their travel, 12 mm thick and 12 cm long (Menagerie's are 5.4 cm), with a pad strip along all of
+     each finger from the palm to the tip. The long fingers let the hand grasp a book from above past taller
+     neighbours (see `cart_demo.py`). The real Franka Hand takes custom fingers, so these could be machined.
    - The book is held right up against the palm (its spine 2 mm off it), so the whole pad strip grips it. Held
      3 cm off the board for 3 s, books then turn 3.1° in the hand on average (5.1° for the 8 that weigh over
      1.2 kg), against 4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. Insertion results are the same. A short

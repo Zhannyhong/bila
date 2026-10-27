@@ -15,6 +15,7 @@ uv run pytest tests/test_scenes.py::test_name -x
 
 uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
 uv run python view_scene.py --scenario leaning --seed 0
+uv run python cart_demo.py --scenario tight                          # cart: read tray + row labels, make the gap, pick from the tray, insert
 uv run python insert_book.py --scenario tight --seed 0 [--trials 50]   # clear|tight|leaning|packed
 ```
 
