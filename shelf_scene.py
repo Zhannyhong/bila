@@ -11,6 +11,15 @@ What it builds
   - Filler rows on the other levels (static by default, for speed).
   - Optional Franka Panda (from MuJoCo Menagerie) with thin 10 mm fingers,
     a wrist camera and a 6-axis force/torque sensor, plus a fixed scene camera.
+  - Optional book covers: run dae_to_obj.py once to convert the repo's Collada
+    book meshes, then set ShelfConfig(book_meshes=True) to draw them on the
+    boxes as non-colliding visuals. Physics stays on the boxes either way.
+  - Optional articulated books: ShelfConfig(book_pages=N) splits every book's
+    pages into N sections that hinge on the spine, as in the repo's
+    urdf/articulated_*.xacro, so the fore edges can fan open.
+  - Optional real books: ShelfConfig(catalogue=True) fills the rows with the
+    repo's books (CATALOGUE), each with its own size, mass and cover, and the
+    Voynich and Lagemann books hinged into their own page sections.
 
 Frame convention (same as the Isaac Gym task)
   x = along the row, y = depth (back panel at -y, open front at +y), z = up.
@@ -34,6 +43,7 @@ import json
 import math
 import os
 import xml.etree.ElementTree as ET
+import zlib
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
@@ -73,13 +83,17 @@ class ShelfConfig:
     # Books (repo boxes: 0.04 x 0.16 x 0.24, density 500-1000)
     thickness: tuple = (0.015, 0.06)
     book_depth: tuple = (0.12, 0.22)
-    depth_clearance: float = 0.030       # every book at least this much shallower than the shelf
-    spine_inset: tuple = (0.010, 0.030)  # each spine this far behind the shelf's front edge
+    depth_clearance: float = 0.030       # every book at least this much shallower than the shelf, adjustable
+    spine_inset: tuple = (0.010, 0.030)  # each spine this far behind the shelf's front edge, adjustable
     book_height: tuple = (0.17, 0.30)
     density: tuple = (400.0, 900.0)      # kg/m^3
     book_friction: tuple = (0.25, 0.7)
     spacing: tuple = (0.0, 0.003)        # gap between neighbouring books
     end_slack: tuple = (0.03, 0.15)      # free space left at one row end
+    book_meshes: bool = False            # draw the repo's book covers (dae_to_obj.py) on the boxes
+    book_pages: int = 0                  # split every book's pages into this many hinged sections (0 or 1 = one rigid box)
+    catalogue: bool = False              # real books from the repo (CATALOGUE: size, mass, cover, pages) instead of
+                                         # sampled ones; thickness/book_depth/book_height/density/book_pages then unused
 
     # Contact settings randomized per episode
     solref_timeconst: tuple = (0.005, 0.02)
@@ -107,6 +121,17 @@ REPO_DEFAULTS = ShelfConfig(   # one cubby whose board sits 0.5 m up, as on the 
 # 2. Sampling a row
 # ---------------------------------------------------------------------------
 @dataclass
+class PageSection:
+    """One section of a book's pages: the pages between two hinges. Every
+    section hinges on the spine (see add_book_parts), so the fore edges can fan
+    open. The repo splits its articulated books this way
+    (urdf/articulated_voynich.xacro), one section per block of pages."""
+    name: str                 # unique; its hinges and geoms are named after it
+    thickness: float
+    mass: float
+
+
+@dataclass
 class Book:
     name: str
     thickness: float
@@ -117,6 +142,8 @@ class Book:
     x: float                  # centre along the row (shelf frame)
     rgba: tuple = (0.5, 0.5, 0.5, 1.0)
     inset: float = 0.0        # spine this far behind the shelf's front edge
+    parts: List[PageSection] = field(default_factory=list)  # [] = one rigid box
+    asset: str = ""           # converted mesh it wears (CATALOGUE books); "" = picked from its name
 
 
 @dataclass
@@ -156,13 +183,94 @@ def _u(rng, lohi):
     return float(lo if lo == hi else rng.uniform(lo, hi))
 
 
-def _make_book(cfg, rng, name):
+def _page_sections(name: str, thickness: float, mass: float, count: int) -> List[PageSection]:
+    """Split a book's pages into `count` sections of equal thickness, from the
+    front cover to the back (front cover first, as the repo numbers its parts).
+    A section's share of the book is the pages in it, so equal sections carry
+    equal mass, as the repo's page-counted books do."""
+    return [PageSection(f"{name}_p{i + 1}", thickness / count, mass / count) for i in range(count)]
+
+
+# The repo's books (tams_books_world/urdf/book_*.xacro and books_demo.xacro), as
+# (mesh, thickness, depth front to back, height, kg). The repo's xsize is our
+# depth and its ysize our thickness. Its book_memory.xacro and book_rojas.xacro
+# reuse the goedel mesh; books_demo.xacro gives them their own, used here.
+CATALOGUE = [
+    ("book-ai86", 0.029, 0.153, 0.230, 0.828),
+    ("book-bits", 0.010, 0.148, 0.207, 0.500),
+    ("book-bobh", 0.010, 0.126, 0.184, 0.210),
+    ("book-dyson", 0.018, 0.130, 0.198, 0.228),
+    ("book-goedel", 0.055, 0.162, 0.234, 1.100),
+    ("book-hamburg", 0.005, 0.108, 0.185, 0.062),
+    ("book-haykin", 0.032, 0.177, 0.230, 1.316),
+    ("book-ifip", 0.022, 0.150, 0.225, 0.828),
+    ("book-javaff", 0.034, 0.157, 0.235, 0.906),
+    ("book-jekyll", 0.007, 0.110, 0.180, 0.056),
+    ("book-khoros", 0.025, 0.173, 0.213, 0.700),
+    ("book-knuth", 0.037, 0.167, 0.240, 1.080),
+    ("book-knuth-40", 0.014, 0.161, 0.240, 0.400),
+    ("book-knuth-41", 0.017, 0.161, 0.240, 0.498),
+    ("book-knuth-42", 0.009, 0.161, 0.240, 0.274),
+    ("book-lakoff", 0.035, 0.168, 0.240, 0.977),
+    ("book-logic", 0.020, 0.173, 0.245, 0.623),
+    ("book-lskm", 0.024, 0.217, 0.250, 0.978),
+    ("book-mead-conway", 0.025, 0.200, 0.243, 0.972),
+    ("book-memory", 0.028, 0.148, 0.227, 0.666),
+    ("book-minsky", 0.019, 0.215, 0.280, 0.764),
+    ("book-moeller", 0.023, 0.153, 0.236, 0.592),
+    ("book-pdp1", 0.032, 0.150, 0.228, 0.897),
+    ("book-pdp2", 0.036, 0.150, 0.228, 1.008),
+    ("book-ri53", 0.012, 0.124, 0.190, 0.280),
+    ("book-rice", 0.045, 0.122, 0.171, 0.528),
+    ("book-rojas", 0.030, 0.155, 0.232, 0.666),
+    ("book-schmidt", 0.038, 0.200, 0.275, 1.764),
+    ("book-selfish", 0.020, 0.130, 0.196, 0.246),
+    ("book-titan", 0.058, 0.103, 0.153, 0.828),
+    ("book-ttl2", 0.046, 0.148, 0.210, 1.370),
+    ("book-twki", 0.017, 0.125, 0.195, 0.283),
+    ("book-watson", 0.010, 0.115, 0.190, 0.114),
+    ("book-weizen", 0.020, 0.108, 0.175, 0.300),
+    ("book-wiering", 0.035, 0.155, 0.235, 0.964),
+    ("book-winograd", 0.037, 0.168, 0.240, 0.777),
+    ("book-zuse", 0.021, 0.172, 0.247, 0.764),
+]
+# The repo's articulated books (urdf/articulated_*.xacro): (mesh, depth, height,
+# [(thickness, kg) per page section, front cover first]). Their hinges come
+# from add_book_parts. The caterpillar (31 cm deep) fits no shelf here.
+ARTICULATED = [
+    ("book-voynich", 0.160, 0.230, [(0.023, 0.80), (0.014, 0.50), (0.008, 0.28), (0.012, 0.42)]),
+    ("book-lagemann", 0.165, 0.242, [(0.003, 0.092), (0.002, 0.055), (0.003, 0.092), (0.009, 0.313)]),
+]
+
+
+def _catalogue_book(cfg, rng, name, max_h, max_d, target):
+    """A copy of one of the repo's books (picked uniformly, so a row can hold
+    the same book more than once) that fits under max_h and within max_d. The
+    target book also keeps to cfg.thickness, the range the scenarios and the
+    fingers are tuned for. Friction and colour are still sampled."""
+    books = [(m, t, d, h, kg, []) for m, t, d, h, kg in CATALOGUE] + \
+            [(m, sum(t for t, _ in p), d, h, sum(kg for _, kg in p), p) for m, d, h, p in ARTICULATED]
+    fits = [e for e in books if e[3] <= max_h and e[2] <= max_d
+            and (not target or cfg.thickness[0] <= e[1] <= cfg.thickness[1])]
+    mesh, t, d, h, kg, sections = fits[int(rng.integers(len(fits)))]
+    colour = tuple(float(c) for c in rng.uniform(0.15, 0.9, 3)) + (1.0,)
+    b = Book(name, t, d, h, kg, _u(rng, cfg.book_friction), 0.0, colour, asset=mesh)
+    b.parts = [PageSection(f"{name}_p{i + 1}", pt, pm) for i, (pt, pm) in enumerate(sections)]
+    return b
+
+
+def _make_book(cfg, rng, name, max_h=math.inf, max_d=math.inf, target=False):
+    if cfg.catalogue:
+        return _catalogue_book(cfg, rng, name, max_h, max_d, target)
     t = _u(rng, cfg.thickness)
     d = _u(rng, cfg.book_depth)
     h = _u(rng, cfg.book_height)
     rho = _u(rng, cfg.density)
     colour = tuple(float(c) for c in rng.uniform(0.15, 0.9, 3)) + (1.0,)
-    return Book(name, t, d, h, rho * t * d * h, _u(rng, cfg.book_friction), 0.0, colour)
+    b = Book(name, t, d, h, rho * t * d * h, _u(rng, cfg.book_friction), 0.0, colour)
+    if cfg.book_pages > 1:                     # one section is just a rigid book
+        b.parts = _page_sections(name, b.thickness, b.mass, cfg.book_pages)
+    return b
 
 
 def board_tops(cfg: ShelfConfig, plinth: float, level_heights: List[float]) -> List[float]:
@@ -195,7 +303,7 @@ def sample_filler(cfg: ShelfConfig, rng: np.random.Generator, level: int,
     fill = _u(rng, cfg.fill_other_levels)
     books, used = [], 0.0
     while True:
-        b = _make_book(cfg, rng, f"l{level}_book_{len(books)}")
+        b = _make_book(cfg, rng, f"l{level}_book_{len(books)}", H - 0.02, D - cfg.depth_clearance)
         b.height = min(b.height, H - 0.02)
         b.depth = min(b.depth, D - cfg.depth_clearance)
         s = _u(rng, cfg.spacing)
@@ -224,7 +332,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     D = _u(rng, cfg.depth)
     plinth, level_heights, target_level, tops = sample_levels(cfg, rng)
     H = level_heights[target_level]
-    target = _make_book(cfg, rng, "target_book")
+    target = _make_book(cfg, rng, "target_book", H - 0.03, D - cfg.depth_clearance, target=True)
     target.height = min(target.height, H - 0.03)
     target.depth = min(target.depth, D - cfg.depth_clearance)
 
@@ -246,7 +354,7 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
     books: List[Book] = []
     used = 0.0
     while True:
-        b = _make_book(cfg, rng, f"book_{len(books)}")
+        b = _make_book(cfg, rng, f"book_{len(books)}", H - 0.02, D - cfg.depth_clearance)
         b.height = min(b.height, H - 0.02)       # must fit under the top board
         b.depth = min(b.depth, D - cfg.depth_clearance)
         s = _u(rng, cfg.spacing)
@@ -368,14 +476,16 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
 # ---------------------------------------------------------------------------
 # Thin fingers for the Franka Hand, in place of Menagerie's (21 mm wide, too
 # wide for the narrower tight gaps): plain bars, 10 mm wide across their travel
-# and 12 mm thick out from the gripping face, as long as Menagerie's, with a
-# pad strip along all of the finger that reaches past the palm (46 mm, against
-# Menagerie's 17 mm pad), so the narrow finger still stops a book turning in
-# the grasp. insert_book.py holds books right up against the palm to use it all.
+# and 12 mm thick out from the gripping face, 12 cm long (Menagerie's are
+# 5.4 cm: the long ones reach down past taller neighbours to grasp a book from
+# above, e.g. in the return tray), with a pad strip along all of the finger
+# that reaches past the palm (Menagerie's pad is 17 mm), so the narrow finger
+# still stops a book turning in the grasp. insert_book.py holds books right up
+# against the palm.
 FINGER_HALF_W = 0.005       # half-width across the finger's travel
 FINGER_THICK = 0.012        # thickness out from the gripping face
-FINGER_LEN = 0.0539         # length from where it is mounted (as Menagerie's)
-PAD_LEN = 0.046             # pad strip on the gripping side, from the tip back to the palm
+FINGER_LEN = 0.12           # length from where it is mounted (Menagerie's: 0.0539)
+PAD_LEN = FINGER_LEN - 0.008  # pad strip on the gripping side, from the tip back to the palm
 
 
 def make_panda_with_sensors(panda_xml: str) -> str:
@@ -448,6 +558,213 @@ def _f(*v):
 
 VIEW_DISTANCE = 0.9   # m from the gap to where a viewer's camera starts
 
+# Book visuals: MuJoCo cannot read the repo's Collada meshes, so dae_to_obj.py
+# converts each book into six flat, textured face quads under this directory
+# (gitignored, so a checkout without the conversion silently keeps the boxes).
+# They are pure decoration: non-colliding, massless geoms on the box bodies.
+BOOK_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_assets", "books")
+# A book's DAE has x along its depth, y through its thickness and z up its
+# height, while the box geoms have x through the thickness: turning the faces
+# this far about z puts the DAE's axes back onto the box's.
+VISUAL_YAW = -math.pi / 2
+
+# An articulated book (see add_book_parts) keeps a non-colliding box called
+# <book>_geom as its outer envelope, so the controllers and perception still
+# find the book's box under its own name. That box carries no mass, but a body
+# with a freejoint must not be massless - MuJoCo then gets the body's centre of
+# mass wrong, and the book topples. This is small enough to be inert (1 mg on a
+# 0.7 kg book) and only exists to keep the body's mass positive.
+ENVELOPE_MASS = 1e-6
+
+_book_assets = None
+
+
+def book_assets() -> List[dict]:
+    """The meshes dae_to_obj.py wrote: [{name, faces: [{obj, texture}]}] with
+    absolute paths, or [] if it has not been run. A face whose image the repo
+    does not ship (book-ai86, book-logic1) is dropped, and a book with none
+    left is left out, so it is drawn as a plain coloured box instead."""
+    global _book_assets
+    if _book_assets is None:
+        _book_assets = []
+        try:
+            with open(os.path.join(BOOK_ASSET_DIR, "index.json")) as fh:
+                entries = json.load(fh)["assets"]
+        except (OSError, ValueError, KeyError):
+            entries = []
+        for e in entries:
+            faces = [{"obj": os.path.join(BOOK_ASSET_DIR, f["obj"]),
+                      "texture": os.path.join(BOOK_ASSET_DIR, f["texture"])}
+                     for f in e.get("faces") or [] if f.get("texture")]
+            if faces:
+                _book_assets.append({"name": e["name"], "faces": faces})
+    return _book_assets
+
+
+def is_page_section(asset_name: str) -> bool:
+    """True for the converted mesh of one page section (book-voynich-part1).
+    Those draw a single hinged section, never a whole book's cover, so a book
+    must not pick one as the mesh it wears."""
+    return "-part" in asset_name
+
+
+def page_section_assets(asset_name: str) -> List[dict]:
+    """The converted meshes of a book's page sections, in section order. An
+    articulated book keeps one mesh per section, named after the book
+    (book-voynich-part1 ... part4), or [] if dae_to_obj.py has not converted
+    them (it then falls back to box-coloured sections)."""
+    prefix = asset_name + "-part"
+    return sorted([a for a in book_assets() if a["name"].startswith(prefix)],
+                  key=lambda a: a["name"])
+
+
+def book_asset(name: str, sections: int = 0) -> Optional[dict]:
+    """The converted mesh a book named `name` wears, or None if the conversion
+    has not been run. Picked from the name, so that every caller (shelf_scene,
+    insert_book) reaches for the same one. `sections` asks for a book that was
+    converted into that many page sections: only those can be drawn one mesh
+    per section (see add_page_visual_assets), so an articulated book picks
+    among them; without it the page sections are left out, because one of them
+    is not a whole book."""
+    assets = book_assets()
+    if sections:
+        assets = [a for a in assets if len(page_section_assets(a["name"])) == sections] or assets
+    else:
+        assets = [a for a in assets if not is_page_section(a["name"])]
+    return assets[zlib.crc32(name.encode()) % len(assets)] if assets else None
+
+
+def _declare_faces(asset, declared: set, asset_name: str, faces, scale: str, mesh_stem: str) -> List[str]:
+    """Declare the textures, materials and meshes that draw one converted mesh
+    under the names `<mesh_stem>_f<k>`, and return the material to use per
+    face. Textures and materials belong to the converted mesh (`asset_name`),
+    so books wearing the same mesh share them; meshes belong to the geom, which
+    holds its own scale, so every book (and every page section) gets its own."""
+    for k, f in enumerate(faces):
+        tex = f"{asset_name}_f{k}_tex"
+        if tex not in declared:
+            ET.SubElement(asset, "texture", name=tex, type="2d", file=f["texture"])
+            ET.SubElement(asset, "material", name=f"{asset_name}_f{k}_mat", texture=tex)
+            declared.add(tex)
+        # A face is flat (no volume), so MuJoCo needs inertia="shell".
+        ET.SubElement(asset, "mesh", name=f"{mesh_stem}_f{k}", file=f["obj"],
+                      inertia="shell", scale=scale)
+    return [f"{asset_name}_f{k}_mat" for k in range(len(faces))]
+
+
+def add_book_visual_assets(asset, books) -> dict:
+    """Declare the textures, materials and meshes for the visual geoms of
+    `books`, and return {book name: [material name per face]}. Books that share
+    a converted mesh share its textures and materials; each gets its own meshes,
+    because a mesh asset holds the scale that turns the DAE's unit cube into
+    that book's box. Returns {} if dae_to_obj.py has not been run.
+    Articulated books are drawn per page section instead (see
+    add_page_visual_assets) and are left out here."""
+    if not book_assets():
+        return {}
+    # Textures already declared count as shared: insert_book calls this again
+    # on the asset block build_scene filled in.
+    out, declared = {}, {t.get("name") for t in asset.findall("texture")}
+    for b in books:
+        if b.parts:
+            continue
+        # A CATALOGUE book wears its own mesh, or none if it was not converted.
+        a = next((x for x in book_assets() if x["name"] == b.asset), None) if b.asset else book_asset(b.name)
+        if a is None:
+            continue
+        scale = _f(b.depth / 2, b.thickness / 2, b.height / 2)   # see VISUAL_YAW
+        out[b.name] = _declare_faces(asset, declared, a["name"], a["faces"], scale, b.name)
+    return out
+
+
+def add_page_visual_assets(asset, books) -> dict:
+    """Declare the meshes that draw the page sections of the articulated
+    `books`, and return {section name: [material name per face]}. Each section
+    is scaled to its own thickness, so it needs its own meshes. Sections of a
+    book whose converted meshes have no page sections are left out and stay
+    plain coloured boxes (section names are unique, so [] would be an error)."""
+    if not book_assets():
+        return {}
+    out, declared = {}, {t.get("name") for t in asset.findall("texture")}
+    for b in books:
+        if not b.parts:
+            continue
+        name = b.asset or book_asset(b.name, sections=len(b.parts))["name"]
+        for part, section in zip(b.parts, page_section_assets(name)):
+            scale = _f(b.depth / 2, part.thickness / 2, b.height / 2)   # see VISUAL_YAW
+            out[part.name] = _declare_faces(asset, declared, section["name"], section["faces"],
+                                            scale, part.name)
+    return out
+
+
+def add_book_parts(body, b: Book, page_materials: Optional[dict] = None) -> None:
+    """Give an articulated book its pages (the repo's design, see
+    urdf/book_part.xacro): one box per section, hinged on the spine so the fore
+    edges can fan open. The sections are nested from the back forward, as in
+    the repo's joint chain: the back one is welded to `body` (the repo's fixed
+    back-cover joint) and each further one hinges about z on the section before
+    it. A hinge sits on the vertical spine line at the section's far (+x) face,
+    turned negative to open, exactly as the repo places its joint origins."""
+    mats = page_materials or {}
+    parent, previous = body, 0.0
+    for k, part in enumerate(reversed(b.parts)):
+        # The back cover starts on the spine, at the book's +x face; the rest
+        # sit one section further forward, relative to the section they hinge on.
+        pos = (b.thickness / 2, b.depth / 2, 0.0) if not k else (-previous, 0.0, 0.0)
+        node = ET.SubElement(parent, "body", name=part.name, pos=_f(*pos))
+        if k:
+            ET.SubElement(node, "joint", name=part.name + "_joint", type="hinge",
+                          axis="0 0 1", range=_f(-math.pi, 0.0))
+        # The box hangs half a section behind its hinge and half the depth in
+        # front of the spine line: the repo's (xsize/2, -ysize/2, 0) offset.
+        offset = _f(-part.thickness / 2, -b.depth / 2, 0.0)
+        faces = mats.get(part.name, [])
+        attrs = {"class": "book", "group": "3"} if faces else {"class": "book"}
+        ET.SubElement(node, "geom", name=part.name + "_geom", pos=offset,
+                      size=_f(part.thickness / 2, b.depth / 2, b.height / 2), mass=f"{part.mass:.5g}",
+                      friction=_f(b.friction, 0.005, 0.0001), rgba=_f(*b.rgba), **attrs)
+        for j, material in enumerate(faces):
+            ET.SubElement(node, "geom", name=f"{part.name}_visual{j}", **{"class": "book_visual"},
+                          mesh=f"{part.name}_f{j}", material=material, pos=offset, euler=_f(0, 0, VISUAL_YAW))
+        parent, previous = node, part.thickness
+
+
+def book_children(b: Book) -> List[str]:
+    """The bodies an articulated book brings with it (see add_book_parts): its
+    page sections, back first, the order their joints come in qpos. [] for a
+    rigid book. A book's `<book>_geom` is only a non-colliding envelope, so
+    whatever has to see where a book really is - its contacts with the hand and
+    the other books - has to reach for these bodies' geoms too."""
+    return [p.name for p in reversed(b.parts)]
+
+
+def add_book_geoms(body, b: Book, visual_materials: Optional[dict] = None,
+                   page_materials: Optional[dict] = None) -> None:
+    """Add one book to `body`: its collision box (the only thing physics sees),
+    plus the six textured face geoms that draw it if `visual_materials` names
+    the book. The box is left out of the render groups then, so that the faces
+    covering it exactly do not fight it for the depth buffer.
+
+    An articulated book (b.parts) keeps that box as a non-colliding envelope
+    with the same name and size - the controllers reconstruct a book's corners
+    from `<name>_geom`'s size, and perception reads it - and takes its pages as
+    hinged sections instead (see add_book_parts). Those carry the mass and the
+    collision, so the row still weighs what it did."""
+    if b.parts:
+        ET.SubElement(body, "geom", name=b.name + "_geom", size=_f(b.thickness / 2, b.depth / 2, b.height / 2),
+                      mass=_f(ENVELOPE_MASS), contype="0", conaffinity="0", rgba=_f(*b.rgba),
+                      **{"class": "book", "group": "3"})
+        add_book_parts(body, b, page_materials)
+        return
+    mats = (visual_materials or {}).get(b.name, [])
+    attrs = {"class": "book", "group": "3"} if mats else {"class": "book"}
+    ET.SubElement(body, "geom", name=b.name + "_geom",
+                  size=_f(b.thickness / 2, b.depth / 2, b.height / 2), mass=f"{b.mass:.5g}",
+                  friction=_f(b.friction, 0.005, 0.0001), rgba=_f(*b.rgba), **attrs)
+    for k, material in enumerate(mats):
+        ET.SubElement(body, "geom", name=f"{b.name}_visual{k}", **{"class": "book_visual"},
+                      mesh=f"{b.name}_f{k}", material=material, euler=_f(0, 0, VISUAL_YAW))
+
 
 def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> str:
     """Return a complete MJCF string. If `panda_xml` (Menagerie's panda.xml)
@@ -494,6 +811,11 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
     ds = ET.SubElement(d, "default", **{"class": "shelf"})
     ET.SubElement(ds, "geom", type="box", condim="4", rgba="0.55 0.4 0.25 1",
                   solref=_f(tr, 1.0), solimp="0.95 0.99 0.001")
+    dv = ET.SubElement(d, "default", **{"class": "book_visual"})
+    # Decoration only: the massless, non-colliding face meshes of a book
+    # (see add_book_visual_assets). Group 2 is drawn by default; group 3, where
+    # the box they cover ends up, is not.
+    ET.SubElement(dv, "geom", type="mesh", contype="0", conaffinity="0", group="2", mass="0")
 
     asset = ET.SubElement(m, "asset")
     ET.SubElement(asset, "texture", name="grid", type="2d", builtin="checker",
@@ -501,6 +823,9 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
     ET.SubElement(asset, "material", name="floor", texture="grid", texrepeat="8 8")
     if panda_xml:
         ET.SubElement(asset, "model", name="panda", file=make_panda_with_sensors(panda_xml))
+    all_books = row.books + [b for fl in row.filler_levels for b in fl.books]
+    visual_materials = add_book_visual_assets(asset, all_books) if cfg.book_meshes else {}
+    page_materials = add_page_visual_assets(asset, all_books) if cfg.book_meshes else {}
 
     wb = ET.SubElement(m, "worldbody")
     ET.SubElement(wb, "light", pos="0 1.5 2.5", dir="0 -0.5 -1", diffuse="0.6 0.6 0.6")
@@ -556,35 +881,33 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
     # Books: spine `inset` behind the shelf's front edge. With every book at
     # least depth_clearance (>= the largest inset) shallower than the shelf,
     # no back goes past the back panel.
+    # qpos for the "init" keyframe, in the model's joint order: the robot's
+    # joints first, then each book's - its freejoint if it has one, followed by
+    # the hinge of every page section after the welded back one (closed, 0).
+    qpos = list(PANDA_HOME) if panda_xml else []
+    qw, qz = math.cos(row.shelf_yaw / 2), math.sin(row.shelf_yaw / 2)
 
     def add_books(books, z_base, free):
         """Place books standing on the board whose top is at z_base. Free books
-        get a freejoint and are returned (they need keyframe entries); books
-        without a joint are welded in place and cost almost nothing to simulate."""
-        placed = []
+        get a freejoint and are appended to `qpos`; books without a joint are
+        welded in place and cost almost nothing to simulate. An articulated
+        book adds its page hinges to `qpos` too, closed."""
         for b in books:
             lx, ly, lz = b.x, D / 2 - b.inset - b.depth / 2, z_base + b.height / 2 + 0.0005
             wx, wy, wz = sp[0] + c * lx - s * ly, sp[1] + s * lx + c * ly, sp[2] + lz
             body = ET.SubElement(wb, "body", name=b.name, pos=_f(wx, wy, wz), euler=_f(0, 0, row.shelf_yaw))
             if free:
                 ET.SubElement(body, "freejoint", name=b.name + "_joint")
-                placed.append((wx, wy, wz))
-            ET.SubElement(body, "geom", name=b.name + "_geom", **{"class": "book"},
-                          size=_f(b.thickness / 2, b.depth / 2, b.height / 2), mass=f"{b.mass:.5g}",
-                          friction=_f(b.friction, 0.005, 0.0001), rgba=_f(*b.rgba))
+                qpos.extend([wx, wy, wz, qw, 0, 0, qz])
+            qpos.extend([0.0] * max(0, len(b.parts) - 1))
+            add_book_geoms(body, b, visual_materials, page_materials)
             ET.SubElement(body, "site", name=b.name + "_top", pos=_f(0, 0, b.height / 2), size="0.003", group="4")
-        return placed
 
     # Target-level books first, so their qpos entries come right after the robot's.
-    book_bodies = add_books(row.books, target_top, free=True)
+    add_books(row.books, target_top, free=True)
     for fl in row.filler_levels:
-        book_bodies += add_books(fl.books, tops[fl.level], free=not cfg.static_other_levels)
+        add_books(fl.books, tops[fl.level], free=not cfg.static_other_levels)
 
-    # Keyframe "init": robot at home, books where we placed them.
-    qpos = list(PANDA_HOME) if panda_xml else []
-    qw, qz = math.cos(row.shelf_yaw / 2), math.sin(row.shelf_yaw / 2)
-    for (wx, wy, wz) in book_bodies:
-        qpos += [wx, wy, wz, qw, 0, 0, qz]
     kf = ET.SubElement(m, "keyframe")
     attrs = {"name": "init", "qpos": _f(*qpos)}
     if panda_xml:
@@ -662,11 +985,20 @@ def main():
     ap.add_argument("--panda", help="path to mujoco_menagerie/franka_emika_panda/panda.xml")
     ap.add_argument("--repo-defaults", action="store_true",
                     help="use the original Isaac Gym cubby and box size (0.344 m wide, 4x16x24 cm boxes)")
+    ap.add_argument("--book-meshes", action="store_true",
+                    help="draw the converted repo book meshes (run dae_to_obj.py first)")
+    ap.add_argument("--book-pages", type=int, default=0, metavar="N",
+                    help="split every book's pages into N sections hinged on the spine (0 = one rigid box)")
+    ap.add_argument("--catalogue", action="store_true",
+                    help="fill the rows with the repo's real books (size, mass, cover, pages) instead of sampled ones")
     ap.add_argument("--out", default="scenes")
     a = ap.parse_args()
 
     os.makedirs(a.out, exist_ok=True)
     cfg = REPO_DEFAULTS if a.repo_defaults else ShelfConfig()
+    cfg.book_meshes = a.book_meshes
+    cfg.book_pages = a.book_pages
+    cfg.catalogue = a.catalogue
     scen = SCENARIOS if a.scenario == "all" else (a.scenario,)
     for sc in scen:
         rng = np.random.default_rng(a.seed)

@@ -90,7 +90,7 @@ def test_project_inverts_points(shot):
 def test_robot_mask_and_no_reading_beyond_range(shot):
     model, _, row, frame = shot
     robot = robot_mask(model, frame)
-    assert robot.mean() < 0.005                                  # at most a strip at the image edge
+    assert robot.mean() < 0.02                                   # at most strips at the image edge (the fingertips)
     assert np.all(frame.depth[frame.seg == -1] == 0)             # background: no reading
     books = [model.geom(b.name + "_geom").id for b in row.books]
     assert np.all(frame.depth[np.isin(frame.seg, books)] > 0)    # every book pixel has one

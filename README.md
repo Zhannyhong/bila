@@ -1,14 +1,79 @@
-# MuJoCo bookshelf, ported from ContactExplorer
+# Library robot: making room on the shelf
 
 `shelf_scene.py` builds the bookshelf scene for the gap-creation project in MuJoCo.
 It starts from the shelf in ContactExplorer's singulation task
 (`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full,
 randomized bookcase standing on the floor. It also adds a Franka Panda with thin
-10 mm fingers, a wrist camera and a force/torque sensor.
+10 mm-wide, 12 cm-long fingers, a wrist camera and a force/torque sensor. Optionally it draws the real book covers
+ported over from the PBBM robot librarian repo (see [Book covers](#book-covers-optional)) and cuts every
+book into page sections hinged on the spine (see [Book pages](#book-pages-optional)).
 
-![scenarios](scenarios_preview.png)
+## What's in the repo
 
-## The bookcase
+| File | What it does |
+| --- | --- |
+| `shelf_scene.py` | Builds a randomized bookcase and target row for one of five scenarios, adds the Panda, settles the row with physics; can split every book into page sections hinged on the spine |
+| `dae_to_obj.py` | Converts the PBBM repo's Collada book covers (and, for the shaped books, their page sections) to the OBJ/PNG assets `shelf_scene.py` draws (run once, optional) |
+| `view_scene.py` | Opens a settled scenario in the MuJoCo viewer |
+| `cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython cart_demo.py --scenario tight --view`) |
+| `insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
+| `perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
+| `notebooks/` | Beginner's guide to the simulator and the RL/POMDP setup with PBBM's book labels (`01_...`), and a breakdown of how the PBBM robot shelved books (`02_...`) |
+| `mujoco_menagerie/` | Git submodule with the Panda model |
+| `scenes/` | Generated scenes (git-ignored) |
+| `generated_assets/books/` | Converted book covers and textures (git-ignored, written by `dae_to_obj.py`) |
+
+| Scenario | Target row | Scripted baseline |
+| --- | --- | --- |
+| clear | Slot already wide enough | `insert_book.py --scenario clear` |
+| tight | Slot narrower than the book | `insert_book.py --scenario tight` |
+| leaning | A neighbour leans into the slot | `insert_book.py --scenario leaning` |
+| packed | No gap: the slot's neighbours touch | `insert_book.py --scenario packed` |
+| collapsed | A run of 3 to 6 books has toppled over | none yet |
+
+## Quick start
+
+```bash
+git clone --recurse-submodules <this repo>     # or, in an existing clone:
+git submodule update --init                     # fetches mujoco_menagerie
+uv sync                                         # installs mujoco and numpy from pyproject.toml
+
+# Generate and look at scenes
+uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
+uv run python view_scene.py --scenario leaning --seed 0          # add --no-robot for the bookcase only
+
+# Run the scripted baselines
+uv run python insert_book.py --scenario clear --seed 0
+uv run python insert_book.py --scenario tight --seed 0 --trials 50
+uv run python insert_book.py --scenario leaning --seed 0
+```
+
+Optional, once, to draw the real book covers and their page sections (see
+[Book covers](#book-covers-optional) and [Book pages](#book-pages-optional)):
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/TAMS-Group/PBBM-robot-librarian /tmp/pbbm
+git -C /tmp/pbbm sparse-checkout set librarian_common/tams_books_world
+uv run python dae_to_obj.py --src /tmp/pbbm/librarian_common/tams_books_world/meshes
+```
+
+On macOS, anything with `--view` must run under `mjpython` instead of `python`
+(for example `uv run mjpython insert_book.py --scenario leaning --seed 0 --view`), because the passive viewer needs it.
+With a uv-installed Python, `mjpython` can fail with `Library not loaded: @rpath/libpython3.12.dylib`. Link the
+library into the venv once (again after recreating `.venv`):
+
+```bash
+ln -sf "$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')/libpython3.12.dylib" .venv/
+```
+
+## The simulator
+
+### The bookcase
+
+`shelf_scene.py` starts from the shelf in ContactExplorer's singulation task
+(`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full, randomized bookcase
+standing on the floor, with a Franka Panda that has a wrist camera and a force/torque sensor.
 
 The bookcase is built from the floor up:
 
@@ -39,8 +104,126 @@ The bookcase is built from the floor up:
   0.80 m in front of the shelf. The arm then always sees the same geometry relative to the row it works on,
   and can hold its hand level to slide a book in. (The Panda can only point its hand level with the hand
   about 0.5 m or more above its base, because joint 6 bends one way only.)
+- Frame convention (same as the Isaac Gym task): x along the row, y out of the shelf (back panel at −y), z up.
 
-## What was taken from the repo, and what changed
+### How the target row is made
+
+Books are placed upright, then the leaning and collapsed scenarios push some of them over during a short
+settling phase (the pushes are stored in `row.nudges`). This way every lean is a real resting pose found by
+physics, not a hand-set angle that might overlap other books.
+
+- **Leaning**: the gap is sized from the lean angle you want (12° to 35°), so the book comes to rest against its neighbour.
+- **Collapsed**: a run of 3 to 6 books topples into a hole next to it. The hole is sized the same way, so the run
+  leans far enough to stay down and lands on the book across the hole below its top.
+- In both, the spare row space goes to the end away from the toppling. The books that catch the lean are
+  packed against a side panel and can't slide away.
+
+### Generating and viewing scenes
+
+```bash
+uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
+uv run python shelf_scene.py --scenario leaning --seed 3 --out scenes      # one scenario only
+```
+
+This writes one `.xml` (the MuJoCo scene) and one `.json` (levels, book sizes, target slot, gap edges) per
+scenario, then settles each scene and prints whether it is stable. `scenes/` is git-ignored: the XML holds absolute paths.
+
+```bash
+uv run python view_scene.py --scenario leaning --seed 0       # add --no-robot for the bookcase only
+```
+
+`view_scene.py` settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
+(Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
+Either way the camera starts on the gap, from the front and to one side, so the robot isn't in the way.
+The scene sets this as MuJoCo's default free camera (`<statistic>` and `<visual><global>`), so you can still
+orbit, and the viewer's Align button brings you back to it. MuJoCo's viewer only applies it by itself when it
+opens a file, so `view_scene.py` and `insert_book.py --view` apply it themselves. In the viewer,
+Rendering > Camera > `scene_cam` shows the whole target row.
+
+### Book covers (optional)
+
+By default every book is a plain box. `dae_to_obj.py` brings over the real covers from the
+[PBBM robot librarian](https://github.com/TAMS-Group/PBBM-robot-librarian) repo
+(`librarian_common/tams_books_world`), which models each book as a unit cube whose six faces carry
+a texture: front and back cover, top and bottom edges, spine and fore edge.
+
+```bash
+uv run python dae_to_obj.py --src /tmp/pbbm/librarian_common/tams_books_world/meshes
+uv run python shelf_scene.py --scenario leaning --seed 3 --book-meshes --out scenes
+uv run python insert_book.py --scenario clear --seed 0 --book-meshes
+uv run mjpython insert_book.py --scenario tight --seed 0 --view --book-meshes   # watch it
+```
+
+It writes `generated_assets/books/` (git-ignored: 512 px PNGs plus six one-face OBJs per book, and the
+same again for each page section of the shaped books; see [Book pages](#book-pages-optional)).
+MuJoCo cannot load Collada, so each cube is converted to OBJ; the six faces are split because MuJoCo
+allows one material per mesh. Turn the covers on with `ShelfConfig(book_meshes=True)`, or `--book-meshes`
+on `shelf_scene.py` and `insert_book.py` (the other entry points build with covers off).
+
+- **Physics is untouched.** The covers are extra `mass="0"`, non-colliding geoms (`contype=0`,
+  `conaffinity=0`) sitting on the book's box, which keeps all of the controller's logic
+  (`insert_book.py` reconstructs the book's corners from `geom_size`, the box half-extents). Models
+  built with and without covers have identical masses, inertias, `nq` and keyframe `qpos`.
+- **No z-fighting.** When a book has covers its box moves to render group 3, which the default
+  `geomgroup` does not draw; the covers are drawn instead, in group 2.
+- **Missing assets are not an error.** If `generated_assets/books/` is absent, `book_meshes=True`
+  quietly falls back to the plain boxes.
+- The covers are decoration only: perception still reads the box geometry, so a camera-based
+  `ShelfEstimate` is unaffected.
+
+### Book pages (optional)
+
+The repo also models some books (the Voynich facsimile, the Caterpillar, the Lagemann book) as a stack of
+page sections hinged on the spine, so their fore edges can fan open (`urdf/book_part.xacro`, loaded by
+`urdf/articulated_*.xacro`). `ShelfConfig(book_pages=N)` ports that design: every book's pages are cut into
+`N` sections that hinge on the spine, and `dae_to_obj.py` converts each section's own mesh alongside the
+book's covers.
+
+```bash
+uv run python shelf_scene.py --scenario leaning --seed 3 --book-pages 4 --out scenes
+uv run python insert_book.py --scenario tight --seed 0 --book-pages 4
+uv run mjpython insert_book.py --scenario tight --seed 0 --view --book-pages 4   # watch them fan
+```
+
+- **How it is built.** The back section is welded to the book; the `N - 1` in front of it each hang on a
+  revolute joint about the spine's vertical line (`range="-π 0"`), chaining from the back cover forward, as
+  in the repo. Each section carries its share of the book's mass, so the row still weighs what it did.
+- **The box stays.** As with the covers, `<book>_geom` remains the flat box with the same name and
+  `geom_size`, but non-colliding: the page sections carry all of the collision and the mass. So
+  `insert_book.py` and `perception.py`, which reconstruct a book from its box, are
+  unaffected — the code that reads contacts only has to count a page section as part of its book
+  (`shelf_scene.book_children` does that).
+- **Closed to start.** The keyframe starts every hinge at 0, so an articulated book stands as the box it
+  replaced and the pages fan only when something pushes them.
+- `book_pages=0` or `1` is normalised to the one rigid box, so the default scene is unchanged.
+
+### Using it from Python
+
+```python
+import numpy as np
+from shelf_scene import ShelfConfig, make_episode
+cfg = ShelfConfig()
+rng = np.random.default_rng(0)
+model, data, row, report = make_episode(cfg, "collapsed", rng,
+                                        panda_xml="mujoco_menagerie/franka_emika_panda/panda.xml")
+start_qpos = data.qpos.copy()      # settled state = the episode's start
+print(row.target_level, row.target_board_top)
+```
+
+`make_episode` throws away the occasional row that keeps sliding and samples again.
+For RL, generate a few thousand settled `qpos` vectors once and reset from that list. Settling inside every
+reset is too slow.
+
+`qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
+then 7 per filler book only if `static_other_levels=False`. With `book_pages=N`, each articulated book
+adds `N - 1` hinge angles right after its own 7 values (`insert_book.py` keys the parked target book the
+same way).
+
+To change the scene before compiling (as `insert_book.build_model` does to add the held book and gravity
+compensation), build the XML with `sample_row` + `build_scene`, edit it (`xml.etree` or
+`mujoco.MjSpec.from_string(...)`), compile, then call `settle`.
+
+### What was taken from ContactExplorer, and what changed
 
 | Isaac Gym repo | MuJoCo version | Why it changed |
 | --- | --- | --- |
@@ -48,39 +231,27 @@ The bookcase is built from the floor up:
 | `_define_back_wall`, `_define_side_wall`: walls for one cubby | `back_panel` and side panels from floor to top | Same parts, full height |
 | Shelf 0.344 × 0.26 m, fixed | 0.6 to 1.0 m wide, 0.22 to 0.32 m deep, randomized levels and pose | Room for 12 to 20 books per row and space to push them |
 | 5 boxes, 4 × 16 × 24 cm, fixed size | Every book a different, random size, mass and friction | Real shelves are mixed |
-| Neighbour boxes have `fix_base_link=True` and friction `1e-5` | Target-row books are **free bodies** with normal friction (0.25 to 0.7) | Your task is to push neighbours, so they must be movable |
+| Neighbour boxes have `fix_base_link=True` and friction `1e-5` | Target-row books are **free bodies** with normal friction (0.25 to 0.7) | The task is to push neighbours, so they must be movable |
 | PhysX `friction`, `restitution` | MuJoCo `friction`, `solref`, `solimp`, `condim=4` | Different contact model |
 | Two fixed cameras, 640×480, 58° | `scene_cam` (fixed, off to the side, aimed at the target row) + `wrist_cam` on the Panda hand | Robot blocked the front view; wrist camera sees the gap up close |
 | xArm6 + Allegro hand | Franka Panda from MuJoCo Menagerie, with thin 10 mm fingers, + F/T sensor at the flange | Your chosen robot; Menagerie's 21 mm fingers don't fit the narrower tight gaps |
 
 `python shelf_scene.py --repo-defaults` rebuilds the original single cubby (board top at 0.51 m) and box size, for comparison.
 
-## Implementation steps
+## Scripted baselines
 
-1. **Install**
-   ```bash
-   git clone --recurse-submodules <this repo>     # or, in an existing clone:
-   git submodule update --init                     # fetches mujoco_menagerie
-   uv sync                                         # installs mujoco and numpy from pyproject.toml
-   ```
+### Clear and tight rows: `insert_book.py`
 
-2. **Generate scenes**
-   ```bash
-   uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
-   ```
-   This writes one `.xml` (the MuJoCo scene) and one `.json` (levels, book sizes, target slot, gap edges) per scenario,
-   then settles each scene and prints whether it is stable. `scenes/` is git-ignored: the XML holds absolute paths.
+```bash
+uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
+uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
+uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (macOS)
+```
 
-3. **Look at a scene**
-   ```bash
-   uv run python view_scene.py --scenario leaning --seed 0       # add --no-robot for the bookcase only
-   ```
-   This settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
-   (Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
-   Either way the camera starts on the gap, from the front and to one side, so the robot isn't in the way.
-   The scene sets this as MuJoCo's default free camera (`<statistic>` and `<visual><global>`), so you can still
-   orbit, and the viewer's Align button brings you back to it. MuJoCo's viewer only applies it by itself when it
-   opens a file, so `view_scene.py` and `insert_book.py --view` apply it themselves.
+Options: `--strategy one-sided|split` (how a tight gap is widened, default `one-sided`), `--margin` (room left
+around the book in a tight gap, default 6 mm), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
+(draw the converted book covers; see [Book covers](#book-covers-optional)), `--book-pages N` (split every
+book into `N` page sections hinged on the spine; see [Book pages](#book-pages-optional)).
 
 4. **How the target row is made (the key idea)**
    Books are placed upright, then the leaning and collapsed scenarios push some of them over during a short
@@ -95,23 +266,22 @@ The bookcase is built from the floor up:
      the only room is the row's spare space: 3 to 15 cm at one end, plus 0 to 3 mm between books. In 97% of rows
      that is enough on one side for the book plus 6 mm (all of them, using both sides).
 
-5. **Use it in your training code**
-   ```python
-   import numpy as np
-   from shelf_scene import ShelfConfig, make_episode
-   cfg = ShelfConfig()
-   rng = np.random.default_rng(0)
-   model, data, row, report = make_episode(cfg, "collapsed", rng,
-                                           panda_xml="mujoco_menagerie/franka_emika_panda/panda.xml")
-   start_qpos = data.qpos.copy()      # settled state = the episode's start
-   print(row.target_level, row.target_board_top)
-   ```
-   `make_episode` throws away the occasional row that keeps sliding and samples again.
-   For RL, generate a few thousand settled `qpos` vectors once and reset from that list. Settling inside every
-   reset is too slow.
+**Scoring** follows the proposal: upright within 5°, in place, released, plus how far the other books moved.
+In place means:
+- spine within 10 mm of the spine of the neighbour that sticks out more, or
+- if the book is deeper than that neighbour, so it can't line up without its back passing the back panel:
+  at least 10 mm behind the shelf's front edge. With the default rows that's rare (about 1 row in 400: a book
+  near the maximum depth beside neighbours set more than 25 mm in, as the inserted book stops 5 mm short of
+  the back panel), but it also covers other layouts such as `--repo-defaults`.
 
-   `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
-   then 7 per filler book only if `static_other_levels=False`.
+**Control and setup**
+- Menagerie's position actuators, fed by differential IK along min-jerk paths, with gravity compensation.
+  The arm configuration is chosen so the whole sequence stays clear of the joint limits and doesn't run into
+  the shelf. The slide and the final push stop when the wrist force sensor feels the book stop giving way.
+- The script adds the target book to the scene, and gives the gripper the real Franka Hand's 70 N (Menagerie's
+  squeezes a book with 1 to 2 N). It only changes its own copy of the model.
+- The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
+  while it slides.
 
 6. **Scripted insertion (clear, tight, leaning and packed scenarios)**
    ```bash
@@ -235,8 +405,9 @@ The bookcase is built from the floor up:
    - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
      while it slides.
    - The fingers are thin bars in place of Menagerie's (`shelf_scene.py`, `make_panda_with_sensors`): 10 mm wide
-     across their travel, 12 mm thick, as long as Menagerie's, with a pad strip along all 46 mm of each finger
-     that reaches past the palm. The real Franka Hand takes custom fingers, so these could be machined.
+     across their travel, 12 mm thick and 12 cm long (Menagerie's are 5.4 cm), with a pad strip along all of
+     each finger from the palm to the tip. The long fingers let the hand grasp a book from above past taller
+     neighbours (see `cart_demo.py`). The real Franka Hand takes custom fingers, so these could be machined.
    - The book is held right up against the palm (its spine 2 mm off it), so the whole pad strip grips it. Held
      3 cm off the board for 3 s, books then turn 3.1° in the hand on average (5.1° for the 8 that weigh over
      1.2 kg), against 4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. Insertion results are the same. A short
@@ -783,6 +954,7 @@ Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `width`, `depth` | 0.60 to 1.00 m, 0.22 to 0.32 m | Inner size of the bookcase |
 | `num_levels` | 3 to 5 | Shelf boards above the plinth |
 | `level_height` | 0.25 to 0.40 m | Clear height of each level |
 | `plinth_height` | 0.05 to 0.10 m | Bottom kick board |
@@ -791,6 +963,9 @@ Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 | `static_other_levels` | `True` | Weld non-target books in place, for speed |
 | `spine_inset` | 10 to 30 mm | How far each spine sits behind the shelf's front edge |
 | `depth_clearance` | 30 mm | Every book is at least this much shallower than the shelf |
+| `book_meshes` | `False` | Draw the converted book covers (from `dae_to_obj.py`) on the boxes as non-colliding visuals |
+| `book_pages` | `0` | Split every book's pages into this many sections hinged on the spine (0 or 1 = one rigid box) |
+| `catalogue` | `False` | Fill the rows with PBBM's real books (`shelf_scene.CATALOGUE`, `--catalogue`): each copy keeps the book's size, mass and own cover, the Voynich and Lagemann books are hinged into their real page sections, and the same book can appear more than once. Positions, order, friction and scenario stay random. The sampled size, density and `book_pages` settings are then unused |
 | `robot_xy`, `robot_z_offset` | (0, 0.80), −0.40 m | Robot base position; its height follows the target board |
 | `lean_angle_deg` | 12° to 35° | Lean for leaning and collapsed rows (raised when a book needs more to stay down) |
 
@@ -821,7 +996,7 @@ and 0 to 14 per scenario with free filler books).
   instead, narrow `target_band` and set `robot_z_offset` accordingly. Don't lower `target_band` below 0.40 m
   without raising the base, or it ends up below the floor.
 - **Topple threshold.** Some settled books lean more than 45°. When scoring "no neighbour toppled", measure each
-  book's tilt *change* from its settled pose, not its absolute tilt.
+  book's tilt *change* from its settled pose, not its absolute tilt (`insert_book.py` does this).
 - **Two leaning neighbours** (one on each side of the gap) are not generated: pushing both at once made one fall
   flat. Use the collapsed scenario for several leaning books.
 - **Generated robot file.** `shelf_scene.py` writes `panda_shelf.xml` (Menagerie's Panda with the thin fingers,

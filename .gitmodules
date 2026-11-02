@@ -2,3 +2,6 @@
 	path = mujoco_menagerie
 	url = https://github.com/google-deepmind/mujoco_menagerie
 	ignore = untracked
+[submodule "PBBM-robot-librarian"]
+	path = PBBM-robot-librarian
+	url = https://github.com/TAMS-Group/PBBM-robot-librarian.git
