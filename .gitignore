@@ -22,3 +22,6 @@ scenes/
 debug_outputs/
 .pytest_cache/
 generated_assets
+
+# MuJoCo writes its warnings here
+MUJOCO_LOG.TXT
