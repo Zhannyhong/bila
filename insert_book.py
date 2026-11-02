@@ -993,13 +993,12 @@ class Episode:
         it inserted. Raises RuntimeError if no view is reachable, or the
         camera doesn't see both of the slot's neighbours."""
         from dataclasses import replace
-        from inspection import solve_inspection                     # these import this module
-        from perception import gap_profile
+        from perception import gap_profile                          # perception imports this module
         if self.run is None:                                         # the first look: start from where the arm is
             self.place_arm(self.d.qpos[self.ik.qadr].copy())
         run, t0 = self.run, self.run.t
         if self.views is None:
-            self.views = [(dx, v[0]) for dx in SWEEP if (v := solve_inspection(self.m, self.d, self.row, dx))]
+            self.views = self.inspection_views()
             if not self.views:
                 raise RuntimeError("the arm can't reach any view of the row for the camera")
             views, x_slot = self.views, None                         # the slot where the shelf map has it
@@ -1043,6 +1042,12 @@ class Episode:
             with self.viewer.lock():
                 self.viewer.user_scn.ngeom = 0
                 draw_in_viewer(self.viewer.user_scn, est, (self.t, self.h))
+
+    def inspection_views(self):
+        """[(dx, arm angles)] of the views in SWEEP the arm reaches, the scene
+        as it is now. (Its own method so a training env can cache it.)"""
+        from inspection import solve_inspection                     # inspection imports this module
+        return [(dx, v[0]) for dx in SWEEP if (v := solve_inspection(self.m, self.d, self.row, dx))]
 
     def slot_now(self):
         """Where the slot is along the row, at the board: between the
