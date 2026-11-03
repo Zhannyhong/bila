@@ -135,3 +135,17 @@ def test_a_toppled_book_fails_the_episode(env):
     _, _, tilt = env.potential()
     assert tilt > TOPPLE_DEG
     assert "tilted" in env.failure(env.ground_truth.estimate(ep.d), tilt)
+
+
+def test_scenes_are_picked_by_their_first_contact(warmed):
+    widen, shove = copy.deepcopy(warmed[0]), copy.deepcopy(warmed[0])
+    widen.phase, shove.phase, shove.seed = "widen", "shove", SEED + 1
+    with pytest.raises(ValueError):
+        GapEnv(pool={"tight": [shove]}, first_phases=("widen",))
+    env = GapEnv(pool={"tight": [shove, widen]}, first_phases=("widen",))
+    try:
+        assert [p.seed for p in env.pool["tight"]] == [SEED]
+        _, info = env.reset(seed=0, options={"index": 0})
+        assert info["seed"] == SEED and env.contact.phase == "widen"
+    finally:
+        env.close()
