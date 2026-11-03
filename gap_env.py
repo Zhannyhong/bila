@@ -5,8 +5,9 @@ corrects its hand during the contact moves (Runner.contact: widen's pushes,
 the lift and the clamp's swing, the shove).
 
     uv run python gap_env.py pool --scenario tight --seeds 1000 --workers 12   # build the training scenes once
+    uv run python gap_env.py pool --scenario tight --seeds 40 --first-seed 20000 --name tight_val   # validation
     from gap_env import GapEnv
-    env = GapEnv(scenarios=("tight",))                                          # loads scenes/gap_pool_tight.pkl
+    env = GapEnv(scenarios=("tight",), first_phases=("widen",))                 # loads scenes/gap_pool_tight.pkl
 
 One env step is one residual decision (every RESIDUAL_EVERY physics steps,
 25 Hz). The scripted episode runs in a worker thread: when its Runner asks
@@ -56,10 +57,13 @@ books along and into the row on purpose (evaluation still reports it).
 Training scenes (a pool per scenario, seeds from POOL_FIRST_SEED, never the
 test seeds 0-49): each settled scene's state, its camera-noise seed, and what
 a run of the script up to its first contact move found: the inspection views
-and the first arm plan (planning them is most of a tight episode's time) (choose_arm), and whether
-it makes any contact at all (rows wide enough already are left out). The
-residual hasn't acted before them, so they are exact; each is used only if
-its inputs hash the same.
+and the first arm plan (choose_arm; planning them is most of a tight
+episode's time), whether it makes any contact at all (rows wide enough
+already are left out), and the phase of its first contact. The residual
+hasn't acted before them, so they are exact; each is used only if its inputs
+hash the same. first_phases picks scenes by their first contact: a tight row
+the script shoves (its neighbours touch) takes ~10x as long as one it widens,
+and belongs with the packed rows.
 """
 
 from __future__ import annotations
@@ -156,11 +160,24 @@ class PoolEntry:
     first_plan: Optional[tuple] = None      # (inputs' digest, arm angles, label) of the first choose_arm
     contact: Optional[bool] = None          # whether the script makes any contact move (None: not run yet)
     why: str = ""                           # if not, why not
+    phase: str = ""                         # the first contact move's phase (PHASES), if any
 
     @property
     def noise_rng(self) -> np.random.Generator:
         """The camera noise of this scene: the same every time it is used."""
         return np.random.default_rng([self.seed, 1])
+
+
+class Packed:
+    """A pool entry kept pickled, with its seed and contact flag at hand:
+    unpickled, a pool of 1000 takes ~270 MB in every worker."""
+    phase = ""                              # (pools packed before phases were recorded)
+
+    def __init__(self, entry: PoolEntry):
+        self.seed, self.contact, self.phase, self.blob = entry.seed, entry.contact, entry.phase, pickle.dumps(entry)
+
+    def unpack(self) -> PoolEntry:
+        return pickle.loads(self.blob)
 
 
 def make_entry(cfg: ShelfConfig, scenario: str, seed: int) -> PoolEntry:
@@ -304,17 +321,23 @@ def run_script(ep: GapEpisode, bridge: Bridge):
 # ---------------------------------------------------------------------------
 class GapEnv(gym.Env):
     """See the module docstring. scenarios: drawn from uniformly per episode.
-    pool: {scenario: [PoolEntry]} (default: scenes/gap_pool_<scenario>.pkl).
-    noise_scale: NoisyPerception's scale. action_scale: of RESIDUAL_STEP."""
+    pool: {scenario: [PoolEntry or Packed]} (default: scenes/gap_pool_<scenario>.pkl).
+    first_phases: only scenes whose first contact is one of these (None: all).
+    noise_scale: NoisyPerception's scale. action_scale: of RESIDUAL_STEP.
+    reset(options={"index": i}) starts on scene i of the first scenario's
+    (filtered) list instead of a random one: for validation."""
 
     metadata = {"render_modes": []}
 
-    def __init__(self, scenarios: Sequence[str] = ("tight",), pool: Optional[Dict[str, List[PoolEntry]]] = None,
-                 noise_scale: float = 1.0, action_scale: float = 1.0, max_decisions: int = MAX_DECISIONS,
-                 cfg: Optional[ShelfConfig] = None):
+    def __init__(self, scenarios: Sequence[str] = ("tight",), pool: Optional[Dict[str, list]] = None,
+                 first_phases: Optional[Sequence[str]] = None, noise_scale: float = 1.0, action_scale: float = 1.0,
+                 max_decisions: int = MAX_DECISIONS, cfg: Optional[ShelfConfig] = None):
         self.cfg = cfg or ShelfConfig()
         self.scenarios = tuple(scenarios)
-        self.pool = pool if pool is not None else {s: load_pool(s) for s in self.scenarios}
+        pool = pool if pool is not None else {s: load_pool(s) for s in self.scenarios}
+        packed = {s: [e if isinstance(e, Packed) else Packed(e) for e in pool[s]] for s in self.scenarios}
+        self.pool = {s: [p for p in packed[s] if first_phases is None or p.phase in first_phases]
+                     for s in self.scenarios}
         for s in self.scenarios:
             if not any(e.contact is not False for e in self.pool[s]):
                 raise ValueError(f"no {s} scene in the pool makes any contact move")
@@ -334,17 +357,18 @@ class GapEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.stop()
+        index = (options or {}).get("index")
         while True:
-            entries = [e for e in self.pool[self.scenarios[self.np_random.integers(len(self.scenarios))]]
-                       if e.contact is not False]
+            scenario = self.scenarios[0 if index is not None else self.np_random.integers(len(self.scenarios))]
+            entries = [e for e in self.pool[scenario] if e.contact is not False]
             if not entries:
                 raise RuntimeError("no scene left in the pool that makes a contact move")
-            entry = entries[self.np_random.integers(len(entries))]
+            packed = entries[index % len(entries) if index is not None else self.np_random.integers(len(entries))]
+            entry = packed.unpack()
             msg = self.start(entry)
             if msg[0] == "decide":
-                entry.contact = True
                 break
-            entry.contact, entry.why = False, msg[1][1] or msg[1][0]    # ended before any contact: never again
+            packed.contact = False                                      # ended before any contact: never again
             self.ep = None
         ep = self.ep
         self.builder = ObservationBuilder(ep.est, target=(ep.t, ep.h))
@@ -469,7 +493,7 @@ class GapEnv(gym.Env):
     def sizes(self):
         """Lengths of the actor and critic vectors (from the first scene's
         ground truth: they don't depend on the row)."""
-        entry = next(e for s in self.scenarios for e in self.pool[s])
+        entry = self.pool[self.scenarios[0]][0].unpack()
         model, data = load_scene(self.cfg, entry)
         est = GroundTruthPerception(model, entry.row).estimate(data)
         b = ObservationBuilder(est, target=(entry.row.target_book.thickness, entry.row.target_book.height))
@@ -481,22 +505,25 @@ class GapEnv(gym.Env):
 # ---------------------------------------------------------------------------
 # Building the pool
 # ---------------------------------------------------------------------------
-def pool_path(scenario: str, root: str = POOL_DIR) -> str:
-    return os.path.join(root, f"gap_pool_{scenario}.pkl")
+def pool_path(name: str, root: str = POOL_DIR) -> str:
+    """A pool's file; its name is the scenario's unless given (a validation pool's)."""
+    return os.path.join(root, f"gap_pool_{name}.pkl")
 
 
-def load_pool(scenario: str, root: str = POOL_DIR) -> List[PoolEntry]:
-    path = pool_path(scenario, root)
+def load_pool(name: str, root: str = POOL_DIR) -> List[Packed]:
+    path = pool_path(name, root)
     if not os.path.exists(path):
-        raise FileNotFoundError(f"{path} is missing: build it with `python gap_env.py pool --scenario {scenario}`")
+        raise FileNotFoundError(f"{path} is missing: build it with `python gap_env.py pool --scenario ...`")
     with open(path, "rb") as f:
         return pickle.load(f)
 
 
 class FirstContact:
-    """A residual that stops the script at its first contact move."""
+    """A residual that stops the script at its first contact move, noting its phase."""
+    phase = ""
 
     def decide(self, run, contact):
+        self.phase = contact.phase
         raise Abandon
 
 
@@ -505,39 +532,79 @@ def warm(args) -> PoolEntry:
     move, so the entry holds its inspection views and first plan."""
     scenario, seed = args
     cfg = ShelfConfig()
-    entry = make_entry(cfg, scenario, seed)
+    try:
+        entry = make_entry(cfg, scenario, seed)
+    except RuntimeError as e:                # no stable row for this seed
+        return PoolEntry(scenario, seed, None, np.zeros(0), contact=False, why=str(e))
     model, data = load_scene(cfg, entry)
     ep = GapEpisode(model, data, entry, NoisyEyes(model, entry.row, entry.noise_rng))
-    ep.residual = FirstContact()
+    ep.residual = first = FirstContact()
     try:
         res = ep.reshelve()
         entry.contact, entry.why = False, "the script gave up: " + res.get("skipped", "")
     except Abandon:
-        entry.contact = True
+        entry.contact, entry.phase = True, first.phase
     except ReachedInsert:
         entry.contact, entry.why = False, "wide enough already"
     except RuntimeError as e:
         entry.contact, entry.why = False, str(e)
+    except Exception as e:                   # a bug: leave the scene out rather than lose the whole pool
+        entry.contact, entry.why = False, f"crash: {type(e).__name__}: {e}"
     return entry
 
 
 def build_pool(scenario: str, seeds: int, first_seed: int = POOL_FIRST_SEED, workers: int = 1,
-               root: str = POOL_DIR) -> List[PoolEntry]:
+               root: str = POOL_DIR, name: Optional[str] = None) -> List[PoolEntry]:
+    """Build and save a pool (as `name`, default the scenario). Refuses to
+    overwrite one: they take hours."""
+    path = pool_path(name or scenario, root)
+    if os.path.exists(path):
+        raise FileExistsError(f"{path} exists: move it away first")
     jobs = [(scenario, s) for s in range(first_seed, first_seed + seeds)]
     if workers > 1:
         with Pool(workers) as p:
             entries = []
             for i, e in enumerate(p.imap(warm, jobs)):
                 entries.append(e)
-                print(f"  {i + 1}/{len(jobs)}  seed {e.seed}: {'contact' if e.contact else e.why}", flush=True)
+                print(f"  {i + 1}/{len(jobs)}  seed {e.seed}: {e.phase if e.contact else e.why}", flush=True)
     else:
         entries = [warm(j) for j in jobs]
     os.makedirs(root, exist_ok=True)
-    with open(pool_path(scenario, root), "wb") as f:
-        pickle.dump(entries, f)
-    n = sum(e.contact for e in entries)
-    print(f"{scenario}: {n} of {len(entries)} scenes make contact -> {pool_path(scenario, root)}")
+    with open(path, "wb") as f:
+        pickle.dump([Packed(e) for e in entries], f)
+    phases = {p: sum(e.phase == p for e in entries) for p in PHASES}
+    print(f"{scenario}: {sum(e.contact for e in entries)} of {len(entries)} scenes make contact "
+          f"(first contact: {phases}) -> {path}")
     return entries
+
+
+def first_phase(packed: Packed) -> Packed:
+    """The scene again, up to its first contact (fast: its views and plan are
+    cached), to record that contact's phase."""
+    entry = packed.unpack()
+    if entry.contact:
+        model, data = load_scene(ShelfConfig(), entry)
+        ep = GapEpisode(model, data, entry, NoisyEyes(model, entry.row, entry.noise_rng))
+        ep.residual = first = FirstContact()
+        try:
+            ep.reshelve()
+        except (Abandon, ReachedInsert, RuntimeError):
+            pass
+        entry.phase = first.phase
+    return Packed(entry)
+
+
+def add_phases(name: str, workers: int = 1, root: str = POOL_DIR) -> None:
+    """Record the first contact phase of every scene of a pool built before
+    phases were. Writes a new file and swaps it in only once it is complete."""
+    pool, path = load_pool(name, root), pool_path(name, root)
+    with Pool(workers) as p:
+        done = list(p.imap(first_phase, pool))
+    with open(path + ".new", "wb") as f:
+        pickle.dump(done, f)
+    os.replace(path + ".new", path)
+    counts = {ph: sum(d.phase == ph for d in done) for ph in PHASES}
+    print(f"{name}: first contact {counts}, {sum(1 for d in done if d.contact and not d.phase)} unknown -> {path}")
 
 
 def main():
@@ -548,10 +615,17 @@ def main():
     p.add_argument("--seeds", type=int, default=1000)
     p.add_argument("--first-seed", type=int, default=POOL_FIRST_SEED)
     p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--name", help="save as gap_pool_<name>.pkl (default: the scenario)")
+    p = sub.add_parser("phases", help="record each scene's first contact phase in an older pool")
+    p.add_argument("name")
+    p.add_argument("--workers", type=int, default=1)
     args = ap.parse_args()
     if args.cmd == "pool":
-        build_pool(args.scenario, args.seeds, args.first_seed, args.workers)
+        build_pool(args.scenario, args.seeds, args.first_seed, args.workers, name=args.name)
+    elif args.cmd == "phases":
+        add_phases(args.name, args.workers)
 
 
 if __name__ == "__main__":
-    main()
+    import gap_env                          # so the pool pickles gap_env.PoolEntry, not __main__'s (unloadable)
+    gap_env.main()
