@@ -18,11 +18,13 @@ stores the ground truth and three camera estimates side by side:
   realistic   a D405's stereo errors and depth offset (DepthNoise.d405()) and a
               hand-eye / intrinsics calibration error (CalibrationError()),
               as insert_book.py --perception camera uses.
-With `--segmenter segmenter.pt` it also stores
-  learned     the realistic camera's own images, with the book masks from the
-              learned segmenter (learned_segmenter.py) instead of the
-              simulation's object ids: the difference to `realistic` is the
-              segmenter's alone.
+With `--segmenter segmenter.pt` it also stores, from the realistic camera's
+own images:
+  learned     book masks from the learned segmenter (learned_segmenter.py)
+              instead of the simulation's object ids, and spines fitted with
+              RGBDPerception(robust_fit=True), as learned masks need;
+  robust      the object ids' masks with that same fit: the difference to
+              `learned` is the segmenter's alone.
 The slow part (solving the arm poses, rendering) then happens once; `report`,
 and the calibration of NoisyPerception, read the stored estimates.
 
@@ -55,7 +57,7 @@ from perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstimate, apply_sh
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PATH = os.path.join(HERE, "scenes", "perception_eval.pkl")
 OFFSET_BINS = {"neighbours (1)": (1, 1), "near (2-3)": (2, 3), "further (4-6)": (4, 6)}
-KINDS = ("perfect", "basic", "realistic", "learned")   # learned: only with collect --segmenter
+KINDS = ("perfect", "basic", "realistic", "robust", "learned")   # robust, learned: only with collect --segmenter
 CALIBRATE_ON = "realistic"            # the camera NoisyPerception imitates
 COLLECT_SCENARIOS = ("clear", "tight", "leaning", "packed")   # collapsed is out of the project's scope
 FIRST_SEED = 1000                     # clear of the controllers' test seeds (0-49) and their training seeds
@@ -123,10 +125,12 @@ def collect_scene(task) -> Optional[SceneRecord]:
             truth_for[kind] = [index.get(g) for g in perception.last_labels]
         if kind == "realistic" and weights:
             from learned_segmenter import OracleLabelled
-            learned = RGBDPerception(model, row, camera=cam,        # cam is closed: these frames only
-                                     segmenter=OracleLabelled(learned_segmenter(weights[0]), model))
-            camera["learned"] = learned.estimate_from_frames(frames)
-            truth_for["learned"] = [index.get(g) for g in learned.last_labels]
+            for other, segmenter in (("robust", None),
+                                     ("learned", OracleLabelled(learned_segmenter(weights[0]), model))):
+                p = RGBDPerception(model, row, camera=cam, segmenter=segmenter,   # cam is closed: these frames only
+                                   robust_fit=True)
+                camera[other] = p.estimate_from_frames(frames)
+                truth_for[other] = [index.get(g) for g in p.last_labels]
     standoff = min(views, key=lambda v: abs(v[0]))[1][1]
     print(f"{scenario} {seed}: {len(views)} views, {len(camera['realistic'].books)} of {len(truth.books)} books found",
           flush=True)
