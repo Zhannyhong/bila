@@ -54,7 +54,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import cv2
 import mujoco
@@ -109,16 +109,43 @@ class Segment:
     label: Optional[int] = None
 
 
+def book_of_geom(model: mujoco.MjModel) -> Dict[int, int]:
+    """{geom id: id of its book's `<book>_geom` box} for every geom that is
+    drawn as part of a book. A book is a body standing directly in the world
+    that has a box called `<its name>_geom` (shelf_scene.add_book_geoms). Its
+    parts all hang under that body: the box, the textured face meshes that
+    cover it (book_meshes), its page sections (book_children; with their own
+    faces), and a call-number sticker (cart_demo's `<book>_label`). So
+    everything under that body counts as one book, and the sticker is part of
+    the book it is stuck on."""
+    names = {model.geom(g).name for g in range(model.ngeom)}
+    out = {}
+    for g in range(model.ngeom):
+        root = model.body(model.body_rootid[model.geom_bodyid[g]]).name
+        if root and root + "_geom" in names:
+            out[g] = model.geom(root + "_geom").id
+    return out
+
+
 class OracleSegmenter:
-    """Book masks read off the simulation's object ids: every geom whose name
-    contains 'book'. Stands in for a learned segmenter."""
+    """Book masks read off the simulation's object ids, one per book: every
+    geom of a book (book_of_geom) merged into one mask, labelled with the id
+    of the book's `<book>_geom`. Stands in for a learned segmenter."""
 
     def __init__(self, model: mujoco.MjModel):
-        self.books = [g for g in range(model.ngeom) if "book" in (model.geom(g).name or "")]
+        self.book_of = book_of_geom(model)
+        # Lookup table from a pixel's geom id (-1 = nothing, shifted to 0) to its book's label (-1 = no book).
+        self.table = np.full(model.ngeom + 1, -1, dtype=np.int32)
+        for g, book in self.book_of.items():
+            self.table[g + 1] = book
+
+    def labels(self, frame: CameraFrame) -> np.ndarray:
+        """(H, W) book label per pixel, -1 where no book is seen."""
+        return self.table[frame.seg + 1]
 
     def __call__(self, frame: CameraFrame) -> List[Segment]:
-        present = np.intersect1d(np.unique(frame.seg), self.books)
-        return [Segment(frame.seg == g, int(g)) for g in present]
+        books = self.labels(frame)
+        return [Segment(books == g, int(g)) for g in np.unique(books) if g >= 0]
 
 
 # ---------------------------------------------------------------------------
