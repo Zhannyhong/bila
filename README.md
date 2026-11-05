@@ -935,12 +935,12 @@ MUJOCO_GL=egl uv run python make_vision_dataset.py --out ~/bila_data/val --first
 uv run python learned_segmenter.py train --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/segmenter
 uv run python learned_segmenter.py eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
 MUJOCO_GL=egl uv run python eval_perception.py collect --workers 3 --segmenter ~/bila_data/segmenter/segmenter.pt \
-    --path ~/bila_data/perception_eval_learned.pkl                     # adds a "learned" kind to the report
+    --path ~/bila_data/perception_eval_learned.pkl                     # adds "robust" and "learned" kinds
 ```
 
 ```python
 from learned_segmenter import LearnedSegmenter
-with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt")) as perception: ...
+with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robust_fit=True) as perception: ...
 ```
 
 - Data (`make_vision_dataset.py`): 2938 training and 309 validation images, 1280 x 720, from real arm poses (the
@@ -951,11 +951,17 @@ with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt")) as p
 - Against the oracle's masks on the validation images (a book is found if a mask overlaps it with IoU >= 0.5):
   93% of target-row books showing 2000+ pixels, mean IoU 0.93; in the sweep views 93% found and 97% of masks are a
   book. Small far books do worse (tray camera 53%).
-- Whole estimate, `eval_perception.py` (80 scenes, the realistic camera's own images, only the masks differ): the
-  narrowest gap is as good as with the oracle in clear, tight and packed rows (95% within 3.7, 2.9 and 1.2 mm),
-  but not in leaning ones (15.8 mm against 6.3). The spine fit takes the smallest rectangle around a mask's
-  spine pixels, so a few pixels that bleed onto the next spine (in about the same plane) widen it; on a tilted
-  book that adds 10 mm or more of thickness to it.
+- `robust_fit=True` is needed with learned masks. The spine fit takes the smallest rectangle around a mask's spine
+  pixels; a learned mask bleeds a few pixels onto the next spine, in about the same plane, and on a tilted book
+  that stretched the rectangle by 10 to 50 mm. The robust fit drops strips across the spine that hold few points
+  (a real spine fills each from bottom to top) and fits again. It is off by default, so the oracle pipeline (and
+  everything calibrated on it) is unchanged; it would help the oracle's masks a little too (narrowest gap in
+  leaning rows, 95%: 4.1 mm against 6.3).
+- Whole estimate, `eval_perception.py` (80 scenes; the realistic camera's own images, with the robust fit for
+  both, so only the masks differ): 1144 of 1151 books found, 2 estimates that are no book, 1125 of 1144 named
+  right (oracle masks: 1150 of 1152). Narrowest gap up to the book's height, 95% within 4.4 mm (oracle masks 3.8):
+  per scenario 3.8 (3.8) clear, 2.7 (2.7) tight, 1.5 (1.5) packed, and 8.8 (4.1) leaning, where masks of books
+  leaning on each other are still the weak point. Neighbours' thickness, 95% within 4.3 mm (3.6).
 - Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
   the evaluations can match books.
 

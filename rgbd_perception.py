@@ -75,6 +75,9 @@ PLANE_TOL_SPREAD = 3.0                    # ... or than this many times the poin
 MIN_POINTS = 100                          # fewer spine points than this: not a usable view of the book
 WHOLE = 0.99                              # a book with this share of its outline a real edge is wholly in view
 NEAREST_TIE = 0.01                        # m: cameras this close to equally near a book both count as nearest
+SPARSE_STRIP = 0.2                        # robust_fit: strips across the spine with fewer points than this share
+                                          # of the median strip's are dropped (a mask's stray pixels, not the book)
+STRIP_PX = 1.5                            # robust_fit: strip width, pixels (wider than one so none is empty)
 
 
 @dataclass
@@ -185,11 +188,36 @@ def surface_normals(xyz: np.ndarray, step: int = NORMAL_STEP) -> np.ndarray:
     return n
 
 
-def fit_spine(p: np.ndarray, normals: np.ndarray, pixel_size: float, grow_px: float):
+def without_sparse_strips(flat: np.ndarray, pixel_size: float, rounds: int = 2) -> np.ndarray:
+    """flat (N, 2) spine points in the spine's plane, less those in sparse
+    strips across the book's thickness. A real spine fills every strip from
+    its bottom to its top; a few pixels of the next book in the mask (a
+    learned mask's edge) fill a strip only in part. They are in about the
+    same plane, so the plane test keeps them, and the smallest rectangle
+    around the points, tilted with a leaning book, can grow by centimetres to
+    reach them. Strips are along the smallest rectangle's short side, STRIP_PX
+    pixels wide; drops strips with fewer than SPARSE_STRIP of the median
+    strip's points, then fits again, `rounds` times at most."""
+    for _ in range(rounds):
+        box = cv2.boxPoints(cv2.minAreaRect(flat))
+        a, b = box[1] - box[0], box[2] - box[1]
+        across = a if np.linalg.norm(a) < np.linalg.norm(b) else b
+        s = flat @ (across / max(np.linalg.norm(across), 1e-9))
+        strip = np.floor((s - s.min()) / (STRIP_PX * pixel_size)).astype(int)
+        counts = np.bincount(strip)
+        dense = (counts >= SPARSE_STRIP * np.median(counts[counts > 0]))[strip]
+        if dense.all() or dense.sum() < 3:
+            break
+        flat = flat[dense]
+    return flat
+
+
+def fit_spine(p: np.ndarray, normals: np.ndarray, pixel_size: float, grow_px: float, robust: bool = False):
     """Spine corners (bottom-left, bottom-right, top-right, top-left; shelf
     frame) fitted to spine points p (N, 3) with their surface normals: a plane
     facing their median normal, through their median offset, then the smallest
     rectangle around the points near it, grown by grow_px pixels on every side.
+    robust: leave out points in sparse strips first (without_sparse_strips).
     None if too few points are near the plane."""
     normal = np.median(normals, axis=0)
     normal /= np.linalg.norm(normal)
@@ -204,6 +232,8 @@ def fit_spine(p: np.ndarray, normals: np.ndarray, pixel_size: float, grow_px: fl
     up /= np.linalg.norm(up)
     across = np.cross(normal, up)                             # along the row (+x for a spine facing +y)
     flat = np.column_stack([(p - centre) @ across, (p - centre) @ up]).astype(np.float32)
+    if robust:
+        flat = without_sparse_strips(flat, pixel_size)
     box = cv2.boxPoints(cv2.minAreaRect(flat)).astype(np.float64)    # 4 corners, in order around
     mid = box.mean(axis=0)
     side_a, side_b = box[1] - box[0], box[2] - box[1]
@@ -246,11 +276,14 @@ class RGBDPerception:
     """ShelfEstimates from the wrist camera. Uses the shelf map from `row`
     (bookcase pose and size, where the target slot is) and, for the books,
     only the image. estimate(data) takes an image from wherever the camera is;
-    put the arm at the inspection pose first."""
+    put the arm at the inspection pose first. robust_fit: fit the spines
+    leaving out stray points (without_sparse_strips); for learned masks."""
 
     def __init__(self, model: mujoco.MjModel, row: Row, camera: Optional[WristCamera] = None,
-                 segmenter=None, depth_prior: float = DEPTH_PRIOR, gap_heights=GAP_HEIGHTS):
+                 segmenter=None, depth_prior: float = DEPTH_PRIOR, gap_heights=GAP_HEIGHTS,
+                 robust_fit: bool = False):
         self.m, self.row = model, row
+        self.robust_fit = robust_fit
         self.shelf = ShelfFrame(row)
         self.camera = camera or WristCamera(model)
         self.segment = segmenter or OracleSegmenter(model)
@@ -327,7 +360,7 @@ class RGBDPerception:
             if keep.sum() < MIN_POINTS:
                 continue
             pixel_size = float(np.median(xyz_cam[keep][:, 2])) / f
-            corners = fit_spine(xyz[keep], normals[keep], pixel_size, grow_px=NORMAL_STEP)
+            corners = fit_spine(xyz[keep], normals[keep], pixel_size, grow_px=NORMAL_STEP, robust=self.robust_fit)
             if corners is not None:
                 off_axis = abs((corners[0, 0] + corners[1, 0]) / 2 - cam_x)
                 out.append(Sighting(corners, boundary_visible(seg.mask, robot), off_axis, seg.label))
