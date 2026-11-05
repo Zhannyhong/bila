@@ -923,6 +923,42 @@ uv run python eval_perception.py validate                # NoisyPerception's err
 - `uv run python visualize.py --scenario leaning --seed 0 --camera [--noisy]` saves the camera image with the
   estimate outlined, and the estimate's front and top view with the ground truth dashed.
 
+**Learned book masks** (`learned_segmenter.py`): the camera estimate's one cheat is step 1, reading book masks
+off the simulation's object ids (`OracleSegmenter`, still the default). `LearnedSegmenter` finds them in the
+colour image instead, with Mask R-CNN (torchvision, fine-tuned from COCO, one class "book"):
+
+```bash
+uv sync --group rl                                                      # torch, torchvision
+# training data (WSL; ~1.8 h on 5 workers, 3.3 GB): shelf and cart scenes, seeds from 2000
+MUJOCO_GL=egl uv run python make_vision_dataset.py --out ~/bila_data/train --first-seed 2000 --scenes 670 --workers 5
+MUJOCO_GL=egl uv run python make_vision_dataset.py --out ~/bila_data/val --first-seed 9000 --scenes 70 --workers 5
+uv run python learned_segmenter.py train --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/segmenter
+uv run python learned_segmenter.py eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
+MUJOCO_GL=egl uv run python eval_perception.py collect --workers 3 --segmenter ~/bila_data/segmenter/segmenter.pt \
+    --path ~/bila_data/perception_eval_learned.pkl                     # adds a "learned" kind to the report
+```
+
+```python
+from learned_segmenter import LearnedSegmenter
+with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt")) as perception: ...
+```
+
+- Data (`make_vision_dataset.py`): 2938 training and 309 validation images, 1280 x 720, from real arm poses (the
+  sweep views, random views, row and tray cameras, sticker close-ups) in all five scenarios. Half the shelves are
+  plain boxes, half have covers (sampled, the PBBM books, or page sections); lighting and colours vary; D405 depth
+  noise. Each image has an instance mask (one id per book, sticker included) and the stickers' corners and text.
+- Training: 8 epochs, 2.1 h on an RTX 3050 Ti (4 GB; mixed precision, 2 images a batch). Inference 0.24 s an image.
+- Against the oracle's masks on the validation images (a book is found if a mask overlaps it with IoU >= 0.5):
+  93% of target-row books showing 2000+ pixels, mean IoU 0.93; in the sweep views 93% found and 97% of masks are a
+  book. Small far books do worse (tray camera 53%).
+- Whole estimate, `eval_perception.py` (80 scenes, the realistic camera's own images, only the masks differ): the
+  narrowest gap is as good as with the oracle in clear, tight and packed rows (95% within 3.7, 2.9 and 1.2 mm),
+  but not in leaning ones (15.8 mm against 6.3). The spine fit takes the smallest rectangle around a mask's
+  spine pixels, so a few pixels that bleed onto the next spine (in about the same plane) widen it; on a tilted
+  book that adds 10 mm or more of thickness to it.
+- Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
+  the evaluations can match books.
+
 **What the policy sees** (`observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
 
 ```python

@@ -18,11 +18,17 @@ stores the ground truth and three camera estimates side by side:
   realistic   a D405's stereo errors and depth offset (DepthNoise.d405()) and a
               hand-eye / intrinsics calibration error (CalibrationError()),
               as insert_book.py --perception camera uses.
+With `--segmenter segmenter.pt` it also stores
+  learned     the realistic camera's own images, with the book masks from the
+              learned segmenter (learned_segmenter.py) instead of the
+              simulation's object ids: the difference to `realistic` is the
+              segmenter's alone.
 The slow part (solving the arm poses, rendering) then happens once; `report`,
 and the calibration of NoisyPerception, read the stored estimates.
 
 Every camera book is matched to its true book by the simulation's object id,
-so errors are book for book. Errors are reported by how far the book stands
+so errors are book for book. (A learned mask has no id: it takes the id of
+the true book whose mask it overlaps most, learned_segmenter.OracleLabelled.) Errors are reported by how far the book stands
 from the slot (|slot offset| 1, 2-3, 4-6), since the policy needs the
 neighbours most.
 
@@ -49,7 +55,7 @@ from perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstimate, apply_sh
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PATH = os.path.join(HERE, "scenes", "perception_eval.pkl")
 OFFSET_BINS = {"neighbours (1)": (1, 1), "near (2-3)": (2, 3), "further (4-6)": (4, 6)}
-KINDS = ("perfect", "basic", "realistic")
+KINDS = ("perfect", "basic", "realistic", "learned")   # learned: only with collect --segmenter
 CALIBRATE_ON = "realistic"            # the camera NoisyPerception imitates
 COLLECT_SCENARIOS = ("clear", "tight", "leaning", "packed")   # collapsed is out of the project's scope
 FIRST_SEED = 1000                     # clear of the controllers' test seeds (0-49) and their training seeds
@@ -69,11 +75,24 @@ class SceneRecord:
 # ---------------------------------------------------------------------------
 # Collect
 # ---------------------------------------------------------------------------
+_segmenters = {}                      # learned segmenters loaded in this process, by weights file
+
+
+def learned_segmenter(weights: str):
+    if weights not in _segmenters:
+        from learned_segmenter import LearnedSegmenter
+        _segmenters[weights] = LearnedSegmenter(weights)
+    return _segmenters[weights]
+
+
 def collect_scene(task) -> Optional[SceneRecord]:
     """One scene's SceneRecord, or None if the arm reaches no view of it. Each
     camera kind gets its own camera, seeded with the scene's seed, as
-    insert_book.make_eyes makes one."""
-    scenario, seed = task
+    insert_book.make_eyes makes one. task: (scenario, seed) or (scenario,
+    seed, segmenter weights) to add the learned kind."""
+    scenario, seed, *weights = task
+    if weights:
+        import learned_segmenter as _  # noqa: F401  (imports torch._dynamo, needed before the first render)
     from camera import CalibrationError, DepthNoise, WristCamera
     from insert_book import SWEEP
     from inspection import look_from, solve_inspection
@@ -102,6 +121,12 @@ def collect_scene(task) -> Optional[SceneRecord]:
                 frames.append(perception.capture(data))
             camera[kind] = perception.estimate_from_frames(frames)
             truth_for[kind] = [index.get(g) for g in perception.last_labels]
+        if kind == "realistic" and weights:
+            from learned_segmenter import OracleLabelled
+            learned = RGBDPerception(model, row, camera=cam,        # cam is closed: these frames only
+                                     segmenter=OracleLabelled(learned_segmenter(weights[0]), model))
+            camera["learned"] = learned.estimate_from_frames(frames)
+            truth_for["learned"] = [index.get(g) for g in learned.last_labels]
     standoff = min(views, key=lambda v: abs(v[0]))[1][1]
     print(f"{scenario} {seed}: {len(views)} views, {len(camera['realistic'].books)} of {len(truth.books)} books found",
           flush=True)
@@ -109,8 +134,9 @@ def collect_scene(task) -> Optional[SceneRecord]:
                        truth, camera, truth_for)
 
 
-def collect(scenarios, first_seed: int, seeds: int, path: str, workers: int = 1):
-    tasks = [(s, seed) for s in scenarios for seed in range(first_seed, first_seed + seeds)]
+def collect(scenarios, first_seed: int, seeds: int, path: str, workers: int = 1, segmenter: Optional[str] = None):
+    tasks = [(s, seed) + ((segmenter,) if segmenter else ()) for s in scenarios
+             for seed in range(first_seed, first_seed + seeds)]
     if workers > 1:
         from multiprocessing import Pool
         with Pool(workers) as pool:
@@ -333,6 +359,10 @@ def report(records: List[SceneRecord]):
             continue
         ok, n = naming(records, kind)
         print(f"== {kind} camera: books named as in the truth {ok}/{n}")
+        if kind == "learned":
+            est = sum(len(r.camera[kind].books) for r in records)
+            true = sum(len(r.truth.books) for r in records)
+            print(f"   books found {n} of {true} in the row; {est - n} estimates match no true book")
         shift, n_fit = systematic_stats(records, kind)
         print(f"   whole-row shift (median / std, over {n_fit} scenes): "
               + ", ".join(f"{p} {1000 * m:+.2f}/{1000 * s:.2f} mm" for p, (m, s) in shift.items() if p in ("x", "y", "z"))
@@ -439,10 +469,12 @@ def main():
     ap.add_argument("--first-seed", type=int, default=FIRST_SEED, help="collect: seeds first-seed .. first-seed+seeds-1")
     ap.add_argument("--scenarios", nargs="+", default=list(COLLECT_SCENARIOS), help="collect: scenarios")
     ap.add_argument("--workers", type=int, default=1, help="collect: scenes rendered in parallel")
+    ap.add_argument("--segmenter", help="collect: learned segmenter weights, to add the learned kind")
     ap.add_argument("--path", default=DEFAULT_PATH)
     a = ap.parse_args()
     if a.command == "collect":
-        collect(a.scenarios, a.first_seed, a.seeds, a.path, a.workers)
+        collect(a.scenarios, a.first_seed, a.seeds, a.path, a.workers,
+                os.path.expanduser(a.segmenter) if a.segmenter else None)
     elif a.command == "report":
         report(load(a.path))
     elif a.command == "calibrate":
