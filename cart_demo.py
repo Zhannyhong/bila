@@ -52,30 +52,38 @@ from PIL import Image, ImageDraw, ImageFont
 import insert_book
 from shelf_scene import (PANDA_HOME, ShelfConfig, _catalogue_book, _f, add_book_geoms, add_book_visual_assets,
                          board_tops, build_scene, sample_row, settle)
-from insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_OPEN, PALM_GAP, PALM_Z, ArmIK, Episode,
-                         Runner, compile_robot_scene, report)
+from insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_OPEN, MIN_MARGIN, PALM_GAP, PALM_Z,
+                         WAYPOINT_TRIES, ArmIK, Episode, Runner, compile_robot_scene, report, segment)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LABEL_DIR = os.path.join(HERE, "generated_assets", "labels")   # git-ignored, made on demand
 
 LIFT_MAX = 0.70             # lift travel: the Panda's base this far above the deck at most
 DECK = 0.16                 # deck top above the floor
+RAIL_X = -0.30              # the lift rail's centre, behind the Panda's base (cart x)
 REACH_BELOW = 0.40          # the Panda's base stands this far below the board it works on (as shelf_scene)
 TRAY = (-0.12, 0.50, 0.72)  # tray centre (cart x, y) and its floor's height above the floor
 TRAY_HALF = (0.27, 0.15)
 SLOT_CLEAR = 0.025          # room each side of a book in its slot: finger 12 mm + opening 8 mm + 5 mm
 DIVIDER_H = 0.08
+TRAY_CAM_UP = 0.95          # tray_cam's boom this far above the tray floor
 TRAY_BOOKS = 5              # books the tray is loaded with (if they fit)
 OPEN_SPARE = 0.008          # the fingers open this much wider than the book, each side
 LIFT_SPEED = 0.10           # m/s, peak, of the lift's moves
 CARRY_JOINT_SPEED = 0.3     # rad/s, peak, of the arm's joint moves while it carries a book
+CARRY_CHECK = 0.01          # rad: ... checked for collisions this often along the way (~4 mm at the book's far end)
+CART_CLEAR = 0.01           # the arm's planner keeps the arm this far from the cart's frame (KEEP_OUT parts)
+KEEP_OUT = ("deck", "lift_rail", "cam_arm", "cam_post", "lip_back", "lip_front", "lip_in", "lip_out",
+            "tray_cam_post", "tray_cam_boom", "tray_leg0", "tray_leg1", "tray_leg2", "tray_leg3")
 PAD_TORSION = 0.05          # torsional friction of the finger pads (m): resists a held book twisting
 CARRY_OUT = (0.12, 0.09, 0.06, 0.04, 0.02)   # the book comes down on the lift this far in front of its pre-insertion pose
+APPROACH_ABOVE = 0.012      # ... and comes in over the board this much higher (if the level has room), then down
 MAX_KG = 1.5                # heaviest book the grip is trusted with (a guess, to be measured)
 STEP = 10                   # call numbers go up in tens along the shelves, so a returned book fits between two
 CAM_MOUNT = (-0.14, -0.27, 0.55)   # row camera (D435-like) on the carriage, from the Panda's base
 CAM_AIM = (0.75, 0.0, 0.45)        # where it looks: the target row's front, ~0.40 m + a third of a level above the base
-SCAN_POSE = [0.6, -1.2, 0, -1.5, 0, 2.0, 0.7853]  # arm leaned back and turned to the tray side, out of row_cam's view
+SCAN_POSE = [0.6, -0.6, 0, -1.5, 0, 2.0, 0.7853]  # arm leaned back and turned to the tray side, out of row_cam's view
+# (leaned back further, at -1.2, its elbow went into the lift rail with the lift below ~0.4 m)
 
 
 def shelvable(t, d, h, kg) -> list:
@@ -227,12 +235,13 @@ def build(cfg, row, tray, numbers):
     for i, (x, y) in enumerate([(x1 - 0.07, y1 - 0.07), (x1 - 0.07, y0 + 0.07), (x0 + 0.07, y1 - 0.07), (x0 + 0.07, y0 + 0.07)]):
         geom(cart, f"wheel{i}", dark, False, type="cylinder", size="0.06 0.02", pos=_f(x, y, fz + 0.06), euler="1.5708 0 0")
 
-    # Lift: a rail behind the arm, and a carriage on the lift_z joint carrying the Panda.
-    box("lift_rail", (0.035, 0.09, (LIFT_MAX + 0.15) / 2), (-0.22, 0, deck + (LIFT_MAX + 0.15) / 2), "0.25 0.25 0.28 1")
+    # Lift: a rail behind the arm, and a carriage on the lift_z joint carrying the Panda. The rail stands
+    # clear of the arm's elbow in the tucked home pose and in SCAN_POSE (at -0.22 m both ran link3 into it).
+    box("lift_rail", (0.035, 0.09, (LIFT_MAX + 0.15) / 2), (RAIL_X, 0, deck + (LIFT_MAX + 0.15) / 2), "0.25 0.25 0.28 1")
     lift = ET.Element("body", name="lift", pos=_f(0, 0, deck))
     ET.SubElement(lift, "joint", name="lift_z", type="slide", axis="0 0 1", range=_f(0, LIFT_MAX), damping="3000")
     box("carriage", (0.11, 0.10, 0.015), (0, 0, -0.015), "0.35 0.35 0.38 1", False, lift)
-    box("carriage_bracket", (0.05, 0.09, 0.03), (-0.14, 0, -0.03), "0.35 0.35 0.38 1", False, lift)
+    box("carriage_bracket", ((RAIL_X + 0.09) / -2, 0.09, 0.03), ((RAIL_X - 0.09) / 2, 0, -0.03), "0.35 0.35 0.38 1", False, lift)
     attach = cart.find("attach")
     cart.remove(attach); lift.append(attach); cart.append(lift)
     act = root.find("actuator")
@@ -269,11 +278,13 @@ def build(cfg, row, tray, numbers):
         x += pitch
         box(f"divider{len(slots)}", (0.003, hy - 0.01, DIVIDER_H / 2), (x, ty, tz + 0.008 + DIVIDER_H / 2), wood)
 
-    # Tray camera on a boom over the tray, looking straight down at the spines.
-    px, py, ptop = tx - hx - 0.06, ty + hy + 0.04, tz + 0.75
+    # Tray camera on a boom over the tray, looking straight down at the spines. High enough that the wrist
+    # clears the boom lifting a book out of the tray (at 0.75 m it didn't); its fov sees the tray as from 0.75 m.
+    px, py, ptop = tx - hx - 0.06, ty + hy + 0.04, tz + TRAY_CAM_UP
     geom(cart, "tray_cam_post", grey, type="cylinder", size="0.015", fromto=_f(px, py, deck, px, py, ptop))
     geom(cart, "tray_cam_boom", grey, type="cylinder", size="0.012", fromto=_f(px, py, ptop, tx, ty, ptop))
-    ET.SubElement(cart, "camera", name="tray_cam", pos=_f(tx, ty, ptop - 0.02), xyaxes="1 0 0 0 1 0", fovy="60")
+    ET.SubElement(cart, "camera", name="tray_cam", pos=_f(tx, ty, ptop - 0.02), xyaxes="1 0 0 0 1 0",
+                  fovy=_f(2 * np.degrees(np.arctan(np.tan(np.radians(30)) * 0.73 / (TRAY_CAM_UP - 0.02)))))
 
     # Tray books: free bodies in the world, spine-up, their fore-edges on the tray floor (after all else in qpos).
     key = root.find("keyframe/key")
@@ -303,7 +314,22 @@ def build(cfg, row, tray, numbers):
                       size=_f(hx, 0.0005, 0.03),
                       pos=_f(0, b.depth / 2 + 0.0008, -b.height / 2 + 0.045), contype="0", conaffinity="0", mass="0")
 
+    # A copy of each part of the cart's frame, CART_CLEAR bigger, for the arm's planner only (CartEpisode
+    # turns them on for its collision checks; the simulation never sees them: they are compiled solid,
+    # so MuJoCo puts them in the bodies' collision trees, then turned off). The planner lets the arm
+    # 1 mm into anything, for the books it pushes; against the cart that let it graze the tray's lip and
+    # the posts, and the arm, a little behind its commands under load, pressed on them with hundreds of N.
+    for parent in (cart, lift):
+        for g in list(parent.findall("geom")):
+            if g.get("name") not in KEEP_OUT:
+                continue
+            size = [float(v) for v in g.get("size").split()]
+            size = [v + CART_CLEAR for v in size] if g.get("type") == "box" else [size[0] + CART_CLEAR] + size[1:]
+            ET.SubElement(parent, "geom", {**g.attrib, "name": g.get("name") + "_keepout", "size": _f(*size),
+                                           "group": "5", "rgba": "0 0 0 0", "mass": "0"})
     model = compile_robot_scene(ET.tostring(root, encoding="unicode"))
+    keepout = [g for g in range(model.ngeom) if model.geom(g).name.endswith("_keepout")]
+    model.geom_contype[keepout] = model.geom_conaffinity[keepout] = 0
     # Rubber pads resist a book twisting in the grip: give the fingers torsional friction (MuJoCo's
     # default point contacts have none) and stiffer contacts. Carrying a book from the tray, held at
     # its spine end, it twisted 50 mm without; about 10 mm with.
@@ -322,7 +348,13 @@ def build(cfg, row, tray, numbers):
 
 def read_labels(model, data, camera, names, min_pixels=25):
     """The books in `names` whose sticker shows clearly enough in `camera`'s image to read."""
-    with mujoco.Renderer(model, 480, 640) as r:
+    # Without multisampling: anti-aliased edges blend the id colours into ids of no object (an IndexError).
+    samples, model.vis.quality.offsamples = model.vis.quality.offsamples, 0
+    try:
+        r = mujoco.Renderer(model, 480, 640)
+    finally:
+        model.vis.quality.offsamples = samples
+    with r:
         r.enable_segmentation_rendering()
         r.update_scene(data, camera=camera)
         seg = r.render()[..., 0]
@@ -540,6 +572,10 @@ class CartEpisode(Episode):
         self.lift_act = model.actuator("lift").id
         self.lift_q = model.jnt_qposadr[model.joint("lift_z").id]
         self.lift_row = float(data.qpos[self.lift_q])     # where the lift stands for the target row
+        self.carrying = False                             # a book swings with the hand (joint_route checks closer)
+        self.keepout = [g for g in range(model.ngeom) if model.geom(g).name.endswith("_keepout")]
+        arm_collides = self.ik.collides
+        self.ik.collides = lambda q, allowed=(): self.with_keepouts(arm_collides, q, allowed)
         self.ik.robot -= {g for g in self.ik.robot if model.body(model.geom_bodyid[g]).name == "panda/link0"}
         self.tray_bodies = [(i, model.body_geomadr[i]) for i in range(model.nbody)   # (body, its box) of the tray books
                             if model.body(i).name.startswith("return_") or i == self.book_body]
@@ -572,7 +608,7 @@ class CartEpisode(Episode):
         Go to the tray, grasp the book spine-up with the hand in that same pose
         relative to the book, bring it back, and carry on."""
         d, ik, run = self.d, self.ik, self.run
-        goal_q = run.q_cmd.copy()
+        goal_q, goal_pos, goal_rot = run.q_cmd.copy(), run.pos.copy(), run.rot.copy()   # insert()'s waiting pose
         hand_in_book = self.shelf.rot(yaw).T @ self.grasp_pose(grasp_sign, centre, yaw)[1]
         tip = self.tip_y((run.pos, run.rot))
         if self.D / 2 + 0.10 > tip:
@@ -585,30 +621,50 @@ class CartEpisode(Episode):
         up = np.array([0.0, 0.0, 1.0])
         opening = self.t / 2 + OPEN_SPARE
         seeds = [goal_q] + [np.array(PANDA_HOME[:7]) + [a, 0, 0, 0, 0, 0, 0] for a in (0.8, 1.6, -0.8)]
+        # It comes out of its slot until its fore-edge clears the tallest spine in the tray, so it can
+        # swing; the hand comes down onto it from that height, so check the arm there (checked 15 cm
+        # up, the lift out ran the wrist into tray_cam's boom). Where the boom is in the way at every
+        # lift height, out less: the swing's collision check (joint_route) takes the tray's books in.
+        floor = d.xpos[self.book_body][2] - self.depth / 2
+        spines = max(d.xpos[i][2] + d.xmat[i].reshape(3, 3)[2, 1] * self.m.geom_size[g][1] for i, g in self.tray_bodies)
+        clear = spines - floor + 0.06
 
-        def grasp_at(q_lift):
+        def grasp_at(q_lift, rise):
             ik.sync(d, finger=opening)
             ik.d.qpos[self.lift_q] = q_lift
             for seed in seeds:
                 q, ok = ik.solve_far(seed, p_h, R_h)
                 if ok and not ik.collides(q, allowed={self.book_geom}):
-                    q_pre, ok = ik.solve_far(q, p_h + 0.15 * up, R_h)
+                    q_pre, ok = ik.solve_far(q, p_h + rise * up, R_h)
                     if ok and not ik.collides(q_pre):
                         return q_pre
             return None
 
-        q_lift, q_pre = next(((h, q) for h in (0.45, 0.35, 0.55, 0.25, 0.65) if (q := grasp_at(h)) is not None),
-                             (None, None))
+        q_lift, rise, q_pre = next(((h, r, q) for r in (clear, clear - 0.03, clear - 0.06) if r > 0.10
+                                    for h in (0.45, 0.35, 0.55, 0.25, 0.65) if (q := grasp_at(h, r)) is not None),
+                                   (None, None, None))
         if q_pre is None:
             raise RuntimeError("the book in the tray is out of reach at every lift height")
         # Where to carry it: in front of the slot, CARRY_OUT short of the waiting pose. The lift only
         # translates the arm, so the same joints put the hand there with the lift up, dz higher.
-        goal_pos, goal_rot = run.pos.copy(), run.rot.copy()
+        # Found by backing out from the waiting pose in the arm configuration insert() chose and checked
+        # for the whole insertion, so the moves back in end in that configuration (solved afresh, it may
+        # be another, never checked for the slide and the push).
         ik.sync(d)
         ik.d.qpos[self.lift_q] = self.lift_row
-        carry = next(((out, q) for out in CARRY_OUT for seed in seeds        # as far out as the arm (and
-                      for q, ok in [ik.solve_far(seed, goal_pos + self.ys * out, goal_rot)]   # row_cam's post) allow
-                      if ok and not ik.collides(q)), None)
+        carry = None
+        for out in CARRY_OUT:                                        # as far out as the arm (and row_cam's post) allow
+            ik.q_rest = goal_q
+            q, worst, ok = ik.follow(goal_q, segment((goal_pos, goal_rot), (goal_pos + self.ys * out, goal_rot), 20),
+                                     allowed=frozenset())
+            if ok and worst >= MIN_MARGIN and not ik.collides(q):
+                carry = (out, q)
+                break
+        posture = goal_q if carry is not None else None
+        if carry is None:                                            # none in that posture: any that reaches it
+            carry = next(((out, q) for out in CARRY_OUT for seed in seeds
+                          for q, ok in [ik.solve_far(seed, goal_pos + self.ys * out, goal_rot)]
+                          if ok and not ik.collides(q)), None)
         if carry is None:
             raise RuntimeError("no arm configuration to carry the book in front of the slot")
         out, q_carry = carry
@@ -619,27 +675,80 @@ class CartEpisode(Episode):
         run.move("lower onto its spine", p_h, R_h, speed=0.05)
         run.wait(name.replace("(the hand-over is not modelled)", "out of the tray"), 0.8, grip=GRIP_CLOSED)
         self.measure_in_hand()
-        # Out of its slot until its fore-edge clears the tallest spine in the tray, so it can swing.
-        floor = d.xpos[self.book_body][2] - self.depth / 2
-        spines = max(d.xpos[i][2] + d.xmat[i].reshape(3, 3)[2, 1] * self.m.geom_size[g][1]
-                     for i, g in self.tray_bodies)
-        run.move("lift it out of its slot", run.pos + (spines - floor + 0.06) * up, speed=0.08)
+        run.move("lift it out of its slot", p_h + rise * up, R_h, speed=0.08)
         # From here on the book swings with the hand: check it for collisions too, and swing it gently.
         # The pads hold only its spine end, so a fast swing twists it in the grip.
-        ik.collides = self.collides_carrying
+        collides, ik.collides = ik.collides, self.collides_carrying
         move_joints = run.move_joints
         run.move_joints = lambda name, q, speed=CARRY_JOINT_SPEED: move_joints(name, q, speed)
+        self.carrying = True
         try:
-            self.reposition(q_carry)                                 # turn it to face the shelf, lift still up
+            ik.sync(d)
+            if self.joint_route(run.q_cmd, q_carry) is not None:
+                self.reposition(q_carry)                             # turn it to face the shelf, lift still up
+                self.drive_lift(self.lift_row, "lower the lift back to the row, the book in front of the slot")
+            else:
+                # No way there with the lift up (the book swings into the bookcase, or the next book in the
+                # tray): tuck it in, lower the lift, and then take it out in front of the slot.
+                home = np.array(PANDA_HOME[:7])
+                for h in np.linspace(float(d.qpos[self.lift_q]), self.lift_row, 12):
+                    ik.d.qpos[self.lift_q] = h
+                    if ik.collides(home):
+                        raise RuntimeError("no way to carry the book from the tray to the slot")
+                self.reposition(home, "tuck the book in")
+                self.drive_lift(self.lift_row, "lower the lift back to the row")
+                self.reposition(q_carry, "take the book out in front of the slot")
         finally:
-            del ik.collides, run.move_joints
-        self.drive_lift(self.lift_row, "lower the lift back to the row, the book in front of the slot")
+            ik.collides = collides
+            del run.move_joints
+            self.carrying = False
+        if posture is not None:
+            ik.q_rest = posture                                      # and come back in to insert()'s configuration
         # The book has shifted a little in the grip on the way: from here on place the book, not the
         # hand (as insert_book does), so the hand tilts to hold it straight.
         self.measure_in_hand()
-        run.move("line the book up in front of the slot", *self.hand_for_book(centre + [0, out, 0], yaw), speed=0.05)
-        run.move("bring it up to the slot", *self.hand_for_book(centre, yaw), speed=0.05)
+        # Come in a little above where insert() holds it (HOVER over the board): carried in, the book is
+        # held less exactly than handed over, and its back, caught on the board's front edge, turned it
+        # nose-up in the grip.
+        above = max(0.0, min(APPROACH_ABOVE, self.H - self.h - insert_book.HOVER - 0.01))
+        run.move("line the book up in front of the slot", *self.hand_for_book(centre + [0, out, above], yaw), speed=0.05)
+        run.move("bring it up to the slot", *self.hand_for_book(centre + [0, 0, above], yaw), speed=0.05)
+        if above:
+            run.move("lower it to just above the board", *self.hand_for_book(centre, yaw), speed=0.02)
         self.measure_in_hand()
+
+    def with_keepouts(self, check, *args):
+        """check(*args) with the planner's copies of the cart's frame (build: KEEP_OUT) solid."""
+        m = self.m
+        m.geom_contype[self.keepout] = m.geom_conaffinity[self.keepout] = 1
+        try:
+            return check(*args)
+        finally:
+            m.geom_contype[self.keepout] = m.geom_conaffinity[self.keepout] = 0
+
+    def joint_route(self, q0, q):
+        """Episode.joint_route, checked every CARRY_CHECK rad while the arm
+        carries a book: its 25 checks along a joint move leave gaps of
+        several cm at the far end of a book held at its spine, and the book
+        swung out of the tray hit the one in the next slot through one."""
+        if not self.carrying:
+            return super().joint_route(q0, q)
+        ik, home = self.ik, np.array(PANDA_HOME[:7])
+
+        def clear(a, b):
+            n = max(25, int(np.ceil(np.max(np.abs(b - a)) / CARRY_CHECK)))
+            return not any(ik.collides(a + s * (b - a)) for s in np.linspace(0, 1, n + 1)[1:])
+
+        if clear(q0, q):
+            return [q]
+        if clear(q0, home) and clear(home, q):
+            return [home, q]
+        rng = np.random.default_rng(0)
+        for _ in range(WAYPOINT_TRIES):
+            w = np.clip((q0 + q) / 2 + rng.normal(0, 0.6, 7), ik.lo, ik.hi)
+            if not ik.collides(w) and clear(q0, w) and clear(w, q):
+                return [w, q]
+        return None
 
     def measure_in_hand(self):
         d, ik = self.d, self.ik
@@ -650,6 +759,9 @@ class CartEpisode(Episode):
     def collides_carrying(self, q, allowed=()):
         """ArmIK.collides, with the held book moved along with the hand and
         counted as part of the arm (its contacts with the fingers aside)."""
+        return self.with_keepouts(self._collides_carrying, q)
+
+    def _collides_carrying(self, q):
         m, ik = self.m, self.ik
         ik.d.qpos[ik.qadr] = q
         mujoco.mj_kinematics(m, ik.d)
@@ -659,7 +771,10 @@ class CartEpisode(Episode):
         ik.d.qpos[qa + 3:qa + 7] = insert_book.mat2quat(R_h @ self.in_hand_R)
         mujoco.mj_fwdPosition(m, ik.d)
         held = ik.robot | {self.book_geom} | {g for g, b in ik.book_of.items() if b == self.book_geom}
+        keepout = set(self.keepout)
         for c in ik.d.contact[:ik.d.ncon]:
+            if (c.geom1 in keepout or c.geom2 in keepout) and not (c.geom1 in ik.robot or c.geom2 in ik.robot):
+                continue                                     # the book may pass closer to the cart than the arm
             if (c.geom1 in held) != (c.geom2 in held) and c.dist < -0.001:
                 return True
         return False
@@ -763,14 +878,7 @@ def main():
     # 4-5. Make room there and insert the book, picked out of the tray.
     ep = CartEpisode(model, data, row, viewer)
     try:
-        if a.scenario == "clear":
-            res = ep.insert(method="")
-        elif a.scenario == "packed":
-            res = ep.insert_packed(GAP_MARGIN, "shove")
-        elif a.scenario == "leaning":
-            res = ep.insert_leaning("one-sided", GAP_MARGIN)
-        else:
-            res = ep.insert_tight("one-sided", GAP_MARGIN)
+        res = ep.reshelve(GAP_MARGIN)          # insert_book's controller picks the steps the row needs
         print(report(res))
     except RuntimeError as e:
         print(f"  FAIL: {e}")
