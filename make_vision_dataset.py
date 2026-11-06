@@ -134,33 +134,14 @@ def cart_numbers(row, tray, seed):
 # Camera poses
 # ---------------------------------------------------------------------------
 def solve_camera(model, data, ik, cam_pos, cam_rot, rng) -> Optional[np.ndarray]:
-    """Arm joint angles that put the wrist camera at cam_pos with MuJoCo
-    camera axes cam_rot (columns x right, y up, z back), collision-free and
-    clear of the joint limits; None if none is found. inspection.solve_view
-    for any camera pose, with fewer random starts."""
-    from insert_book import MIN_MARGIN
-    from inspection import camera_in_hand
-    from shelf_scene import PANDA_HOME
-    R_hc, p_hc = camera_in_hand(model)
-    hand_rot = cam_rot @ R_hc.T
-    hand_pos = cam_pos - hand_rot @ p_hc
-    ik.sync(data)
-    best = None
-    for seed in [np.array(PANDA_HOME[:7])] + [rng.uniform(ik.lo, ik.hi) for _ in range(IK_SEEDS)]:
-        q, converged = ik.solve_far(seed, hand_pos, hand_rot)
-        if converged and not ik.collides(q) and (best is None or ik.margin(q) > ik.margin(best)):
-            best = q
-    return best if best is not None and ik.margin(best) >= MIN_MARGIN else None
+    """inspection.solve_camera with fewer random starts (IK_SEEDS)."""
+    from inspection import solve_camera as solve
+    return solve(model, data, ik, cam_pos, cam_rot, rng, seeds=IK_SEEDS)
 
 
 def looking(forward, ref) -> np.ndarray:
-    """MuJoCo camera axes (columns x right, y up, z back) looking along
-    `forward`, with its image's right along ref projected square to forward."""
-    f = np.asarray(forward, float) / np.linalg.norm(forward)
-    x = np.asarray(ref, float) - np.dot(ref, f) * f
-    x /= np.linalg.norm(x)
-    z = -f
-    return np.column_stack([x, np.cross(z, x), z])
+    from inspection import looking as axes
+    return axes(forward, ref)
 
 
 # ---------------------------------------------------------------------------

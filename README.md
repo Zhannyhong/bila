@@ -18,6 +18,9 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 | `cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython cart_demo.py --scenario tight --view`) |
 | `insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
 | `perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
+| `make_vision_dataset.py` | Training images for the learned perception: RGB-D, a mask per book, and every sticker's corners and text |
+| `learned_segmenter.py` | Book masks from the colour image (Mask R-CNN), in place of the simulation's object ids |
+| `label_reader.py` | Finds and reads call-number stickers in an image and matches them to the catalogue (`cart_demo.py --labels learned`) |
 | `notebooks/` | Beginner's guide to the simulator and the RL/POMDP setup with PBBM's book labels (`01_...`), and a breakdown of how the PBBM robot shelved books (`02_...`) |
 | `mujoco_menagerie/` | Git submodule with the Panda model |
 | `scenes/` | Generated scenes (git-ignored) |
@@ -964,6 +967,48 @@ with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robu
   leaning on each other are still the weak point. Neighbours' thickness, 95% within 4.3 mm (3.6).
 - Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
   the evaluations can match books.
+
+**Reading call-number stickers** (`label_reader.py`): `cart_demo.py` reads the stickers' numbers off the
+simulation by default; `--labels learned` reads them from the camera images.
+
+```bash
+uv run python label_reader.py train-finder --data ~/bila_data/train --out ~/bila_data/labels   # ~17 min
+uv run python label_reader.py train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels --epochs 10
+uv run python label_reader.py eval --data ~/bila_data/val --weights ~/bila_data/labels
+MUJOCO_GL=egl uv run python cart_demo.py --scenario tight --labels learned    # weights from ~/bila_data/labels
+```
+
+- Find: a small segmentation network (LR-ASPP MobileNetV3, from COCO) marks the middle 60% of each sticker, so
+  that stickers on neighbouring books come out apart; each piece's outline, grown back, gives its corners. A colour
+  rule doesn't do: white covers and printed labels merge with the stickers.
+- Read: the sticker is straightened from its corners and its two lines (class, author mark) cut out where the
+  label prints them; a small CRNN reads each, in all four orientations (tilted books, the tray from above). It is
+  trained on crops at the true corners, jittered, and at the finder's own corners.
+- Match: every catalogue entry (each sticker's text, as the library knows it) is scored by the network's
+  probability of reading it; the confidence is the best entry's share. Under 0.99 it says "unreadable": a misread
+  puts a book in the wrong place, an unreadable sticker only costs another look.
+- On the validation images (146 with stickers, 0.23 s an image), of the stickers in view:
+
+  | camera | distance | found | read right | read wrong | unreadable |
+  | --- | --- | --- | --- | --- | --- |
+  | wrist close-up of the row | < 25 cm | 99% | 79% | 0% | 20% |
+  | wrist close-up of the tray | < 25 cm | 100% | 85% | 0% | 15% |
+  | wrist close-up of the tray | 25-50 cm | 100% | 76% | 0% | 24% |
+  | wrist, inspection sweep | 25-50 cm | 94% | 63% | 0.7% | 30% |
+  | row_cam | 50-100 cm | 55% | 12% | 0.1% | 43% |
+  | tray_cam | 50-100 cm | 46% | 19% | 0% | 28% |
+
+  0.15% of the stickers found are read wrong (0.8% at confidence 0.9). Most close-ups left unreadable are thin
+  books: the label shrinks its text to the sticker's width. tray_cam gets no depth on half the stickers, and finds
+  few of those.
+- So the cart's cameras mostly find stickers and the wrist reads them: in the tray, a view of the whole tray from
+  ~30 cm, then a close-up of any sticker still unread; in the row, close-ups (~18 cm) near the slot, at the unread
+  sticker nearest the map's place for it, until the two books whose numbers bracket the book's are read side by
+  side. A sticker read is tied to its book by the simulation's object ids under it (bookkeeping: the demo names
+  books by body).
+- In 12 cart scenes (clear, tight, leaning, packed; seeds 0-2): all 5 tray books read in every one, no number
+  misread, and the right slot found in 10. In the other two the one book between the bracketing pair stayed
+  unreadable (a thin book), and the demo stops rather than guess.
 
 **What the policy sees** (`observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
 

@@ -108,6 +108,34 @@ def solve_inspection(model: mujoco.MjModel, data: mujoco.MjData, row: Row, dx: f
     return None
 
 
+def solve_camera(model: mujoco.MjModel, data: mujoco.MjData, ik: ArmIK, cam_pos, cam_rot, rng,
+                 seeds: int = IK_SEEDS) -> Optional[np.ndarray]:
+    """Arm joint angles that put the wrist camera at cam_pos with MuJoCo
+    camera axes cam_rot (columns x right, y up, z back), collision-free and
+    clear of the joint limits; None if none is found. solve_view for any
+    camera pose, from the ready pose and `seeds` random starts."""
+    R_hc, p_hc = camera_in_hand(model)
+    hand_rot = cam_rot @ R_hc.T
+    hand_pos = cam_pos - hand_rot @ p_hc
+    ik.sync(data)
+    best = None
+    for seed in [np.array(PANDA_HOME[:7])] + [rng.uniform(ik.lo, ik.hi) for _ in range(seeds)]:
+        q, converged = ik.solve_far(seed, hand_pos, hand_rot)
+        if converged and not ik.collides(q) and (best is None or ik.margin(q) > ik.margin(best)):
+            best = q
+    return best if best is not None and ik.margin(best) >= MIN_MARGIN else None
+
+
+def looking(forward, ref) -> np.ndarray:
+    """MuJoCo camera axes (columns x right, y up, z back) looking along
+    `forward`, with its image's right along ref projected square to forward."""
+    f = np.asarray(forward, float) / np.linalg.norm(forward)
+    x = np.asarray(ref, float) - np.dot(ref, f) * f
+    x /= np.linalg.norm(x)
+    z = -f
+    return np.column_stack([x, np.cross(z, x), z])
+
+
 def look_from(model: mujoco.MjModel, data: mujoco.MjData, q) -> None:
     """Put the arm at joint angles q, at rest, and command it to hold there."""
     jids = [model.joint(f"panda/joint{i}").id for i in range(1, 8)]
