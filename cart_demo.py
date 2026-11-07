@@ -49,7 +49,7 @@ import insert_book
 from shelf_scene import (PANDA_HOME, ShelfConfig, _catalogue_book, _f, add_book_geoms, add_book_visual_assets,
                          board_tops, build_scene, sample_row, settle)
 from insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_OPEN, PALM_GAP, PALM_Z, ArmIK, Episode,
-                         Runner, compile_robot_scene, report)
+                         Runner, compile_robot_scene, report, report_collisions)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LABEL_DIR = os.path.join(HERE, "generated_assets", "labels")   # git-ignored, made on demand
@@ -530,20 +530,14 @@ def main():
           f"slot {max(i_lo, i_hi)} (the scene's: {row.target_index})")
     run.move_joints("tuck the arm", PANDA_HOME[:7])
 
-    # 4-5. Make room there and insert the book, picked out of the tray.
+    # 4-5. Make room there and insert the book, picked out of the tray: insert_book's controller
+    # (Episode.reshelve) takes whatever steps the slot needs, and its insert picks the book (take_book).
     ep = CartEpisode(model, data, row, viewer)
     try:
-        if a.scenario == "clear":
-            res = ep.insert(method="")
-        elif a.scenario == "packed":
-            res = ep.insert_packed(GAP_MARGIN, "shove")
-        elif a.scenario == "leaning":
-            res = ep.insert_leaning("one-sided", GAP_MARGIN)
-        else:
-            res = ep.insert_tight("one-sided", GAP_MARGIN)
-        print(report(res))
-    except RuntimeError as e:
-        print(f"  FAIL: {e}")
+        print(report(ep.reshelve(GAP_MARGIN)))
+    except RuntimeError as e:                        # no safe way to do it in this scene, or it jammed
+        print(f"  FAIL{' [' + ep.info['method'] + ']' if 'method' in ep.info else ''}: {e}"
+              f"{report_collisions(ep.collisions())}")
     if viewer is not None:
         print("Close the viewer window to exit.")
         while viewer.is_running():
