@@ -967,6 +967,26 @@ with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robu
   leaning on each other are still the weak point. Neighbours' thickness, 95% within 4.3 mm (3.6).
 - Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
   the evaluations can match books.
+- To see what the models see in one scene (~1.5 min each; weights in `~/bila_data`, `--weights` otherwise):
+
+  ```bash
+  MUJOCO_GL=egl uv run python visualize.py --scenario leaning --seed 3 --learned          # scenes/learned_*.png
+  MUJOCO_GL=egl uv run python visualize.py --scenario tight --seed 1 --learned --cart     # scenes/stickers_*.png
+  ```
+
+  `--learned`: the first look's three views with the learned masks in colour, books missed outlined red, masks
+  that are no book magenta, each target-row book's mask IoU, and the fitted spines; plus
+  `estimate_learned_*.png`, its estimate with the one from the simulation's masks dotted and the truth dashed.
+  `--learned --cart`: row_cam, tray_cam, a wrist close-up at the slot and a wrist view of the tray, every sticker
+  found labelled with what was read and how sure (green right, red wrong, grey unreadable), missed ones dashed.
+- `NoisyPerception.learned(source, rng)` imitates this pipeline instead of the camera with the simulation's masks
+  (`perception.LEARNED_CALIBRATION`, from `eval_perception.py calibrate --kind learned` on those 80 scenes;
+  `validate --kind learned` checks it). The default `NoisyPerception`, which `gap_env.py` trains on, is unchanged.
+  Against it: each book's own error spreads more (position x, z about 1.3x; lean about 2x, from masks of books
+  leaning on each other), the whole-row shift a little more along the row and up (std 3.2 and 3.4 mm, against 2.6
+  and 2.5), and thickness is less biased (+2.1 to +2.5 mm, against +2.5 to +4.0: the robust fit). Not imitated:
+  the learned pipeline misses about 0.6% of the books within the camera's reach and names 2.7% of those four or
+  more from the slot a place off (the camera with the simulation's masks: none, 0.3%).
 
 **Reading call-number stickers** (`label_reader.py`): `cart_demo.py` reads the stickers' numbers off the
 simulation by default; `--labels learned` reads them from the camera images.
