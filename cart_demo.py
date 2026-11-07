@@ -444,9 +444,10 @@ class CartEpisode(Episode):
         self.in_hand_p = R_h.T @ (d.xpos[self.book_body] - d.xpos[ik.hand])
         self.in_hand_R = R_h.T @ d.xmat[self.book_body].reshape(3, 3)
 
-    def collides_carrying(self, q, allowed=()):
+    def collides_carrying(self, q, allowed=(), clearance=0.0):
         """ArmIK.collides, with the held book moved along with the hand and
-        counted as part of the arm (its contacts with the fingers aside)."""
+        counted as part of the arm (its contacts with the fingers aside),
+        clearance included."""
         m, ik = self.m, self.ik
         ik.d.qpos[ik.qadr] = q
         mujoco.mj_kinematics(m, ik.d)
@@ -454,10 +455,14 @@ class CartEpisode(Episode):
         qa = m.jnt_qposadr[self.book_joint]
         ik.d.qpos[qa:qa + 3] = ik.d.xpos[ik.hand] + R_h @ self.in_hand_p
         ik.d.qpos[qa + 3:qa + 7] = insert_book.mat2quat(R_h @ self.in_hand_R)
-        mujoco.mj_fwdPosition(m, ik.d)
-        held = ik.robot | {self.book_geom} | {g for g, b in ik.book_of.items() if b == self.book_geom}
+        book = {self.book_geom} | {g for g, b in ik.book_of.items() if b == self.book_geom}
+        ik.forward(clearance, also=book)
+        held = ik.robot | book
         for c in ik.d.contact[:ik.d.ncon]:
-            if (c.geom1 in held) != (c.geom2 in held) and c.dist < -0.001:
+            if (c.geom1 in held) == (c.geom2 in held):
+                continue
+            other = c.geom2 if c.geom1 in held else c.geom1
+            if c.dist < -0.001 or (c.dist < clearance and other in ik.structure):
                 return True
         return False
 

@@ -180,6 +180,9 @@ IK_SEEDS = 20               # random starts per round when choosing the arm conf
 IK_ROUNDS = 3               # rounds tried before giving up (most scenes need only the first)
 IK_EXTRA_ROUNDS = 3         # ... and more if none of them found any configuration at all
 WAYPOINT_TRIES = 40         # random waypoints tried for a joint move that can't go direct or by way of home
+JOINT_CHECK_STEP = 0.01     # m: a joint move is checked for collisions often enough that no part of the arm
+                            # moves further than this between two checks (see joint_route),
+JOINT_CLEAR = 0.010         # ... and keeps this far from the shelf's structure away from its ends
 MIN_MARGIN = 0.05           # rad: the chosen path must keep every joint this far from its limits
 CLOSE_SPEED = 0.05          # m/s per finger when closing on a book from a few mm away
 
@@ -392,6 +395,24 @@ class ArmIK:
         self.ignore = set()                 # geoms the arm may touch anywhere (the book it handles)
         self.belief = []                    # (qpos address, pose): books to plan around where they are thought to be
         self.book_of = {}                   # page-section geom -> its book's geom: see book_children
+        # What joint moves keep a clearance from (joint_route): the fixed structure (the shelf, the
+        # robot's mount or cart, the floor), from the parts of the arm that move (all but its base).
+        self.structure = {g for g in range(model.ngeom) if body(g) in ("world", "shelf", "robot_mount", "lift")}
+        self.moving = {g for g in self.robot if body(g) != "panda/link0"}
+        # How far any part of the arm can be from each joint's axis, in any configuration: the
+        # offsets between its bodies added up along the chain, plus each geom's bounding radius,
+        # plus a finger's full opening. A joint move by dq moves no point of the arm further than
+        # lever @ |dq|.
+        self.lever = np.zeros(7)
+        for i, j in enumerate(jids):
+            top = model.jnt_bodyid[j]
+            for g in self.robot:
+                b, reach = model.geom_bodyid[g], np.linalg.norm(model.geom_pos[g]) + model.geom_rbound[g]
+                while b not in (top, 0):
+                    reach += np.linalg.norm(model.body_pos[b])
+                    b = model.body_parentid[b]
+                if b == top:
+                    self.lever[i] = max(self.lever[i], reach + np.linalg.norm(model.jnt_pos[j]) + 0.04)
 
     def sync(self, data, finger=None):
         """Copy the scene (books, fingers) from the simulation, for collision
@@ -403,19 +424,40 @@ class ArmIK:
         if finger is not None:
             self.d.qpos[self.finger_qadr] = finger
 
-    def collides(self, q, allowed=()):
+    def collides(self, q, allowed=(), clearance=0.0):
         """Whether the arm at q is more than 1 mm into anything, other than
-        the geoms in `allowed`, which its fingers may press on."""
+        the geoms in `allowed`, which its fingers may press on, or (with
+        `clearance`) nearer than that to the fixed structure."""
         self.d.qpos[self.qadr] = q
-        mujoco.mj_fwdPosition(self.m, self.d)
+        self.forward(clearance)
         for c in self.d.contact[:self.d.ncon]:
-            if (c.geom1 in self.robot) == (c.geom2 in self.robot) or c.dist > -0.001:
+            if (c.geom1 in self.robot) == (c.geom2 in self.robot):
                 continue
             arm, other = (c.geom1, c.geom2) if c.geom1 in self.robot else (c.geom2, c.geom1)
+            if c.dist < clearance and other in self.structure and arm in self.moving:
+                return True
+            if c.dist > -0.001:
+                continue
             other = self.book_of.get(other, other)      # a page section counts as its book
             if other not in self.ignore and not (arm in self.fingers and other in allowed):
                 return True
         return False
+
+    def forward(self, clearance=0.0, also=()):
+        """mj_fwdPosition on the planner's data, with the moving parts of the
+        arm (and the geoms in `also`) reporting contacts out to `clearance`:
+        their margins are set for it and put back at once, as the model is
+        the simulation's."""
+        if clearance <= 0:
+            mujoco.mj_fwdPosition(self.m, self.d)
+            return
+        geoms = np.array(sorted(self.moving | set(also)), dtype=int)
+        margin = self.m.geom_margin[geoms].copy()
+        self.m.geom_margin[geoms] = np.maximum(margin, clearance)
+        try:
+            mujoco.mj_fwdPosition(self.m, self.d)
+        finally:
+            self.m.geom_margin[geoms] = margin
 
     def fk(self, q):
         self.d.qpos[self.qadr] = q
@@ -1252,7 +1294,21 @@ class Episode:
         ik, home, ignore = self.ik, np.array(PANDA_HOME[:7]), self.ik.ignore
 
         def clear(a, b):
-            return not any(ik.collides(a + s * (b - a)) for s in np.linspace(0, 1, 25)[1:])
+            # Checked every JOINT_CHECK_STEP of the arm's motion, so it can't pass through a board
+            # between two checks: 24 checks spread evenly let a big move swing the fingertips several
+            # cm between them, and the fingers hit the board above or below at up to 345 N. The 24
+            # come first, as they reject most moves that run into something. Away from its ends the
+            # move also keeps JOINT_CLEAR from the shelf: a corner cut between two checks, or the arm
+            # straying a few mm off its path at speed, then still misses. Its ends may be nearer
+            # (a push starts with the fingers 1 cm over the board), so the clearance tapers to them.
+            n = max(24, int(np.ceil(ik.lever @ np.abs(b - a) / JOINT_CHECK_STEP)))
+            k = np.arange(n)
+            first = k[n // 24 - 1::n // 24]
+            for i in np.concatenate([first, np.setdiff1d(k, first)]):
+                s = (i + 1) / n
+                if ik.collides(a + s * (b - a), clearance=JOINT_CLEAR * min(1.0, 4 * s * (1 - s))):
+                    return False
+            return True
 
         if self.placed is not None:
             ik.ignore = ignore - {self.book_geom}
