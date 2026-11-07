@@ -18,6 +18,12 @@ dev = [
     "matplotlib>=3.11.2",
     "pytest>=9.1.1",
 ]
+rl = [
+    "gymnasium>=1.4.0",
+    "stable-baselines3>=2.9.2",
+    "tensorboard>=2.21.0",
+    "torch>=2.15.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]   # the modules live at the repo root

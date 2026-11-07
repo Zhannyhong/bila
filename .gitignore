@@ -25,3 +25,6 @@ generated_assets
 
 # MuJoCo writes its warnings here
 MUJOCO_LOG.TXT
+
+# Residual training runs (train_residual.py): checkpoints and logs
+runs/
