@@ -480,8 +480,8 @@ def sample_row(cfg: ShelfConfig, scenario: str, rng: np.random.Generator) -> Row
 # 5.4 cm: the long ones reach down past taller neighbours to grasp a book from
 # above, e.g. in the return tray), with a pad strip along all of the finger
 # that reaches past the palm (Menagerie's pad is 17 mm), so the narrow finger
-# still stops a book turning in the grasp. insert_book.py holds books right up
-# against the palm.
+# still stops a book turning in the grasp. insert_book.py holds a book's first
+# 44 mm behind its spine between the pads (its spine PALM_GAP off the palm).
 FINGER_HALF_W = 0.005       # half-width across the finger's travel
 FINGER_THICK = 0.012        # thickness out from the gripping face
 FINGER_LEN = 0.12           # length from where it is mounted (Menagerie's: 0.0539)
