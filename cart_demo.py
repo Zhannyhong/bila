@@ -31,8 +31,9 @@ read and looked up, but stay in the tray.
 Cart frame (the old robot mount, which faces the shelf): +x toward the shelf,
 +y to the tray side, z up, origin at the Panda's base at the target row's
 usual height. The cart does not drive yet. Its parts are visual except the
-tray, its dividers, the lift rail, the deck and the camera posts, which the
-arm must not hit.
+tray, its dividers, the lift rail and the deck, which the arm must not hit.
+The cameras' mounts are visual too: the cameras only show the scene and read
+the labels, so the arm may pass through them.
 """
 
 import argparse
@@ -61,6 +62,11 @@ TRAY = (-0.12, 0.50, 0.72)  # tray centre (cart x, y) and its floor's height abo
 TRAY_HALF = (0.27, 0.15)
 SLOT_CLEAR = 0.025          # room each side of a book in its slot: finger 12 mm + opening 8 mm + 5 mm
 DIVIDER_H = 0.08
+TRAY_CAM_H = 1.0            # tray camera's boom this high above the tray floor: above the wrist (link 6) as the arm
+                            # lifts the deepest book out of its slot (the boom is visual only; at 0.75 m the wrist
+                            # showed passing through it)
+RAIL_X = -0.40              # lift rail's centre behind the Panda's base: clear of the elbow at home and on the way to
+                            # SCAN_POSE (at -0.22 the tucked arm stood 10 mm inside it on low rows)
 TRAY_BOOKS = 5              # books the tray is loaded with (if they fit)
 OPEN_SPARE = 0.008          # the fingers open this much wider than the book, each side
 LIFT_SPEED = 0.10           # m/s, peak, of the lift's moves
@@ -223,12 +229,15 @@ def build(cfg, row, tray, numbers):
     for i, (x, y) in enumerate([(x1 - 0.07, y1 - 0.07), (x1 - 0.07, y0 + 0.07), (x0 + 0.07, y1 - 0.07), (x0 + 0.07, y0 + 0.07)]):
         geom(cart, f"wheel{i}", dark, False, type="cylinder", size="0.06 0.02", pos=_f(x, y, fz + 0.06), euler="1.5708 0 0")
 
-    # Lift: a rail behind the arm, and a carriage on the lift_z joint carrying the Panda.
-    box("lift_rail", (0.035, 0.09, (LIFT_MAX + 0.15) / 2), (-0.22, 0, deck + (LIFT_MAX + 0.15) / 2), "0.25 0.25 0.28 1")
+    # Lift: a rail behind the arm, and a carriage on the lift_z joint carrying the Panda, cantilevered
+    # out from the rail on a bracket.
+    box("lift_rail", (0.035, 0.09, (LIFT_MAX + 0.15) / 2), (RAIL_X, 0, deck + (LIFT_MAX + 0.15) / 2), "0.25 0.25 0.28 1")
     lift = ET.Element("body", name="lift", pos=_f(0, 0, deck))
     ET.SubElement(lift, "joint", name="lift_z", type="slide", axis="0 0 1", range=_f(0, LIFT_MAX), damping="3000")
     box("carriage", (0.11, 0.10, 0.015), (0, 0, -0.015), "0.35 0.35 0.38 1", False, lift)
-    box("carriage_bracket", (0.05, 0.09, 0.03), (-0.14, 0, -0.03), "0.35 0.35 0.38 1", False, lift)
+    bracket = (-0.11, RAIL_X + 0.035)                    # from the carriage's back edge to the rail's face
+    box("carriage_bracket", ((bracket[0] - bracket[1]) / 2, 0.09, 0.03), (sum(bracket) / 2, 0, -0.03),
+        "0.35 0.35 0.38 1", False, lift)
     attach = cart.find("attach")
     cart.remove(attach); lift.append(attach); cart.append(lift)
     act = root.find("actuator")
@@ -239,8 +248,10 @@ def build(cfg, row, tray, numbers):
     # Row camera on a post on the carriage, beside the arm on the side away from the tray. It rides the lift
     # with the arm, and the arm's base tracks the target board, so it sees every row from the same angle.
     cx, cy, cz = CAM_MOUNT
-    box("cam_arm", (0.015, (0.09 - cy) / 2 - 0.09, 0.015), (cx, (cy - 0.09) / 2, -0.03), grey, True, lift)
-    geom(lift, "cam_post", grey, type="cylinder", size="0.015", fromto=_f(cx, cy, -0.03, cx, cy, cz - 0.02))
+    # Its mount is visual only, like the tray camera's: the cameras show the scene and read the labels, they
+    # aren't part of the robot, so the arm may pass through them.
+    box("cam_arm", (0.015, (0.09 - cy) / 2 - 0.09, 0.015), (cx, (cy - 0.09) / 2, -0.03), grey, False, lift)
+    geom(lift, "cam_post", grey, False, type="cylinder", size="0.015", fromto=_f(cx, cy, -0.03, cx, cy, cz - 0.02))
     box("cam_head", (0.0125, 0.045, 0.0125), (cx, cy, cz), dark, False, lift)
     fwd = np.subtract(CAM_AIM, CAM_MOUNT) / np.linalg.norm(np.subtract(CAM_AIM, CAM_MOUNT))
     right = np.array([fwd[1], -fwd[0], 0.0]) / np.hypot(fwd[0], fwd[1])
@@ -266,9 +277,9 @@ def build(cfg, row, tray, numbers):
         box(f"divider{len(slots)}", (0.003, hy - 0.01, DIVIDER_H / 2), (x, ty, tz + 0.008 + DIVIDER_H / 2), wood)
 
     # Tray camera on a boom over the tray, looking straight down at the spines.
-    px, py, ptop = tx - hx - 0.06, ty + hy + 0.04, tz + 0.75
-    geom(cart, "tray_cam_post", grey, type="cylinder", size="0.015", fromto=_f(px, py, deck, px, py, ptop))
-    geom(cart, "tray_cam_boom", grey, type="cylinder", size="0.012", fromto=_f(px, py, ptop, tx, ty, ptop))
+    px, py, ptop = tx - hx - 0.06, ty + hy + 0.04, tz + TRAY_CAM_H
+    geom(cart, "tray_cam_post", grey, False, type="cylinder", size="0.015", fromto=_f(px, py, deck, px, py, ptop))
+    geom(cart, "tray_cam_boom", grey, False, type="cylinder", size="0.012", fromto=_f(px, py, ptop, tx, ty, ptop))
     ET.SubElement(cart, "camera", name="tray_cam", pos=_f(tx, ty, ptop - 0.02), xyaxes="1 0 0 0 1 0", fovy="60")
 
     # Tray books: free bodies in the world, spine-up, their fore-edges on the tray floor (after all else in qpos).
