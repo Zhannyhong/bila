@@ -46,9 +46,11 @@ High-level steps
                   aside, as hard as the arm can, until the gap at the spines is
                   the book plus margin: the side with room for all of it first,
                   re-pushing by whatever the arm's give left short. The fingers
-                  only reach ~4 cm past the spines, so the neighbour swivels
-                  rather than slides: the gap widens at the spines but less at
-                  the back, and the book itself widens the rest as it slides in.
+                  reach up to 11 cm past the spines (the palm stops at the most
+                  protruding one nearby), so short of a deep neighbour's back:
+                  it swivels as well as slides, the gap widens less at the back
+                  than at the spines, and the book itself widens the rest as it
+                  slides in.
                   Books the palm would sweep past that stand well proud of the
                   neighbour (it went back for a shove) go back level with it
                   first, or the fingertips would get none of its face.
@@ -67,9 +69,11 @@ High-level steps
                   first walk it out of the row (walk_out): pinch the little
                   that sticks out, pull 10 mm, pinch deeper.
   insert()        Take the book at the pre-insertion pose (the hand-over is
-                  not modelled): lined up with the gap, its back 1 cm over the
-                  board's front edge and 3 mm above it, pinched 11.5 cm above
-                  its bottom with its spine 2 mm off the palm. Rest its back on
+                  not modelled here; cart_demo's take_book picks it out of a
+                  tray): lined up with the gap, its back 1 cm over the board's
+                  front edge and 3 mm above it, pinched 11.5 cm above its
+                  bottom, its first 44 mm between the pads (its spine PALM_GAP,
+                  68 mm, off the palm). Rest its back on
                   the board and slide it in, holding it, until the hand would
                   come within 5 mm of another book's spine (the fingers can't
                   follow it in). If it runs into a neighbour first (a swivelled
@@ -1608,10 +1612,10 @@ class Episode:
         side allows: a side not pushed yet that has room for all of it, else
         the one with more room. The arm configuration is chosen so it can carry
         on through the insertion, or, pushing a side again (the arm gave way
-        the first time), for force. The fingers only reach ~4 cm past the
-        spines, so the neighbour swivels rather than slides: the gap widens at
-        the spines but less at the back. Returns whether it pushed (else why
-        not is in self.info["why"])."""
+        the first time), for force. The fingers reach up to 11 cm past the
+        spines, short of a deep neighbour's back, so it swivels as well as
+        slides: the gap widens less at the back than at the spines. Returns
+        whether it pushed (else why not is in self.info["why"])."""
         need = self.t + margin - self.widen_gap()
         gl, gr = self.finger_gap()
         if gr - gl < 2 * (FINGER_HALF_W + FIT_CLEAR):
@@ -2321,7 +2325,7 @@ class Episode:
         cands = [(at(sign, -away), [at(sign, s) for s in np.linspace(-away, dist, 20)[1:]]
                   + [at(sign, s) for s in np.linspace(dist, -away, 10)[1:]], sign) for sign in (1, -1)]
         # The book goes back ahead of the fingers, but not in the planner's scene: there a
-        # push longer than the fingers (46 mm) would run the hand into it.
+        # push longer than the fingers reach past the palm (FINGERTIP_Z - PALM_Z) would run the hand into it.
         ignore = self.ik.ignore
         self.ik.ignore = ignore | {self.row_geoms[i]}
         try:

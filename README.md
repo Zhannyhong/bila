@@ -248,8 +248,9 @@ uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success 
 uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (macOS)
 ```
 
-Options: `--strategy one-sided|split` (how a tight gap is widened, default `one-sided`), `--margin` (room left
-around the book in a tight gap, default 6 mm), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
+Options: `--margin` (room left around the book in a tight gap, default 6 mm), `--perception truth|camera` and
+`--camera-noise realistic|basic` (see [Perception](#perception-perceptionpy)), `--catalogue` (rows of the
+PBBM repo's real books), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
 (draw the converted book covers; see [Book covers](#book-covers-optional)), `--book-pages N` (split every
 book into `N` page sections hinged on the spine; see [Book pages](#book-pages-optional)).
 
@@ -325,6 +326,24 @@ In place means:
    second widening is a step of its own (the fingers come out and go in again), and wedged books slow down near
    the neighbour's face. The most-moved other book moves as much as before (tight 9.1 mm on average, leaning 3.3,
    packed 64).
+
+   The table's rows used Menagerie-length (5.4 cm) fingers. With the 12 cm ones (since `feat/3d-books`) and
+   joint moves checked as below: clear 200, tight 196, leaning 197, packed 185 (778), in place after 11.1, 26.3,
+   25.4 and 99.1 s on the rows each places. Against the 5.4 cm fingers on the same code they lose 8 rows (tight
+   12, 195; leaning 58, 133; packed 87, 92, 94, 178) and gain about as many, and packed books take 12 s longer
+   (95 against 84 s on seeds 0 to 49).
+
+   `Runner` reports the arm touching the shelf, the cart or the floor harder than 1 N (`collision_*` in the
+   score; `safe_success` is a success without any). Joint-space moves used to be checked at 24 points each, so
+   a big move could swing the fingertips several cm between two checks, and the planner allowed paths within
+   1 mm of a board while the arm strays a few mm off its path at speed. In 72 of the 800 rows a finger hit a
+   board that way, at up to 345 N (68 of them still placed the book; on packed seeds 0 to 49, 12 rows against 5
+   with the 5.4 cm fingers). `joint_route` now checks every 1 cm of the arm's motion (`JOINT_CHECK_STEP`) and
+   keeps 1 cm from the fixed structure away from a move's ends (`JOINT_CLEAR`): 3 rows still touch (leaning
+   58, 59, 108: the hand brushes the board above during the stand-up's lift, at most 16 N), and 776 of the 800
+   place the book without touching anything (711 before), 778 in all (779), at the same time per book. Packed
+   53 had placed only by way of a move that hit the board at 123 N, and the planner finds no other; in packed
+   68 the arm takes other routes, widens a third time and leaves the book 43 mm proud; packed 119 now goes in.
 
    What changed, besides the shared controller:
    - Retries come free: a leaner that fell back gets a second stand-up (leaning 142: 5.3° after the clamp); a
@@ -408,11 +427,14 @@ In place means:
      across their travel, 12 mm thick and 12 cm long (Menagerie's are 5.4 cm), with a pad strip along all of
      each finger from the palm to the tip. The long fingers let the hand grasp a book from above past taller
      neighbours (see `cart_demo.py`). The real Franka Hand takes custom fingers, so these could be machined.
-   - The book is held right up against the palm (its spine 2 mm off it), so the whole pad strip grips it. Held
-     3 cm off the board for 3 s, books then turn 3.1° in the hand on average (5.1° for the 8 that weigh over
-     1.2 kg), against 4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. Insertion results are the same. A short
-     pad is worse: with a 19 mm one, the board's drag turned a book 6° in the grasp on one clear row (seed 9) and
-     it fell over.
+   - The pads hold the book's first 44 mm behind its spine, so its spine sits 68 mm off the palm
+     (`PALM_GAP`): the fingers can't follow the book in between its neighbours, so their tips must not reach
+     much further past its spine than that, or the slide stops with the book still off the board. With
+     Menagerie-length fingers this put the spine 2 mm off the palm, the grip measured here: held 3 cm off the
+     board for 3 s, books turned 3.1° in the hand on average (5.1° for the 8 that weigh over 1.2 kg), against
+     4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. The 12 cm fingers grip the same 44 mm of the book. A
+     short pad is worse: with a 19 mm one, the board's drag turned a book 6° in the grasp on one clear row
+     (seed 9) and it fell over.
    - The fingers start 0.2 mm off the book when they close on it, inside its 0.5 mm contact margin. Right on
      the margin, one pad's contact could start a step late, and that finger ended up 9 mm inside the book (on
      leaning seed 5, which then flew off when let go).
@@ -426,8 +448,8 @@ In place means:
      both have), as far as the widening needs or that side's space allows. If the gap at the spines is then
      still short of the book plus 6 mm, the next widening pushes the other side, by what is missing. Then the
      book is handed over (not modelled) and inserted as above. Used when the fingers fit the gap and reach at least
-     1 cm past a neighbour's spine (the 63 mm palm stops 46 mm behind the fingertips, at the most protruding spine
-     nearby). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
+     1 cm past a neighbour's spine (the 63 mm palm stops 112 mm behind the fingertips, at the most protruding
+     spine nearby; 46 mm with Menagerie-length fingers, when these results were measured). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
      100 N, depending on the pose).
    - Skipped otherwise, or when the push leaves the gap at the spines narrower than the book: no insertion,
      counted as a failure. The fingers need 12 mm (1 mm clear each side) and the generator's tight gaps are at
