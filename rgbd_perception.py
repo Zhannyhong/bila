@@ -110,15 +110,24 @@ class Segment:
 
 
 class OracleSegmenter:
-    """Book masks read off the simulation's object ids: every geom whose name
-    contains 'book'. Stands in for a learned segmenter."""
+    """Book masks read off the simulation's object ids. Stands in for a
+    learned segmenter. A book is a body of its own whose box is <name>_geom
+    (named after a book); every geom it carries is part of its mask: the box,
+    and if they are drawn, its cover faces, page sections and spine label
+    (shelf_scene.add_book_geoms, cart_demo). Each mask is labelled with the
+    book's box geom."""
 
     def __init__(self, model: mujoco.MjModel):
-        self.books = [g for g in range(model.ngeom) if "book" in (model.geom(g).name or "")]
+        self.label = np.full(model.ngeom + 1, -1, dtype=np.int64)   # geom id -> its book's box; [-1]: no geom
+        for g in range(model.ngeom):
+            root = model.body(model.body_rootid[model.geom_bodyid[g]]).name
+            box = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, root + "_geom")
+            if box >= 0 and "book" in root:
+                self.label[g] = box
 
     def __call__(self, frame: CameraFrame) -> List[Segment]:
-        present = np.intersect1d(np.unique(frame.seg), self.books)
-        return [Segment(frame.seg == g, int(g)) for g in present]
+        labels = self.label[frame.seg]                               # seg -1 (no geom) reads the last entry
+        return [Segment(labels == g, int(g)) for g in np.unique(labels[labels >= 0])]
 
 
 # ---------------------------------------------------------------------------
