@@ -47,3 +47,24 @@ def test_draw_in_viewer_adds_books_corners_and_gap_bars(leaning_scene):
     small = mujoco.MjvScene(model, maxgeom=10)
     draw_in_viewer(small, est)                                   # more than fits: stops at capacity
     assert small.ngeom == 10
+
+
+def test_sticker_verdicts():
+    """--learned --cart's colours: each reading right, wrong, unreadable or no
+    sticker; stickers in clear view not found are missed (not tiny ones)."""
+    pytest.importorskip("torch")
+    from label_reader import Reading
+    from visualize import sticker_verdicts
+
+    def box(x, w=20, h=50, y=10):
+        return np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], float)
+
+    stickers = [{"corners": box(x).tolist(), "text": t, "seen": 1.0, "pixels": px}
+                for x, t, px in ((0, "010.0\nAAA", 900), (40, "011.0\nBBB", 900), (80, "012.0\nCCC", 900),
+                                 (120, "013.0\nDDD", 900), (160, "014.0\nEEE", 50))]
+    read = lambda x, text: Reading(box(x + 1), text, 0.999, text or "")
+    verdicts, missed = sticker_verdicts([read(0, "010.0\nAAA"), read(40, "019.0\nZZZ"), read(80, None),
+                                         read(300, "015.0\nFFF")], stickers)
+    assert [v for _, v, _ in verdicts] == ["right", "wrong", "unreadable", "no sticker"]
+    assert [t for _, _, t in verdicts] == [0, 1, 2, None]
+    assert missed == [3]                                   # 4 is too small to count as missed
