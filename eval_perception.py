@@ -1,22 +1,35 @@
 """
 How well the camera-based ShelfEstimate matches the ground truth, over many
-scenes, with and without depth noise.
+scenes, for cameras with no error, basic depth noise, and a realistic D405.
 
-    MUJOCO_GL=egl uv run python eval_perception.py collect --seeds 12   # slow (~20 min): stores scenes/perception_eval.pkl
+    # slow (~1.5 h on 8 workers with software rendering): stores scenes/perception_eval.pkl
+    MUJOCO_GL=egl OMP_NUM_THREADS=1 uv run python eval_perception.py collect --workers 8
     uv run python eval_perception.py report                             # tables from the stored estimates
     uv run python eval_perception.py calibrate                          # noise for NoisyPerception, from them
     uv run python eval_perception.py validate                           # does NoisyPerception err like the camera?
 
-`collect` puts the arm at the inspection pose in each scene (12 seeds of each
-scenario by default) and stores three estimates side by side: the ground truth,
-the camera's with perfect depth, and the camera's with D405-like depth noise.
-The slow part (solving the arm pose) then happens once; `report`, and the
-calibration of NoisyPerception, read the stored estimates.
+`collect` takes, in each scene (seeds 1000-1019 of clear, tight, leaning and
+packed by default: away from the seeds the controllers are tested on), the
+images the controller's first look takes: one from each view of the sweep
+(insert_book.SWEEP) the arm reaches, fused as Episode.look fuses them. It
+stores the ground truth and three camera estimates side by side:
+  perfect     exact depth, exact calibration;
+  basic       independent depth noise per pixel (DepthNoise());
+  realistic   a D405's stereo errors and depth offset (DepthNoise.d405()) and a
+              hand-eye / intrinsics calibration error (CalibrationError()),
+              as insert_book.py --perception camera uses.
+The slow part (solving the arm poses, rendering) then happens once; `report`,
+and the calibration of NoisyPerception, read the stored estimates.
 
 Every camera book is matched to its true book by the simulation's object id,
 so errors are book for book. Errors are reported by how far the book stands
 from the slot (|slot offset| 1, 2-3, 4-6), since the policy needs the
 neighbours most.
+
+The realistic camera's error has two parts, calibrated separately: a rigid
+motion of the whole row, the same for every book in a scene (its calibration
+and depth offset: perception.CAMERA_SYSTEMATIC), fitted per scene; and what
+is left of each book's error once that is taken out (perception.CAMERA_ERRORS).
 """
 
 from __future__ import annotations
@@ -30,55 +43,81 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from perception import BookEstimate, ShelfEstimate
+from perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstimate, apply_shift, book_from_spine, fit_rigid,
+                        rotvec_from_matrix, slot_pivot)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PATH = os.path.join(HERE, "scenes", "perception_eval.pkl")
 OFFSET_BINS = {"neighbours (1)": (1, 1), "near (2-3)": (2, 3), "further (4-6)": (4, 6)}
+KINDS = ("perfect", "basic", "realistic")
+CALIBRATE_ON = "realistic"            # the camera NoisyPerception imitates
+COLLECT_SCENARIOS = ("clear", "tight", "leaning", "packed")   # collapsed is out of the project's scope
+FIRST_SEED = 1000                     # clear of the controllers' test seeds (0-49) and their training seeds
 
 
 @dataclass
 class SceneRecord:
     scenario: str
     seed: int
-    standoff: float                         # camera distance used (from the board's front edge)
+    standoff: float                         # camera distance of the middle view (from the board's front edge)
     target: tuple                           # (thickness, height) of the book to insert
     truth: ShelfEstimate
-    camera: Dict[str, ShelfEstimate]        # "perfect", "noisy"
+    camera: Dict[str, ShelfEstimate]        # KINDS
     truth_for: Dict[str, List[Optional[int]]]   # per camera book: index of its true book in truth.books
 
 
 # ---------------------------------------------------------------------------
 # Collect
 # ---------------------------------------------------------------------------
-def collect(seeds: int, path: str):
-    from camera import DepthNoise, WristCamera
+def collect_scene(task) -> Optional[SceneRecord]:
+    """One scene's SceneRecord, or None if the arm reaches no view of it. Each
+    camera kind gets its own camera, seeded with the scene's seed, as
+    insert_book.make_eyes makes one."""
+    scenario, seed = task
+    from camera import CalibrationError, DepthNoise, WristCamera
+    from insert_book import SWEEP
     from inspection import look_from, solve_inspection
     from perception import GroundTruthPerception
     from rgbd_perception import RGBDPerception
-    from shelf_scene import SCENARIOS, ShelfConfig, make_episode
+    from shelf_scene import ShelfConfig, make_episode
 
     panda = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
-    records = []
-    for scenario in SCENARIOS:
-        for seed in range(seeds):
-            model, data, row, _ = make_episode(ShelfConfig(), scenario, np.random.default_rng(seed), panda_xml=panda)
-            view = solve_inspection(model, data, row)
-            if view is None:
-                print(f"{scenario} {seed}: no inspection pose, skipped")
-                continue
-            look_from(model, data, view[0])
-            truth = GroundTruthPerception(model, row).estimate(data)
-            index = {model.geom(b.name + "_geom").id: i for i, b in enumerate(row.books)}
-            camera, truth_for = {}, {}
-            for kind, noise in (("perfect", None), ("noisy", DepthNoise())):
-                cam = WristCamera(model, noise=noise, rng=np.random.default_rng(seed))
-                with RGBDPerception(model, row, camera=cam) as perception:
-                    camera[kind] = perception.estimate(data)
-                    truth_for[kind] = [index.get(g) for g in perception.last_labels]
-            records.append(SceneRecord(scenario, seed, view[1], (row.target_book.thickness, row.target_book.height),
-                                       truth, camera, truth_for))
-            print(f"{scenario} {seed}: {len(camera['perfect'].books)} of {len(truth.books)} books found", flush=True)
+    model, data, row, _ = make_episode(ShelfConfig(), scenario, np.random.default_rng(seed), panda_xml=panda)
+    views = [(dx, v) for dx in SWEEP if (v := solve_inspection(model, data, row, dx))]
+    if not views:
+        print(f"{scenario} {seed}: no inspection pose, skipped", flush=True)
+        return None
+    truth = GroundTruthPerception(model, row).estimate(data)
+    index = {model.geom(b.name + "_geom").id: i for i, b in enumerate(row.books)}
+    cameras = {"perfect": dict(noise=None),
+               "basic": dict(noise=DepthNoise()),
+               "realistic": dict(noise=DepthNoise.d405(), calibration=CalibrationError())}
+    camera, truth_for = {}, {}
+    for kind, errors in cameras.items():
+        cam = WristCamera(model, rng=np.random.default_rng(seed), **errors)
+        with RGBDPerception(model, row, camera=cam) as perception:
+            frames = []
+            for _, (q, _) in views:
+                look_from(model, data, q)
+                frames.append(perception.capture(data))
+            camera[kind] = perception.estimate_from_frames(frames)
+            truth_for[kind] = [index.get(g) for g in perception.last_labels]
+    standoff = min(views, key=lambda v: abs(v[0]))[1][1]
+    print(f"{scenario} {seed}: {len(views)} views, {len(camera['realistic'].books)} of {len(truth.books)} books found",
+          flush=True)
+    return SceneRecord(scenario, seed, standoff, (row.target_book.thickness, row.target_book.height),
+                       truth, camera, truth_for)
+
+
+def collect(scenarios, first_seed: int, seeds: int, path: str, workers: int = 1):
+    tasks = [(s, seed) for s in scenarios for seed in range(first_seed, first_seed + seeds)]
+    if workers > 1:
+        from multiprocessing import Pool
+        with Pool(workers) as pool:
+            records = pool.map(collect_scene, tasks, chunksize=1)
+    else:
+        records = [collect_scene(t) for t in tasks]
+    records = [r for r in records if r is not None]
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as fh:
         pickle.dump(records, fh)
@@ -190,7 +229,50 @@ def robust(v) -> tuple:
     return med, float(np.percentile(np.abs(v - med), 95) / 1.96)
 
 
-def noise_stats(records: List[SceneRecord], kind: str = "noisy"):
+def systematic_fit(rec: SceneRecord, kind: str):
+    """The rigid motion (R, t) about the slot (perception.slot_pivot) that best
+    maps the scene's true spine corners onto the camera's, over the matched
+    books fully in view: the part of the camera's error all its books share.
+    None if fewer than two books were matched."""
+    matched = [(b, t) for b, t in pairs(rec, kind) if b.visible == 1]
+    if len(matched) < 2:
+        return None
+    src = np.concatenate([t.spine_corners for _, t in matched])
+    dst = np.concatenate([b.spine_corners for b, _ in matched])
+    return fit_rigid(src, dst, slot_pivot(rec.truth))
+
+
+def systematic_params(R, t) -> Dict[str, float]:
+    return dict(zip(SYSTEMATIC_PARAMS, (*t, *rotvec_from_matrix(R))))
+
+
+def systematic_stats(records: List[SceneRecord], kind: str = CALIBRATE_ON):
+    """Per SYSTEMATIC_PARAMS, the robust (median, std) of the per-scene rigid
+    motion over the scenes (m, rad), and how many scenes it was fitted in."""
+    fits = [systematic_params(*f) for rec in records if (f := systematic_fit(rec, kind)) is not None]
+    return {p: robust([f[p] for f in fits]) for p in SYSTEMATIC_PARAMS}, len(fits)
+
+
+def without_systematic(records: List[SceneRecord], kind: str = CALIBRATE_ON) -> List[SceneRecord]:
+    """The records with each scene's systematic_fit taken back out of the
+    `kind` estimate's spine corners: what is left is each book's own error."""
+    from dataclasses import replace
+    out = []
+    for rec in records:
+        fit = systematic_fit(rec, kind)
+        if fit is None:
+            out.append(rec)
+            continue
+        R, t = fit
+        pivot = slot_pivot(rec.truth)
+        # The inverse of p -> R (p - pivot) + pivot + t is p -> R^T (p - pivot - t) + pivot.
+        books = [book_from_spine(apply_shift(b.spine_corners - t, R.T, np.zeros(3), pivot), b.slot_offset,
+                                 b.depth, b.visible) for b in rec.camera[kind].books]
+        out.append(replace(rec, camera={**rec.camera, kind: replace(rec.camera[kind], books=books)}))
+    return out
+
+
+def noise_stats(records: List[SceneRecord], kind: str = CALIBRATE_ON):
     """Per |slot offset| band, the camera's error in each NOISE_PARAMS quantity
     (m or rad), over matched books fully in view, as robust (median, std):
     {band: {param: (median, std)}}; and per band the number of books and the
@@ -214,7 +296,7 @@ def noise_stats(records: List[SceneRecord], kind: str = "noisy"):
     return stats, counts, outliers
 
 
-def view_reach(records: List[SceneRecord], kind: str = "perfect") -> float:
+def view_reach(records: List[SceneRecord], kind: str = CALIBRATE_ON) -> float:
     """How far along the row from the slot the camera sees books: the distance
     (to a book's outer bottom corner) that best separates the books it found
     from those it didn't."""
@@ -246,9 +328,16 @@ def report(records: List[SceneRecord]):
     scenes = sorted({(r.scenario) for r in records})
     print(f"{len(records)} scenes ({', '.join(f'{s}: {sum(r.scenario == s for r in records)}' for s in scenes)}); "
           f"camera at {dict(zip(*np.unique([r.standoff for r in records], return_counts=True)))} m from the board edge\n")
-    for kind in ("perfect", "noisy"):
+    for kind in KINDS:
+        if any(kind not in r.camera for r in records):
+            continue
         ok, n = naming(records, kind)
-        print(f"== {kind} depth: books named as in the truth {ok}/{n}")
+        print(f"== {kind} camera: books named as in the truth {ok}/{n}")
+        shift, n_fit = systematic_stats(records, kind)
+        print(f"   whole-row shift (median / std, over {n_fit} scenes): "
+              + ", ".join(f"{p} {1000 * m:+.2f}/{1000 * s:.2f} mm" for p, (m, s) in shift.items() if p in ("x", "y", "z"))
+              + ", " + ", ".join(f"{p} {math.degrees(m):+.2f}/{math.degrees(s):.2f} deg"
+                                 for p, (m, s) in shift.items() if p not in ("x", "y", "z")))
         print("   mean / std / 95% of |error|   (mm or deg)")
         rows = [("corner x", "corner_x", 1000), ("corner y (depth)", "corner_y", 1000), ("corner z", "corner_z", 1000),
                 ("worst corner", "corner", 1000), ("thickness", "thickness", 1000), ("height", "height", 1000),
@@ -270,15 +359,19 @@ def report(records: List[SceneRecord]):
 
 
 def print_calibration(records: List[SceneRecord]):
-    """NoisyPerception's settings, measured: the camera's errors with D405-like
-    depth noise, and how far along the row it sees."""
-    stats, counts, outliers = noise_stats(records, "noisy")
+    """NoisyPerception's settings, measured on the realistic camera: the
+    whole-row shift it shares across a scene's books, each book's error once
+    that is taken out, and how far along the row it sees."""
+    shift, n_fit = systematic_stats(records)
+    inner = ", ".join(f'"{p}": ({m:.5f}, {sd:.5f})' for p, (m, sd) in shift.items())
+    print(f"CAMERA_SYSTEMATIC = {{{inner}}}   # {n_fit} scenes")
+    stats, counts, outliers = noise_stats(without_systematic(records))
     print("CAMERA_ERRORS = {   # |slot offset| band: {quantity: (median, std)}, m or rad")
     for band, by_param in stats.items():
         inner = ", ".join(f'"{p}": ({m:.5f}, {sd:.5f})' for p, (m, sd) in by_param.items())
         print(f"    {band}: {{{inner}}},   # {counts[band]} books, {100 * outliers[band]:.0f}% with an outlier")
     print("}")
-    print(f"VIEW_REACH = {view_reach(records, 'noisy'):.3f}   # m along the row from the slot")
+    print(f"VIEW_REACH = {view_reach(records):.3f}   # m along the row from the slot")
 
 
 class _Fixed:
@@ -306,19 +399,31 @@ def with_model(records: List[SceneRecord], seed: int = 0) -> List[SceneRecord]:
 
 
 def print_validation(records: List[SceneRecord]):
-    """The camera's errors (with depth noise) next to NoisyPerception's, per
-    quantity and band, and for the gap and the books seen."""
+    """The realistic camera's errors next to NoisyPerception's: the whole-row
+    shift, each book's error with and without it, and the gap and the books
+    seen."""
     records = with_model(records)
-    cam, _, _ = noise_stats(records, "noisy")
-    mod, _, _ = noise_stats(records, "model")
-    print("median / std of the error: camera (noisy depth)  vs  NoisyPerception   (mm, or deg for lean and swivel)")
-    for band in cam:
-        print(f"  |slot offset| {band[0]}-{band[1] if band[1] < 99 else 'more'}")
-        for q in cam[band]:
-            k = 180 / math.pi if q in ("lean", "yaw") else 1000
-            (cm, cs), (mm, ms) = cam[band][q], mod[band][q]
-            print(f"    {q:10s} {k * cm:+7.2f} / {k * cs:5.2f}   vs  {k * mm:+7.2f} / {k * ms:5.2f}")
-    for kind, name in (("noisy", "camera"), ("model", "NoisyPerception")):
+    kinds = (CALIBRATE_ON, "model")
+    unit = lambda q: (180 / math.pi, "deg") if q in ("lean", "yaw", "rx", "ry", "rz") else (1000, "mm")
+    print(f"median / std of the error: camera ({CALIBRATE_ON})  vs  NoisyPerception")
+    (cam, n_cam), (mod, n_mod) = (systematic_stats(records, k) for k in kinds)
+    print(f"  whole-row shift ({n_cam} vs {n_mod} scenes)")
+    for q in SYSTEMATIC_PARAMS:
+        k, u = unit(q)
+        (cm, cs), (mm, ms) = cam[q], mod[q]
+        print(f"    {q:10s} {k * cm:+7.2f} / {k * cs:5.2f}   vs  {k * mm:+7.2f} / {k * ms:5.2f}  {u}")
+    for label, recs in (("each book, shift included", records),
+                        ("each book, shift taken out", without_systematic(without_systematic(records), "model"))):
+        cam, _, _ = noise_stats(recs, CALIBRATE_ON)
+        mod, _, _ = noise_stats(recs, "model")
+        print(f"  {label}")
+        for band in cam:
+            print(f"   |slot offset| {band[0]}-{band[1] if band[1] < 99 else 'more'}")
+            for q in cam[band]:
+                k, u = unit(q)
+                (cm, cs), (mm, ms) = cam[band][q], mod[band][q]
+                print(f"    {q:10s} {k * cm:+7.2f} / {k * cs:5.2f}   vs  {k * mm:+7.2f} / {k * ms:5.2f}  {u}")
+    for kind, name in ((CALIBRATE_ON, "camera"), ("model", "NoisyPerception")):
         _, narrowest, unseen = gap_errors(records, kind)
         sides = [k for rec in records for k, _ in seen_per_side(rec, kind)]
         known = narrowest[~np.isnan(narrowest)]
@@ -330,11 +435,14 @@ def print_validation(records: List[SceneRecord]):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=("collect", "report", "calibrate", "validate"))
-    ap.add_argument("--seeds", type=int, default=12, help="collect: seeds per scenario")
+    ap.add_argument("--seeds", type=int, default=20, help="collect: seeds per scenario")
+    ap.add_argument("--first-seed", type=int, default=FIRST_SEED, help="collect: seeds first-seed .. first-seed+seeds-1")
+    ap.add_argument("--scenarios", nargs="+", default=list(COLLECT_SCENARIOS), help="collect: scenarios")
+    ap.add_argument("--workers", type=int, default=1, help="collect: scenes rendered in parallel")
     ap.add_argument("--path", default=DEFAULT_PATH)
     a = ap.parse_args()
     if a.command == "collect":
-        collect(a.seeds, a.path)
+        collect(a.scenarios, a.first_seed, a.seeds, a.path, a.workers)
     elif a.command == "report":
         report(load(a.path))
     elif a.command == "calibrate":

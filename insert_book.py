@@ -91,6 +91,15 @@ High-level steps
   Smaller steps they are built from: push_back(i, y), walk_out(k),
   shove_stage (one pinch), lift_up / clamp_up, fingertip_push(side, d).
 
+Residual (Episode.residual, None by default): a learned correction of the hand
+position during the gap-creation contact moves only (widen's pushes, the lift
+and the clamp's swing, the shove), as gap_env.py trains it. Every
+RESIDUAL_EVERY steps it adds up to RESIDUAL_STEP per shelf axis, ramped in,
+RESIDUAL_MAX in all, inside each move's bounds (never past the row's room);
+after the move it fades out over the next one. The rules, the plans and every
+other move stay the script's. Without one the controller runs exactly as
+without the hook.
+
 Score: upright within 5 deg, in place, and released, plus how far the other
 books moved. The slide and the pushes stop when the wrist force sensor feels
 the book stop giving way, rather than forcing a jammed book.
@@ -134,6 +143,9 @@ import math
 import os
 import time
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 import numpy as np
 import mujoco
@@ -245,8 +257,16 @@ SWEEP = (-0.3, 0.0, 0.3)    # m along the row from the slot: the views of the fi
 HOLD_STILL = 0.2            # s the arm holds still at a view before the image is taken
 STILL = (0.003, math.radians(1.5))   # a book seen again within this (m, rad) of before hasn't moved
 
+# Residual correction (Runner.contact): a learned policy may nudge the hand during the
+# gap-creation contact moves. Without one (the default) the script runs exactly as it is.
+RESIDUAL_EVERY = 20         # physics steps per decision (25 Hz at the 2 ms step)
+RESIDUAL_STEP = 0.003       # m per shelf axis per decision, at most, ramped in over the steps to the next
+RESIDUAL_MAX = 0.025        # m per shelf axis in all
+RESIDUAL_FADE = 0.3         # s: once a contact move ends, the correction fades out over the next move's first this
+RESIDUAL_FLOOR = 0.002      # m: the correction keeps the hand this much of its clearance (board, books pushed back)
+
 # Scoring
-ALIGN_TOL = 0.010           # in place: spine within this of the more protruding neighbour's spine, or
+ALIGN_TOL = 0.010          # in place: spine within this of the more protruding neighbour's spine, or
 EDGE_IN = 0.010             # ... if the book is deeper than that neighbour, at least this behind the front edge
 EDGE_AIM = 0.005            # push a deeper book this much further in than EDGE_IN needs
 UPRIGHT_DEG = 5.0           # upright within 5 deg (project proposal)
@@ -531,15 +551,40 @@ class ArmIK:
         return q, worst, bool(np.linalg.norm(e[:3]) < 1e-3 and np.linalg.norm(e[3:]) < 1e-2)
 
 
+@dataclass
+class Contact:
+    """A gap-creation contact move the residual may correct (Runner.contact).
+    lo, hi: bounds on the correction (shelf frame, m), inside +-RESIDUAL_MAX.
+    x_limit: (side, x): the correction never takes the hand (its origin, shelf
+    frame) past x toward side: the row's room, as the script knows it."""
+    phase: str                                  # "widen", "lift", "clamp" or "shove"
+    lo: np.ndarray
+    hi: np.ndarray
+    x_limit: Optional[Tuple[int, float]] = None
+    steps: int = 0                              # physics steps of hand moves taken in it so far
+
+
 class Runner:
     """Steps the simulation while moving the commanded hand pose along
-    min-jerk paths. Each step re-solves IK from the last command."""
+    min-jerk paths. Each step re-solves IK from the last command.
 
-    def __init__(self, model, data, ik: ArmIK, q_cmd, grip, viewer=None, log=print):
+    A residual (any object with decide(runner, contact) -> 3 m, shelf frame)
+    may correct the hand's position during the moves marked with contact():
+    IK then aims at the script's pose plus `offset`. self.pos stays the
+    script's pose throughout, so the script's next move starts from where it
+    planned. With residual=None nothing changes."""
+
+    def __init__(self, model, data, ik: ArmIK, q_cmd, grip, viewer=None, log=print, residual=None, shelf=None):
         self.m, self.d, self.ik = model, data, ik
         self.q_cmd, self.grip = np.array(q_cmd), grip
         self.pos, self.rot = ik.fk(self.q_cmd)
         self.viewer, self.log = viewer, log
+        self.residual, self.shelf = residual, shelf  # shelf: a ShelfFrame, needed with a residual
+        self.offset = np.zeros(3)                   # the residual's correction of the hand position, shelf frame
+        self.rate = np.zeros(3)                     # ... added to it each step until the next decision
+        self.touching = None                        # the Contact being made, if any
+        self.fade = None                            # (correction as the contact ended, steps left to fade it)
+        self.fade_steps = int(round(RESIDUAL_FADE / model.opt.timestep))
         self.t0 = data.time
         self.wall0, self.next_frame = time.perf_counter(), 0.0
         self.ft = int(model.sensor("panda/ft_force").adr[0])       # wrist force sensor (hand frame)
@@ -561,9 +606,72 @@ class Runner:
 
     def halt(self):
         """Hold the hand where it actually is, so the arm stops pressing on
-        whatever it ran into."""
+        whatever it ran into. With a correction on, the script's pose is
+        where the hand is less the correction, which stays (and stops
+        growing)."""
         self.q_cmd = self.d.qpos[self.ik.qadr].copy()
         self.pos, self.rot = self.ik.fk(self.q_cmd)
+        if self.offset.any():
+            self.pos = self.pos - self.shelf.R @ self.offset
+        self.rate[:] = 0.0
+
+    # --- The residual's correction -----------------------------------------
+    @contextmanager
+    def contact(self, phase, lo=(-RESIDUAL_MAX,) * 3, hi=(RESIDUAL_MAX,) * 3, x_limit=None):
+        """Mark the hand moves inside as the gap-creation contact move `phase`
+        (see Contact for the bounds): the residual, if any, corrects them. Its
+        correction outlives the block and fades out over the next move (the
+        hand may still hold what it moved: a clamped book)."""
+        if self.residual is None:
+            yield None
+            return
+        lo = np.maximum(np.asarray(lo, dtype=float), -RESIDUAL_MAX)
+        hi = np.minimum(np.asarray(hi, dtype=float), RESIDUAL_MAX)
+        self.touching, self.fade = Contact(phase, lo, hi, x_limit), None
+        self.rate[:] = 0.0
+        try:
+            yield self.touching
+        finally:
+            self.touching = None
+            self.rate[:] = 0.0
+            if self.offset.any():
+                self.fade = (self.offset.copy(), self.fade_steps)
+
+    def bounded(self, offset, c: Contact):
+        """The correction kept inside the contact's bounds. The room limit only
+        holds the correction back: it never pulls back a hand the script
+        itself takes that far."""
+        offset = np.clip(offset, c.lo, c.hi)
+        if c.x_limit is not None:
+            side, x = c.x_limit
+            room = max(0.0, side * (x - self.shelf.to_shelf(self.pos)[0]))
+            offset[0] = side * min(side * offset[0], room)
+        return offset
+
+    def correct(self):
+        """Advance the correction by one physics step of a hand move: in a
+        contact, every RESIDUAL_EVERY steps ask the residual for an increment
+        (at most RESIDUAL_STEP per axis) and ramp it in over the steps to the
+        next decision; after one, fade it out (min-jerk) over fade_steps."""
+        c = self.touching
+        if c is not None:
+            if c.steps % RESIDUAL_EVERY == 0:
+                inc = np.clip(np.asarray(self.residual.decide(self, c), dtype=float), -RESIDUAL_STEP, RESIDUAL_STEP)
+                self.rate = (self.bounded(self.offset + inc, c) - self.offset) / RESIDUAL_EVERY
+            c.steps += 1
+            self.offset = self.bounded(self.offset + self.rate, c)
+        elif self.fade is not None:
+            start, left = self.fade
+            u = (left - 1) / self.fade_steps
+            self.offset = start * (u ** 3 * (10 - 15 * u + 6 * u * u))
+            self.fade = (start, left - 1) if left > 1 else None
+
+    def hand_target(self):
+        """Where IK aims the hand this step: the script's position plus the correction."""
+        if self.residual is None:
+            return self.pos
+        self.correct()
+        return self.pos + self.shelf.R @ self.offset if self.offset.any() else self.pos
 
     @property
     def t(self):
@@ -630,7 +738,7 @@ class Runner:
         for k in range(1, n + 1):
             u = k / n
             self.pos, self.rot = interpolate(p0, R0, pos, rot, u ** 3 * (10 - 15 * u + 6 * u * u))
-            self.q_cmd = self.ik.solve(self.q_cmd, self.pos, self.rot)
+            self.q_cmd = self.ik.solve(self.q_cmd, self.hand_target(), self.rot)
             self.step()
             smooth += blend * (self.wrist_force()[2] - smooth)
             if stop_force is not None and abs(smooth - f0) > stop_force:
@@ -659,7 +767,7 @@ class Runner:
             i = min(int(np.searchsorted(cum, s, side="right")) - 1, len(seg) - 1)
             f = 0.0 if seg[i] <= 0 else (s - cum[i]) / seg[i]
             self.pos, self.rot = interpolate(*pts[i], *pts[i + 1], min(max(f, 0.0), 1.0))
-            self.q_cmd = self.ik.solve(self.q_cmd, self.pos, self.rot)
+            self.q_cmd = self.ik.solve(self.q_cmd, self.hand_target(), self.rot)
             self.step()
 
     def move_joints(self, name, q_goal, speed=JOINT_SPEED):
@@ -676,6 +784,7 @@ class Runner:
             self.q_cmd = q0 + (q_goal - q0) * (u ** 3 * (10 - 15 * u + 6 * u * u))
             self.step()
         self.pos, self.rot = self.ik.fk(self.q_cmd)
+        self.offset, self.fade = np.zeros(3), None                  # (a joint move takes up any correction left)
 
     def wait(self, name, duration, grip=None):
         self.doing = name
@@ -773,6 +882,7 @@ class Episode:
             for child in book_children(bk):
                 self.ik.book_of[model.geom(child + "_geom").id] = model.geom(bk.name + "_geom").id
         self.run = None
+        self.residual = None       # corrects the hand in the gap-creation contact moves (Runner.contact); None: the script alone
         self.info = {}
         self.intended = set()      # row books the sequence sets out to move (a leaner it stands up): not disturbance
         self.widened = set()       # sides whose neighbour the fingertips have pushed aside
@@ -929,13 +1039,12 @@ class Episode:
         it inserted. Raises RuntimeError if no view is reachable, or the
         camera doesn't see both of the slot's neighbours."""
         from dataclasses import replace
-        from inspection import solve_inspection                     # these import this module
-        from perception import gap_profile
+        from perception import gap_profile                          # perception imports this module
         if self.run is None:                                         # the first look: start from where the arm is
             self.place_arm(self.d.qpos[self.ik.qadr].copy())
         run, t0 = self.run, self.run.t
         if self.views is None:
-            self.views = [(dx, v[0]) for dx in SWEEP if (v := solve_inspection(self.m, self.d, self.row, dx))]
+            self.views = self.inspection_views()
             if not self.views:
                 raise RuntimeError("the arm can't reach any view of the row for the camera")
             views, x_slot = self.views, None                         # the slot where the shelf map has it
@@ -979,6 +1088,12 @@ class Episode:
             with self.viewer.lock():
                 self.viewer.user_scn.ngeom = 0
                 draw_in_viewer(self.viewer.user_scn, est, (self.t, self.h))
+
+    def inspection_views(self):
+        """[(dx, arm angles)] of the views in SWEEP the arm reaches, the scene
+        as it is now. (Its own method so a training env can cache it.)"""
+        from inspection import solve_inspection                     # inspection imports this module
+        return [(dx, v[0]) for dx in SWEEP if (v := solve_inspection(self.m, self.d, self.row, dx))]
 
     def slot_now(self):
         """Where the slot is along the row, at the board: between the
@@ -1211,7 +1326,7 @@ class Episode:
             d.qpos[m.jnt_qposadr[m.joint(j).id]] = 0.04
         d.qvel[:] = 0
         mujoco.mj_forward(m, d)
-        self.run = Runner(m, d, self.ik, q, GRIP_OPEN, self.viewer, self.log)
+        self.run = Runner(m, d, self.ik, q, GRIP_OPEN, self.viewer, self.log, self.residual, self.shelf)
 
     def begin(self, candidates, allowed=frozenset(), finger=None):
         """Get the hand to the start of a step, ready to follow one of the
@@ -1752,18 +1867,22 @@ class Episode:
         so push again by what is missing."""
         name = "left" if side < 0 else "right"
         cmd = target
-        for k in range(tries):
-            self.run.move(f"push the {name} neighbour{' further' if k else ''} to its mark",
-                          *self.push_pose(push_sign, cmd + lean_off - side * FINGER_HALF_W, tip_in),
-                          speed=GAP_PUSH_SPEED)
-            self.feel(side)
-            xl, xr, _, _ = self.slot()
-            short = side * (target - (xl if side < 0 else xr))
-            if short < 0.001 or cmd == limit:
-                return
-            cmd = cmd + side * short                                   # aim past the mark by what is missing
-            if side * (cmd - limit) > 0:
-                cmd = limit
+        hand_at = lambda x: self.push_pose(push_sign, x + lean_off - side * FINGER_HALF_W, tip_in)
+        # The residual may correct the pushes, but never past the room limit, with the fingertips
+        # no deeper than keeps the palm clear of the spines, and the hand above the board.
+        with self.run.contact("widen", lo=(-RESIDUAL_MAX, -(CLEAR - RESIDUAL_FLOOR), -(PUSH_LIFT - RESIDUAL_FLOOR)),
+                              x_limit=(side, self.shelf.to_shelf(hand_at(limit)[0])[0])):
+            for k in range(tries):
+                self.run.move(f"push the {name} neighbour{' further' if k else ''} to its mark", *hand_at(cmd),
+                              speed=GAP_PUSH_SPEED)
+                self.feel(side)
+                xl, xr, _, _ = self.slot()
+                short = side * (target - (xl if side < 0 else xr))
+                if short < 0.001 or cmd == limit:
+                    return
+                cmd = cmd + side * short                               # aim past the mark by what is missing
+                if side * (cmd - limit) > 0:
+                    cmd = limit
 
     # --- Step: stand_up (a neighbour leans into the slot) -----------------------------
     def stand_up(self, side):
@@ -1859,8 +1978,9 @@ class Episode:
             if run.grip != GRIP_CLOSED:
                 run.wait("close the gripper", 0.3, grip=GRIP_CLOSED)
             run.move("put the closed fingers under the leaning book", *self.col_pose(sign, start[0], tip_in, start[1]))
-            run.follow(f"lift it up, {1000 * r:.0f} mm up its face",
-                       [self.col_pose(sign, x, tip_in, z) for x, z in arc], speed=LIFT_SPEED)
+            with run.contact("lift", lo=(-RESIDUAL_MAX, -(CLEAR - RESIDUAL_FLOOR), -RESIDUAL_MAX)):
+                run.follow(f"lift it up, {1000 * r:.0f} mm up its face",
+                           [self.col_pose(sign, x, tip_in, z) for x, z in arc], speed=LIFT_SPEED)
             run.move("take the fingers out", *self.col_pose(sign, arc[-1][0], tip_out, arc[-1][1]))
             run.wait("let it settle", 0.5)
             self.looked()
@@ -1937,8 +2057,9 @@ class Episode:
             run.wait("open the gripper to the book's thickness", 0.3, grip=GRIP_OPEN * opening / 0.04)
             run.move("put the fingers around the leaning book", *pose(0.0))
             self.close_on(opening, "clamp it")
-            run.follow(f"swing it up about its bottom edge, held {1000 * r:.0f} mm up",
-                       [pose(swing * s) for s in np.linspace(0, 1, 25)[1:]], speed=LIFT_SPEED)
+            with run.contact("clamp"):
+                run.follow(f"swing it up about its bottom edge, held {1000 * r:.0f} mm up",
+                           [pose(swing * s) for s in np.linspace(0, 1, 25)[1:]], speed=LIFT_SPEED)
             run.wait("let go", 0.4, grip=GRIP_OPEN * opening / 0.04)
             p_end, R_end = pose(swing)
             run.move("take the fingers out", p_end + R_end @ [0, 0, -0.07])
@@ -2287,16 +2408,22 @@ class Episode:
             """it turns rather than sliding the run"""
             return abs(self.book_yaw(k) - yaw) > math.radians(TURN_STOP_DEG)
 
-        for i in range(2 if stage else 4):                           # the arm gives way under load: push on
-            if not run.move(f"shove it and the books beyond{' further' if i else ''}",
-                            *self.pinch_pose(sign, goal, tip_in, z, psi, pitch), speed=GAP_PUSH_SPEED,
-                            stop_when=turning if turn_stop else None):
-                self.turned = True
-                break
-            gained = self.narrowest_gap(pair) - gap0
-            if gained >= push - 0.001:
-                break
-            goal = x_in + side * min(side * (goal - x_in) + push - gained, push + SHOVE_STEP if stage else room, room)
+        # The residual may correct the shove, but never past the room, with the fingertips no
+        # deeper than keeps them clear of the books pushed back, and the hand above the board.
+        limit = self.shelf.to_shelf(self.pinch_pose(sign, x_in + side * room, tip_in, z, psi, pitch)[0])[0]
+        with run.contact("shove", lo=(-RESIDUAL_MAX, -(clear - RESIDUAL_FLOOR),
+                                      -(z - self.z0 - HAND_HALF_T - RESIDUAL_FLOOR)), x_limit=(side, limit)):
+            for i in range(2 if stage else 4):                       # the arm gives way under load: push on
+                if not run.move(f"shove it and the books beyond{' further' if i else ''}",
+                                *self.pinch_pose(sign, goal, tip_in, z, psi, pitch), speed=GAP_PUSH_SPEED,
+                                stop_when=turning if turn_stop else None):
+                    self.turned = True
+                    break
+                gained = self.narrowest_gap(pair) - gap0
+                if gained >= push - 0.001:
+                    break
+                goal = x_in + side * min(side * (goal - x_in) + push - gained, push + SHOVE_STEP if stage else room,
+                                         room)
         self.info["shove_turn_deg"] = self.info.get("shove_turn_deg", 0.0) + math.degrees(self.book_yaw(k) - yaw)
         # Stop pressing where the arm has got to (it lags under the load, and would spring on
         # when let go), open, ease the fingers off its faces, then take them out.

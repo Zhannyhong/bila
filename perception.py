@@ -16,7 +16,8 @@ What the camera can't see stays out:
 
 Sources of an estimate (each returns a ShelfEstimate):
   GroundTruthPerception   spine faces of the simulated books, exact
-  NoisyPerception         the ground truth with the wrist camera's measured errors: cheap, for training
+  NoisyPerception         the ground truth with the wrist camera's measured errors (each book's,
+                          and one rigid shift of the whole row per episode): cheap, for training
   RGBDPerception          (rgbd_perception.py) spine faces fitted to the wrist camera's depth image
 
 Every source produces spine corners and derives the rest with the same
@@ -293,22 +294,35 @@ class GroundTruthPerception:
 
 
 # What the wrist camera's estimate gets wrong, measured by eval_perception.py
-# (`calibrate`) over 48 scenes, 12 of each scenario: camera ~50 cm from the
-# spines, D405-like depth noise. Per band of |slot offset|, each quantity's
-# error as (median, std), in m or rad; the std is set so that 95% of errors fall
-# where 95% of the camera's do (its errors have heavier tails than a Gaussian).
+# (`calibrate`) over 80 scenes (seeds 1000-1019 of clear, tight, leaning and
+# packed) with the realistic camera insert_book.py --perception camera uses:
+# a D405's stereo errors (DepthNoise.d405) and a calibration error
+# (CalibrationError), the first look's three views fused, ~48 cm from the
+# board's edge. Each quantity's error as (median, std), in m or rad; the std is
+# set so that 95% of errors fall where 95% of the camera's do (its errors have
+# heavier tails than a Gaussian).
+#
+# CAMERA_SYSTEMATIC: the rigid motion of the whole row, fitted per scene (see
+# SYSTEMATIC_PARAMS), over the scenes. It is most of the camera's error: a few
+# mm each way, where each book's own is under 1 mm. Its rotation about the row
+# (rx: the spines seen tipped back, tops further in) is a steady bias of the
+# D405 model, not random.
+CAMERA_SYSTEMATIC = {"x": (-0.00047, 0.00256), "y": (-0.00146, 0.00313), "z": (-0.00013, 0.00249),
+                     "rx": (-0.01216, 0.00492), "ry": (0.00057, 0.00250), "rz": (0.00025, 0.00105)}
+# CAMERA_ERRORS: each book's own error once its scene's rigid motion is taken
+# out, per band of |slot offset|.
 CAMERA_ERRORS = {
-    (1, 1): {"x": (0.00006, 0.00062), "z": (-0.00095, 0.00027), "spine_y": (-0.00000, 0.00002),
-             "thickness": (-0.00045, 0.00148), "height": (0.00070, 0.00047), "lean": (-0.00001, 0.00270),
-             "yaw": (-0.00009, 0.00598)},
-    (2, 3): {"x": (-0.00006, 0.00092), "z": (-0.00089, 0.00029), "spine_y": (-0.00000, 0.00002),
-             "thickness": (0.00215, 0.00151), "height": (0.00082, 0.00049), "lean": (0.00003, 0.00356),
-             "yaw": (0.00026, 0.00989)},
-    (4, 99): {"x": (-0.00004, 0.00177), "z": (-0.00085, 0.00058), "spine_y": (-0.00001, 0.00004),
-              "thickness": (0.00464, 0.00294), "height": (0.00090, 0.00090), "lean": (0.00022, 0.00523),
-              "yaw": (-0.00024, 0.01371)},
+    (1, 1): {"x": (-0.00001, 0.00064), "z": (-0.00011, 0.00059), "spine_y": (0.00004, 0.00041),
+             "thickness": (0.00252, 0.00143), "height": (0.00177, 0.00168), "lean": (0.00006, 0.00468),
+             "yaw": (0.00133, 0.02279)},
+    (2, 3): {"x": (-0.00026, 0.00097), "z": (-0.00016, 0.00069), "spine_y": (-0.00004, 0.00067),
+             "thickness": (0.00399, 0.00193), "height": (0.00165, 0.00171), "lean": (0.00022, 0.00519),
+             "yaw": (0.00212, 0.03945)},
+    (4, 99): {"x": (-0.00001, 0.00118), "z": (-0.00000, 0.00109), "spine_y": (-0.00001, 0.00061),
+              "thickness": (0.00348, 0.00236), "height": (0.00185, 0.00192), "lean": (-0.00012, 0.00536),
+              "yaw": (-0.00554, 0.04176)},
 }
-VIEW_REACH = 0.53   # m: the camera sees books whose outer edge is within this of the slot, along the row
+VIEW_REACH = 0.58   # m: the camera sees books whose outer edge is within this of the slot, along the row
 
 
 def rotation(axis: str, angle: float) -> np.ndarray:
@@ -317,6 +331,68 @@ def rotation(axis: str, angle: float) -> np.ndarray:
     if axis == "y":
         return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
     return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+# ---------------------------------------------------------------------------
+# The camera's systematic error: one rigid motion of everything it sees
+# ---------------------------------------------------------------------------
+# A hand-eye calibration error (where the robot thinks the camera sits on the
+# hand) and the D405's per-camera depth offset don't make each book wrong in
+# its own way: they move the whole estimate together, by the same small
+# rotation and shift, for as long as the camera keeps them (an episode). The
+# controller plans every push from that estimate, so a shared error matters
+# far more than the same amount of independent noise would: every book, and
+# the gap, is off in the same direction. It is written as a shift of the
+# slot's point (slot_pivot) and a rotation vector about it, in the shelf frame.
+SYSTEMATIC_PARAMS = ("x", "y", "z", "rx", "ry", "rz")
+
+
+def slot_pivot(est: ShelfEstimate) -> np.ndarray:
+    """The point the systematic error turns the row about: the slot, at the
+    board's top and front edge."""
+    return np.array([est.slot_x(), est.front_y, est.board_top])
+
+
+def matrix_from_rotvec(w) -> np.ndarray:
+    """Rotation matrix for a rotation vector (axis times angle, rad)."""
+    w = np.asarray(w, dtype=float)
+    angle = np.linalg.norm(w)
+    if angle < 1e-12:
+        return np.eye(3)
+    k = w / angle
+    K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]])
+    return np.eye(3) + math.sin(angle) * K + (1 - math.cos(angle)) * K @ K
+
+
+def rotvec_from_matrix(R) -> np.ndarray:
+    """Rotation vector (axis times angle, rad) of a rotation matrix (angles below 180 deg)."""
+    angle = math.acos(min(1.0, max(-1.0, (np.trace(R) - 1) / 2)))
+    if angle < 1e-12:
+        return np.zeros(3)
+    axis = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]]) / (2 * math.sin(angle))
+    return axis * angle
+
+
+def rigid_shift(params: dict) -> Tuple[np.ndarray, np.ndarray]:
+    """(rotation, translation) for a systematic error given as SYSTEMATIC_PARAMS."""
+    return (matrix_from_rotvec([params["rx"], params["ry"], params["rz"]]),
+            np.array([params["x"], params["y"], params["z"]]))
+
+
+def apply_shift(points, R, t, pivot) -> np.ndarray:
+    """Points moved by the rigid motion (R, t) about `pivot`: R (p - pivot) + pivot + t."""
+    return (np.asarray(points) - pivot) @ R.T + pivot + t
+
+
+def fit_rigid(src, dst, pivot) -> Tuple[np.ndarray, np.ndarray]:
+    """The rigid motion (R, t) about `pivot` that best maps points src onto dst,
+    in the least-squares sense (Kabsch): dst ~ apply_shift(src, R, t, pivot)."""
+    src, dst = np.asarray(src) - pivot, np.asarray(dst) - pivot
+    cs, cd = src.mean(axis=0), dst.mean(axis=0)
+    U, _, Vt = np.linalg.svd((src - cs).T @ (dst - cd))
+    flip = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])     # a rotation, never a mirror
+    R = Vt.T @ flip @ U.T
+    return R, cd - R @ cs
 
 
 def perturb_spine(corners, err: dict) -> np.ndarray:
@@ -342,16 +418,29 @@ class NoisyPerception:
     look like the wrist camera's, at a fraction of the cost (no rendering):
       - each book's position, size, lean and swivel get the camera's measured
         error for its distance from the slot (CAMERA_ERRORS): its bias, plus
-        Gaussian noise with its spread times `scale`;
+        Gaussian noise with its spread times `scale`, drawn anew every estimate;
+      - then everything seen moves by one rigid motion (CAMERA_SYSTEMATIC): the
+        camera's hand-eye calibration and depth offset. It is drawn once, when
+        this object is made, and kept for every estimate after: make one
+        NoisyPerception per episode, as each episode is a new camera;
       - books, and side panels, further along the row from the slot than the
         camera sees (VIEW_REACH) are left out.
     Everything derived (thickness, angles, the gap) is recomputed from the
-    changed corners. scale > 1 trains on worse estimates than the camera's."""
+    changed corners. scale > 1 trains on worse estimates than the camera's.
+    systematic=None leaves out the rigid motion (the books' errors are then
+    independent, as the basic camera's are)."""
 
     def __init__(self, source: Perception, rng: np.random.Generator, scale: float = 1.0,
-                 errors: dict = CAMERA_ERRORS, reach: float = VIEW_REACH):
+                 errors: dict = CAMERA_ERRORS, reach: float = VIEW_REACH,
+                 systematic: Optional[dict] = CAMERA_SYSTEMATIC):
         self.source, self.rng, self.scale = source, rng, scale
         self.errors, self.reach = errors, reach
+        # Drawn from its own stream, split off rng without drawing from it (as
+        # WristCamera does), so the books' noise for a seed is the same with or without it.
+        shift_rng, = rng.spawn(1)
+        self.shift = None if systematic is None else {
+            k: mean + scale * std * shift_rng.normal() for k, (mean, std) in systematic.items()}
+        self.pivot = None          # slot_pivot of the first estimate: the camera's error is fixed, not the slot
 
     def error_for(self, slot_offset: int) -> dict:
         """A random error for a book this far from the slot."""
@@ -361,12 +450,15 @@ class NoisyPerception:
     def estimate(self, data: mujoco.MjData) -> ShelfEstimate:
         est = self.source.estimate(data)
         x_slot = est.slot_x()
+        if self.pivot is None:
+            self.pivot = slot_pivot(est)
+        R, t = rigid_shift(self.shift) if self.shift is not None else (np.eye(3), np.zeros(3))
         books = []
         for b in est.books:
             outer = b.spine_corners[0, 0] if b.slot_offset < 0 else b.spine_corners[1, 0]
             if abs(outer - x_slot) > self.reach:
                 continue
-            corners = perturb_spine(b.spine_corners, self.error_for(b.slot_offset))
+            corners = apply_shift(perturb_spine(b.spine_corners, self.error_for(b.slot_offset)), R, t, self.pivot)
             books.append(book_from_spine(corners, b.slot_offset, b.depth, b.visible))
         panels = tuple(x if x is not None and abs(x - x_slot) <= self.reach else None for x in est.panel_x)
         widths = gap_profile(books, panels, est.board_top, est.gap_heights)
