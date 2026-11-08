@@ -18,11 +18,19 @@ stores the ground truth and three camera estimates side by side:
   realistic   a D405's stereo errors and depth offset (DepthNoise.d405()) and a
               hand-eye / intrinsics calibration error (CalibrationError()),
               as insert_book.py --perception camera uses.
+With `--segmenter segmenter.pt` it also stores, from the realistic camera's
+own images:
+  learned     book masks from the learned segmenter (learned_segmenter.py)
+              instead of the simulation's object ids, and spines fitted with
+              RGBDPerception(robust_fit=True), as learned masks need;
+  robust      the object ids' masks with that same fit: the difference to
+              `learned` is the segmenter's alone.
 The slow part (solving the arm poses, rendering) then happens once; `report`,
 and the calibration of NoisyPerception, read the stored estimates.
 
 Every camera book is matched to its true book by the simulation's object id,
-so errors are book for book. Errors are reported by how far the book stands
+so errors are book for book. (A learned mask has no id: it takes the id of
+the true book whose mask it overlaps most, learned_segmenter.OracleLabelled.) Errors are reported by how far the book stands
 from the slot (|slot offset| 1, 2-3, 4-6), since the policy needs the
 neighbours most.
 
@@ -30,6 +38,11 @@ The realistic camera's error has two parts, calibrated separately: a rigid
 motion of the whole row, the same for every book in a scene (its calibration
 and depth offset: perception.CAMERA_SYSTEMATIC), fitted per scene; and what
 is left of each book's error once that is taken out (perception.CAMERA_ERRORS).
+
+`calibrate --kind learned` and `validate --kind learned` do the same for the
+learned pipeline (perception.LEARNED_CAMERA_*, NoisyPerception.learned), and
+`calibrate` also counts what NoisyPerception doesn't imitate: books within
+reach the camera missed, and books it named a place off.
 """
 
 from __future__ import annotations
@@ -49,7 +62,7 @@ from perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstimate, apply_sh
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PATH = os.path.join(HERE, "scenes", "perception_eval.pkl")
 OFFSET_BINS = {"neighbours (1)": (1, 1), "near (2-3)": (2, 3), "further (4-6)": (4, 6)}
-KINDS = ("perfect", "basic", "realistic")
+KINDS = ("perfect", "basic", "realistic", "robust", "learned")   # robust, learned: only with collect --segmenter
 CALIBRATE_ON = "realistic"            # the camera NoisyPerception imitates
 COLLECT_SCENARIOS = ("clear", "tight", "leaning", "packed")   # collapsed is out of the project's scope
 FIRST_SEED = 1000                     # clear of the controllers' test seeds (0-49) and their training seeds
@@ -69,11 +82,24 @@ class SceneRecord:
 # ---------------------------------------------------------------------------
 # Collect
 # ---------------------------------------------------------------------------
+_segmenters = {}                      # learned segmenters loaded in this process, by weights file
+
+
+def learned_segmenter(weights: str):
+    if weights not in _segmenters:
+        from learned_segmenter import LearnedSegmenter
+        _segmenters[weights] = LearnedSegmenter(weights)
+    return _segmenters[weights]
+
+
 def collect_scene(task) -> Optional[SceneRecord]:
     """One scene's SceneRecord, or None if the arm reaches no view of it. Each
     camera kind gets its own camera, seeded with the scene's seed, as
-    insert_book.make_eyes makes one."""
-    scenario, seed = task
+    insert_book.make_eyes makes one. task: (scenario, seed) or (scenario,
+    seed, segmenter weights) to add the learned kind."""
+    scenario, seed, *weights = task
+    if weights:
+        import learned_segmenter as _  # noqa: F401  (imports torch._dynamo, needed before the first render)
     from camera import CalibrationError, DepthNoise, WristCamera
     from insert_book import SWEEP
     from inspection import look_from, solve_inspection
@@ -102,6 +128,14 @@ def collect_scene(task) -> Optional[SceneRecord]:
                 frames.append(perception.capture(data))
             camera[kind] = perception.estimate_from_frames(frames)
             truth_for[kind] = [index.get(g) for g in perception.last_labels]
+        if kind == "realistic" and weights:
+            from learned_segmenter import OracleLabelled
+            for other, segmenter in (("robust", None),
+                                     ("learned", OracleLabelled(learned_segmenter(weights[0]), model))):
+                p = RGBDPerception(model, row, camera=cam, segmenter=segmenter,   # cam is closed: these frames only
+                                   robust_fit=True)
+                camera[other] = p.estimate_from_frames(frames)
+                truth_for[other] = [index.get(g) for g in p.last_labels]
     standoff = min(views, key=lambda v: abs(v[0]))[1][1]
     print(f"{scenario} {seed}: {len(views)} views, {len(camera['realistic'].books)} of {len(truth.books)} books found",
           flush=True)
@@ -109,8 +143,9 @@ def collect_scene(task) -> Optional[SceneRecord]:
                        truth, camera, truth_for)
 
 
-def collect(scenarios, first_seed: int, seeds: int, path: str, workers: int = 1):
-    tasks = [(s, seed) for s in scenarios for seed in range(first_seed, first_seed + seeds)]
+def collect(scenarios, first_seed: int, seeds: int, path: str, workers: int = 1, segmenter: Optional[str] = None):
+    tasks = [(s, seed) + ((segmenter,) if segmenter else ()) for s in scenarios
+             for seed in range(first_seed, first_seed + seeds)]
     if workers > 1:
         from multiprocessing import Pool
         with Pool(workers) as pool:
@@ -333,6 +368,10 @@ def report(records: List[SceneRecord]):
             continue
         ok, n = naming(records, kind)
         print(f"== {kind} camera: books named as in the truth {ok}/{n}")
+        if kind == "learned":
+            est = sum(len(r.camera[kind].books) for r in records)
+            true = sum(len(r.truth.books) for r in records)
+            print(f"   books found {n} of {true} in the row; {est - n} estimates match no true book")
         shift, n_fit = systematic_stats(records, kind)
         print(f"   whole-row shift (median / std, over {n_fit} scenes): "
               + ", ".join(f"{p} {1000 * m:+.2f}/{1000 * s:.2f} mm" for p, (m, s) in shift.items() if p in ("x", "y", "z"))
@@ -358,20 +397,48 @@ def report(records: List[SceneRecord]):
               f"whole side {100 * whole:.0f}% of sides\n")
 
 
-def print_calibration(records: List[SceneRecord]):
-    """NoisyPerception's settings, measured on the realistic camera: the
+def failures(records: List[SceneRecord], kind: str, reach: float):
+    """Per NOISE_BANDS band, over the true books whose outer edge is within
+    `reach` of the slot: (books, share the camera missed, share it found but
+    named a place off). NoisyPerception imitates neither."""
+    out = {}
+    for band in NOISE_BANDS:
+        n = missed = misnamed = 0
+        for rec in records:
+            x_slot = rec.truth.slot_x()
+            found = {i: b for b, i in zip(rec.camera[kind].books, rec.truth_for[kind]) if i is not None}
+            for i, t in enumerate(rec.truth.books):
+                outer = t.spine_corners[0, 0] if t.slot_offset < 0 else t.spine_corners[1, 0]
+                if not band[0] <= abs(t.slot_offset) <= band[1] or abs(outer - x_slot) > reach:
+                    continue
+                n += 1
+                missed += i not in found
+                misnamed += i in found and found[i].slot_offset != t.slot_offset
+        out[band] = (n, missed / max(n, 1), misnamed / max(n, 1))
+    return out
+
+
+def print_calibration(records: List[SceneRecord], kind: str = CALIBRATE_ON):
+    """NoisyPerception's settings, measured on the `kind` camera: the
     whole-row shift it shares across a scene's books, each book's error once
-    that is taken out, and how far along the row it sees."""
-    shift, n_fit = systematic_stats(records)
+    that is taken out, and how far along the row it sees; then the books it
+    missed or misnamed, which NoisyPerception doesn't imitate."""
+    prefix = "" if kind == CALIBRATE_ON else f"{kind.upper()}_"
+    shift, n_fit = systematic_stats(records, kind)
     inner = ", ".join(f'"{p}": ({m:.5f}, {sd:.5f})' for p, (m, sd) in shift.items())
-    print(f"CAMERA_SYSTEMATIC = {{{inner}}}   # {n_fit} scenes")
-    stats, counts, outliers = noise_stats(without_systematic(records))
-    print("CAMERA_ERRORS = {   # |slot offset| band: {quantity: (median, std)}, m or rad")
+    print(f"{prefix}CAMERA_SYSTEMATIC = {{{inner}}}   # {n_fit} scenes")
+    stats, counts, outliers = noise_stats(without_systematic(records, kind), kind)
+    print(f"{prefix}CAMERA_ERRORS = {{   # |slot offset| band: {{quantity: (median, std)}}, m or rad")
     for band, by_param in stats.items():
         inner = ", ".join(f'"{p}": ({m:.5f}, {sd:.5f})' for p, (m, sd) in by_param.items())
         print(f"    {band}: {{{inner}}},   # {counts[band]} books, {100 * outliers[band]:.0f}% with an outlier")
     print("}")
-    print(f"VIEW_REACH = {view_reach(records):.3f}   # m along the row from the slot")
+    reach = view_reach(records, kind)
+    print(f"{prefix}VIEW_REACH = {reach:.3f}   # m along the row from the slot")
+    print(f"# not imitated, of the books within reach: missed / named a place off")
+    for band, (n, missed, misnamed) in failures(records, kind, reach).items():
+        print(f"#   |slot offset| {band[0]}-{band[1] if band[1] < 99 else 'more'}: "
+              f"{100 * missed:.1f}% / {100 * misnamed:.1f}% of {n}")
 
 
 class _Fixed:
@@ -383,29 +450,32 @@ class _Fixed:
         return self.est
 
 
-def with_model(records: List[SceneRecord], seed: int = 0) -> List[SceneRecord]:
+def with_model(records: List[SceneRecord], seed: int = 0, **calibration) -> List[SceneRecord]:
     """The records with a "model" estimate added: NoisyPerception (as
-    calibrated in perception.py) on each scene's ground truth."""
+    calibrated in perception.py, or with `calibration`: errors, systematic,
+    reach) on each scene's ground truth."""
     from dataclasses import replace
     from perception import NoisyPerception
     rng = np.random.default_rng(seed)
     out = []
     for rec in records:
-        est = NoisyPerception(_Fixed(rec.truth), rng).estimate(None)
+        est = NoisyPerception(_Fixed(rec.truth), rng, **calibration).estimate(None)
         index = {t.slot_offset: i for i, t in enumerate(rec.truth.books)}
         out.append(replace(rec, camera={**rec.camera, "model": est},
                            truth_for={**rec.truth_for, "model": [index[b.slot_offset] for b in est.books]}))
     return out
 
 
-def print_validation(records: List[SceneRecord]):
-    """The realistic camera's errors next to NoisyPerception's: the whole-row
-    shift, each book's error with and without it, and the gap and the books
-    seen."""
-    records = with_model(records)
-    kinds = (CALIBRATE_ON, "model")
+def print_validation(records: List[SceneRecord], kind: str = CALIBRATE_ON):
+    """The `kind` camera's errors next to NoisyPerception's as calibrated for
+    it (the learned constants for "learned", else the defaults): the
+    whole-row shift, each book's error with and without it, and the gap and
+    the books seen."""
+    from perception import LEARNED_CALIBRATION
+    records = with_model(records, **(LEARNED_CALIBRATION if kind == "learned" else {}))
+    kinds = (kind, "model")
     unit = lambda q: (180 / math.pi, "deg") if q in ("lean", "yaw", "rx", "ry", "rz") else (1000, "mm")
-    print(f"median / std of the error: camera ({CALIBRATE_ON})  vs  NoisyPerception")
+    print(f"median / std of the error: camera ({kind})  vs  NoisyPerception")
     (cam, n_cam), (mod, n_mod) = (systematic_stats(records, k) for k in kinds)
     print(f"  whole-row shift ({n_cam} vs {n_mod} scenes)")
     for q in SYSTEMATIC_PARAMS:
@@ -413,8 +483,8 @@ def print_validation(records: List[SceneRecord]):
         (cm, cs), (mm, ms) = cam[q], mod[q]
         print(f"    {q:10s} {k * cm:+7.2f} / {k * cs:5.2f}   vs  {k * mm:+7.2f} / {k * ms:5.2f}  {u}")
     for label, recs in (("each book, shift included", records),
-                        ("each book, shift taken out", without_systematic(without_systematic(records), "model"))):
-        cam, _, _ = noise_stats(recs, CALIBRATE_ON)
+                        ("each book, shift taken out", without_systematic(without_systematic(records, kind), "model"))):
+        cam, _, _ = noise_stats(recs, kind)
         mod, _, _ = noise_stats(recs, "model")
         print(f"  {label}")
         for band in cam:
@@ -423,9 +493,9 @@ def print_validation(records: List[SceneRecord]):
                 k, u = unit(q)
                 (cm, cs), (mm, ms) = cam[band][q], mod[band][q]
                 print(f"    {q:10s} {k * cm:+7.2f} / {k * cs:5.2f}   vs  {k * mm:+7.2f} / {k * ms:5.2f}  {u}")
-    for kind, name in ((CALIBRATE_ON, "camera"), ("model", "NoisyPerception")):
-        _, narrowest, unseen = gap_errors(records, kind)
-        sides = [k for rec in records for k, _ in seen_per_side(rec, kind)]
+    for which, name in ((kind, "camera"), ("model", "NoisyPerception")):
+        _, narrowest, unseen = gap_errors(records, which)
+        sides = [k for rec in records for k, _ in seen_per_side(rec, which)]
         known = narrowest[~np.isnan(narrowest)]
         print(f"  {name:16s} narrowest gap error: median {1000 * np.median(known):+.2f}, 95% |.| "
               f"{1000 * np.percentile(np.abs(known), 95):.2f} mm (unknown in {len(narrowest) - len(known)} of "
@@ -439,16 +509,20 @@ def main():
     ap.add_argument("--first-seed", type=int, default=FIRST_SEED, help="collect: seeds first-seed .. first-seed+seeds-1")
     ap.add_argument("--scenarios", nargs="+", default=list(COLLECT_SCENARIOS), help="collect: scenarios")
     ap.add_argument("--workers", type=int, default=1, help="collect: scenes rendered in parallel")
+    ap.add_argument("--segmenter", help="collect: learned segmenter weights, to add the learned kind")
+    ap.add_argument("--kind", default=CALIBRATE_ON, choices=KINDS, help="calibrate, validate: the camera to imitate")
     ap.add_argument("--path", default=DEFAULT_PATH)
     a = ap.parse_args()
+    path = os.path.expanduser(a.path)
     if a.command == "collect":
-        collect(a.scenarios, a.first_seed, a.seeds, a.path, a.workers)
+        collect(a.scenarios, a.first_seed, a.seeds, path, a.workers,
+                os.path.expanduser(a.segmenter) if a.segmenter else None)
     elif a.command == "report":
-        report(load(a.path))
+        report(load(path))
     elif a.command == "calibrate":
-        print_calibration(load(a.path))
+        print_calibration(load(path), a.kind)
     else:
-        print_validation(load(a.path))
+        print_validation(load(path), a.kind)
 
 
 if __name__ == "__main__":

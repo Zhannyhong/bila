@@ -260,3 +260,38 @@ def test_calibration_takes_the_shift_back_out(leaning_scene):
     back = without_systematic([rec])[0].camera["realistic"]
     for b in back.books:
         np.testing.assert_allclose(b.spine_corners, truth.books[index[b.slot_offset]].spine_corners, atol=1e-9)
+
+
+def test_learned_calibration_is_opt_in(leaning_scene):
+    """NoisyPerception's defaults stay the camera's (gap_env trains on them);
+    NoisyPerception.learned uses the learned pipeline's calibration."""
+    from perception import CAMERA_SYSTEMATIC, LEARNED_CALIBRATION, LEARNED_CAMERA_ERRORS
+    model, data, row = leaning_scene
+    gt = GroundTruthPerception(model, row)
+    default = NoisyPerception(gt, np.random.default_rng(7))
+    assert default.errors is CAMERA_ERRORS and default.reach == VIEW_REACH
+    learned = NoisyPerception.learned(gt, np.random.default_rng(7))
+    assert learned.errors is LEARNED_CAMERA_ERRORS
+    same = NoisyPerception(gt, np.random.default_rng(7), **LEARNED_CALIBRATION)
+    assert learned.shift == same.shift
+    for a, b in zip(learned.estimate(data).books, same.estimate(data).books):
+        np.testing.assert_array_equal(a.spine_corners, b.spine_corners)
+    assert set(CAMERA_SYSTEMATIC) == set(LEARNED_CALIBRATION["systematic"])
+
+
+def test_failures_counts_missed_and_misnamed_books(leaning_scene):
+    """eval_perception.failures: of the true books within reach, the share the
+    camera missed and the share it named a place off."""
+    from dataclasses import replace
+    from eval_perception import SceneRecord, failures
+    model, data, row = leaning_scene
+    truth = GroundTruthPerception(model, row).estimate(data)
+    near = [i for i, t in enumerate(truth.books) if abs(t.slot_offset) == 1]
+    gone, renamed = near[0], near[1]
+    books = [replace(t, slot_offset=t.slot_offset + 1) if i == renamed else t
+             for i, t in enumerate(truth.books) if i != gone]
+    index = [i for i in range(len(truth.books)) if i != gone]
+    rec = SceneRecord("leaning", 0, 0.5, (0.03, 0.25), truth, {"learned": replace(truth, books=books)},
+                      {"learned": index})
+    n, missed, misnamed = failures([rec], "learned", reach=10.0)[(1, 1)]
+    assert n == len(near) and missed == pytest.approx(1 / n) and misnamed == pytest.approx(1 / n)

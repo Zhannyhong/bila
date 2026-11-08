@@ -18,6 +18,9 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 | `cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython cart_demo.py --scenario tight --view`) |
 | `insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
 | `perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
+| `make_vision_dataset.py` | Training images for the learned perception: RGB-D, a mask per book, and every sticker's corners and text |
+| `learned_segmenter.py` | Book masks from the colour image (Mask R-CNN), in place of the simulation's object ids |
+| `label_reader.py` | Finds and reads call-number stickers in an image and matches them to the catalogue (`cart_demo.py --labels learned`) |
 | `notebooks/` | Beginner's guide to the simulator and the RL/POMDP setup with PBBM's book labels (`01_...`), and a breakdown of how the PBBM robot shelved books (`02_...`) |
 | `mujoco_menagerie/` | Git submodule with the Panda model |
 | `scenes/` | Generated scenes (git-ignored) |
@@ -944,6 +947,110 @@ uv run python eval_perception.py validate                # NoisyPerception's err
   and thickness separately, where the camera's errors at a spine's two edges partly cancel.
 - `uv run python visualize.py --scenario leaning --seed 0 --camera [--noisy]` saves the camera image with the
   estimate outlined, and the estimate's front and top view with the ground truth dashed.
+
+**Learned book masks** (`learned_segmenter.py`): the camera estimate's one cheat is step 1, reading book masks
+off the simulation's object ids (`OracleSegmenter`, still the default). `LearnedSegmenter` finds them in the
+colour image instead, with Mask R-CNN (torchvision, fine-tuned from COCO, one class "book"):
+
+```bash
+uv sync --group rl                                                      # torch, torchvision
+# training data (WSL; ~1.8 h on 5 workers, 3.3 GB): shelf and cart scenes, seeds from 2000
+MUJOCO_GL=egl uv run python make_vision_dataset.py --out ~/bila_data/train --first-seed 2000 --scenes 670 --workers 5
+MUJOCO_GL=egl uv run python make_vision_dataset.py --out ~/bila_data/val --first-seed 9000 --scenes 70 --workers 5
+uv run python learned_segmenter.py train --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/segmenter
+uv run python learned_segmenter.py eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
+MUJOCO_GL=egl uv run python eval_perception.py collect --workers 3 --segmenter ~/bila_data/segmenter/segmenter.pt \
+    --path ~/bila_data/perception_eval_learned.pkl                     # adds "robust" and "learned" kinds
+```
+
+```python
+from learned_segmenter import LearnedSegmenter
+with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robust_fit=True) as perception: ...
+```
+
+- Data (`make_vision_dataset.py`): 2938 training and 309 validation images, 1280 x 720, from real arm poses (the
+  sweep views, random views, row and tray cameras, sticker close-ups) in all five scenarios. Half the shelves are
+  plain boxes, half have covers (sampled, the PBBM books, or page sections); lighting and colours vary; D405 depth
+  noise. Each image has an instance mask (one id per book, sticker included) and the stickers' corners and text.
+- Training: 8 epochs, 2.1 h on an RTX 3050 Ti (4 GB; mixed precision, 2 images a batch). Inference 0.24 s an image.
+- Against the oracle's masks on the validation images (a book is found if a mask overlaps it with IoU >= 0.5):
+  93% of target-row books showing 2000+ pixels, mean IoU 0.93; in the sweep views 93% found and 97% of masks are a
+  book. Small far books do worse (tray camera 53%).
+- `robust_fit=True` is needed with learned masks. The spine fit takes the smallest rectangle around a mask's spine
+  pixels; a learned mask bleeds a few pixels onto the next spine, in about the same plane, and on a tilted book
+  that stretched the rectangle by 10 to 50 mm. The robust fit drops strips across the spine that hold few points
+  (a real spine fills each from bottom to top) and fits again. It is off by default, so the oracle pipeline (and
+  everything calibrated on it) is unchanged; it would help the oracle's masks a little too (narrowest gap in
+  leaning rows, 95%: 4.1 mm against 6.3).
+- Whole estimate, `eval_perception.py` (80 scenes; the realistic camera's own images, with the robust fit for
+  both, so only the masks differ): 1144 of 1151 books found, 2 estimates that are no book, 1125 of 1144 named
+  right (oracle masks: 1150 of 1152). Narrowest gap up to the book's height, 95% within 4.4 mm (oracle masks 3.8):
+  per scenario 3.8 (3.8) clear, 2.7 (2.7) tight, 1.5 (1.5) packed, and 8.8 (4.1) leaning, where masks of books
+  leaning on each other are still the weak point. Neighbours' thickness, 95% within 4.3 mm (3.6).
+- Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
+  the evaluations can match books.
+- To see what the models see in one scene (~1.5 min each; weights in `~/bila_data`, `--weights` otherwise):
+
+  ```bash
+  MUJOCO_GL=egl uv run python visualize.py --scenario leaning --seed 3 --learned          # scenes/learned_*.png
+  MUJOCO_GL=egl uv run python visualize.py --scenario tight --seed 1 --learned --cart     # scenes/stickers_*.png
+  ```
+
+  `--learned`: the first look's three views with the learned masks in colour, books missed outlined red, masks
+  that are no book magenta, each target-row book's mask IoU, and the fitted spines; plus
+  `estimate_learned_*.png`, its estimate with the one from the simulation's masks dotted and the truth dashed.
+  `--learned --cart`: row_cam, tray_cam, a wrist close-up at the slot and a wrist view of the tray, every sticker
+  found labelled with what was read and how sure (green right, red wrong, grey unreadable), missed ones dashed.
+- `NoisyPerception.learned(source, rng)` imitates this pipeline instead of the camera with the simulation's masks
+  (`perception.LEARNED_CALIBRATION`, from `eval_perception.py calibrate --kind learned` on those 80 scenes;
+  `validate --kind learned` checks it). The default `NoisyPerception`, which `gap_env.py` trains on, is unchanged.
+  Against it: each book's own error spreads more (position x, z about 1.3x; lean about 2x, from masks of books
+  leaning on each other), the whole-row shift a little more along the row and up (std 3.2 and 3.4 mm, against 2.6
+  and 2.5), and thickness is less biased (+2.1 to +2.5 mm, against +2.5 to +4.0: the robust fit). Not imitated:
+  the learned pipeline misses about 0.6% of the books within the camera's reach and names 2.7% of those four or
+  more from the slot a place off (the camera with the simulation's masks: none, 0.3%).
+
+**Reading call-number stickers** (`label_reader.py`): `cart_demo.py` reads the stickers' numbers off the
+simulation by default; `--labels learned` reads them from the camera images.
+
+```bash
+uv run python label_reader.py train-finder --data ~/bila_data/train --out ~/bila_data/labels   # ~17 min
+uv run python label_reader.py train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels --epochs 10
+uv run python label_reader.py eval --data ~/bila_data/val --weights ~/bila_data/labels
+MUJOCO_GL=egl uv run python cart_demo.py --scenario tight --labels learned    # weights from ~/bila_data/labels
+```
+
+- Find: a small segmentation network (LR-ASPP MobileNetV3, from COCO) marks the middle 60% of each sticker, so
+  that stickers on neighbouring books come out apart; each piece's outline, grown back, gives its corners. A colour
+  rule doesn't do: white covers and printed labels merge with the stickers.
+- Read: the sticker is straightened from its corners and its two lines (class, author mark) cut out where the
+  label prints them; a small CRNN reads each, in all four orientations (tilted books, the tray from above). It is
+  trained on crops at the true corners, jittered, and at the finder's own corners.
+- Match: every catalogue entry (each sticker's text, as the library knows it) is scored by the network's
+  probability of reading it; the confidence is the best entry's share. Under 0.99 it says "unreadable": a misread
+  puts a book in the wrong place, an unreadable sticker only costs another look.
+- On the validation images (146 with stickers, 0.23 s an image), of the stickers in view:
+
+  | camera | distance | found | read right | read wrong | unreadable |
+  | --- | --- | --- | --- | --- | --- |
+  | wrist close-up of the row | < 25 cm | 99% | 79% | 0% | 20% |
+  | wrist close-up of the tray | < 25 cm | 100% | 85% | 0% | 15% |
+  | wrist close-up of the tray | 25-50 cm | 100% | 76% | 0% | 24% |
+  | wrist, inspection sweep | 25-50 cm | 94% | 63% | 0.7% | 30% |
+  | row_cam | 50-100 cm | 55% | 12% | 0.1% | 43% |
+  | tray_cam | 50-100 cm | 46% | 19% | 0% | 28% |
+
+  0.15% of the stickers found are read wrong (0.8% at confidence 0.9). Most close-ups left unreadable are thin
+  books: the label shrinks its text to the sticker's width. tray_cam gets no depth on half the stickers, and finds
+  few of those.
+- So the cart's cameras mostly find stickers and the wrist reads them: in the tray, a view of the whole tray from
+  ~30 cm, then a close-up of any sticker still unread; in the row, close-ups (~18 cm) near the slot, at the unread
+  sticker nearest the map's place for it, until the two books whose numbers bracket the book's are read side by
+  side. A sticker read is tied to its book by the simulation's object ids under it (bookkeeping: the demo names
+  books by body).
+- In 12 cart scenes (clear, tight, leaning, packed; seeds 0-2): all 5 tray books read in every one, no number
+  misread, and the right slot found in 10. In the other two the one book between the bracketing pair stayed
+  unreadable (a thin book), and the demo stops rather than guess.
 
 **What the policy sees** (`observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
 

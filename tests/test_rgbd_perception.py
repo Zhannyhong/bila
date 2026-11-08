@@ -58,6 +58,29 @@ def test_fit_spine_recovers_a_leaning_rectangle():
     assert book.lean == pytest.approx(lean, abs=1e-3)
 
 
+def test_robust_fit_ignores_stray_points_on_the_next_spine():
+    """The leaning spine above plus a 4 x 4 mm patch of points 10 mm past its
+    top right corner (a learned mask bleeding onto the next book): the plain
+    fit stretches to reach it, the robust one doesn't, and with no stray
+    points both agree."""
+    lean = math.radians(20)
+    across, up = np.array([math.cos(lean), 0, -math.sin(lean)]), np.array([math.sin(lean), 0, math.cos(lean)])
+    a, b = np.meshgrid(np.linspace(0, 0.03, 40), np.linspace(0, 0.25, 300))
+    origin = np.array([0.1, 0.1, 0.5])
+    spine = origin + a.reshape(-1, 1) * across + b.reshape(-1, 1) * up
+    c, d = np.meshgrid(np.linspace(0.04, 0.044, 5), np.linspace(0.20, 0.204, 5))
+    stray = origin + c.reshape(-1, 1) * across + d.reshape(-1, 1) * up
+    p = np.vstack([spine, stray])
+    normals = np.tile([0.0, 1.0, 0.0], (len(p), 1))
+    plain = book_from_spine(fit_spine(p, normals, pixel_size=0.001, grow_px=0), -1, 0.17, 1.0)
+    robust = book_from_spine(fit_spine(p, normals, pixel_size=0.001, grow_px=0, robust=True), -1, 0.17, 1.0)
+    assert plain.thickness > 0.04
+    assert robust.thickness == pytest.approx(0.03, abs=1e-3)
+    assert robust.lean == pytest.approx(lean, abs=2e-3)
+    clean = fit_spine(spine, normals[:len(spine)], pixel_size=0.001, grow_px=0, robust=True)
+    assert np.allclose(clean, fit_spine(spine, normals[:len(spine)], pixel_size=0.001, grow_px=0), atol=1e-4)
+
+
 def test_gap_is_unknown_without_a_neighbour():
     left = book_from_spine([[-0.05, 0, 0], [-0.02, 0, 0], [-0.02, 0, 0.2], [-0.05, 0, 0.2]], -2, 0.17, 1.0)
     right = book_from_spine([[0.02, 0, 0], [0.05, 0, 0], [0.05, 0, 0.2], [0.02, 0, 0.2]], +1, 0.17, 1.0)
