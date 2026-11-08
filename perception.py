@@ -324,6 +324,31 @@ CAMERA_ERRORS = {
 }
 VIEW_REACH = 0.58   # m: the camera sees books whose outer edge is within this of the slot, along the row
 
+# The same, measured the same way (`calibrate --kind learned`), for the learned
+# pipeline: the same camera and views, with book masks from the learned
+# segmenter (learned_segmenter.py) and the robust spine fit it needs. Not the
+# default: NoisyPerception.learned(...) imitates it. Against the camera above:
+# each book's error spreads more (x, z ~1.3x; lean ~2x, from masks of books
+# leaning on each other), the whole-row shift a little more along the row and
+# up (x, z), and thickness is less biased (the robust fit: +2.1 mm, not +2.5 to
+# +4.0). Not imitated: it misses ~0.6% of books within reach and names ~2.7% of
+# those 4 or more from the slot a place off (the realistic camera: 0%, 0.3%).
+LEARNED_CAMERA_SYSTEMATIC = {"x": (-0.00005, 0.00319), "y": (-0.00151, 0.00314), "z": (-0.00009, 0.00340),
+                             "rx": (-0.01219, 0.00497), "ry": (0.00137, 0.00265), "rz": (0.00025, 0.00101)}
+LEARNED_CAMERA_ERRORS = {
+    (1, 1): {"x": (-0.00006, 0.00083), "z": (-0.00012, 0.00074), "spine_y": (0.00004, 0.00041),
+             "thickness": (0.00205, 0.00160), "height": (0.00169, 0.00185), "lean": (0.00020, 0.00887),
+             "yaw": (0.00147, 0.02267)},
+    (2, 3): {"x": (-0.00015, 0.00136), "z": (-0.00019, 0.00087), "spine_y": (-0.00006, 0.00070),
+             "thickness": (0.00249, 0.00199), "height": (0.00131, 0.00193), "lean": (-0.00004, 0.00745),
+             "yaw": (0.00443, 0.04046)},
+    (4, 99): {"x": (0.00003, 0.00130), "z": (0.00000, 0.00111), "spine_y": (-0.00001, 0.00064),
+              "thickness": (0.00221, 0.00250), "height": (0.00143, 0.00218), "lean": (-0.00050, 0.00719),
+              "yaw": (-0.00491, 0.04200)},
+}
+LEARNED_VIEW_REACH = 0.58
+LEARNED_CALIBRATION = dict(errors=LEARNED_CAMERA_ERRORS, systematic=LEARNED_CAMERA_SYSTEMATIC, reach=LEARNED_VIEW_REACH)
+
 
 def rotation(axis: str, angle: float) -> np.ndarray:
     """Rotation by angle (rad) about the shelf's y or z axis."""
@@ -441,6 +466,12 @@ class NoisyPerception:
         self.shift = None if systematic is None else {
             k: mean + scale * std * shift_rng.normal() for k, (mean, std) in systematic.items()}
         self.pivot = None          # slot_pivot of the first estimate: the camera's error is fixed, not the slot
+
+    @classmethod
+    def learned(cls, source: Perception, rng: np.random.Generator, scale: float = 1.0) -> "NoisyPerception":
+        """Imitating the learned pipeline (learned masks, robust fit) instead
+        of the camera with the simulation's masks: LEARNED_CALIBRATION."""
+        return cls(source, rng, scale, **LEARNED_CALIBRATION)
 
     def error_for(self, slot_offset: int) -> dict:
         """A random error for a book this far from the slot."""
