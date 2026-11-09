@@ -18,6 +18,7 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 | `cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython cart_demo.py --scenario tight --view`) |
 | `insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
 | `perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
+| `eval_reshelve.py` | The controller alone on many rows with a chosen perception (truth, camera, learned masks, noise models), in parallel, and those side by side |
 | `make_vision_dataset.py` | Training images for the learned perception: RGB-D, a mask per book, and every sticker's corners and text |
 | `learned_segmenter.py` | Book masks from the colour image (Mask R-CNN), in place of the simulation's object ids |
 | `label_reader.py` | Finds and reads call-number stickers in an image and matches them to the catalogue (`cart_demo.py --labels learned`) |
@@ -251,8 +252,9 @@ uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success 
 uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (macOS)
 ```
 
-Options: `--margin` (room left around the book in a tight gap, default 6 mm), `--perception truth|camera` and
-`--camera-noise realistic|basic` (see [Perception](#perception-perceptionpy)), `--catalogue` (rows of the
+Options: `--margin` (room left around the book in a tight gap, default 6 mm), `--perception
+truth|camera|noisy|noisy-learned`, `--camera-noise realistic|basic` and `--segmenter WEIGHTS` (see
+[Perception](#perception-perceptionpy)), `--catalogue` (rows of the
 PBBM repo's real books), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
 (draw the converted book covers; see [Book covers](#book-covers-optional)), `--book-pages N` (split every
 book into `N` page sections hinged on the spine; see [Book pages](#book-pages-optional)).
@@ -668,6 +670,16 @@ In place means:
      shelf after changing the row: after each widening, lift and clamp, each book pushed back, each pinch of the
      shove and each pull of the walk-out, after letting go of the book and after each push of it. The arm really
      moves there and back, in joint space, and comes in from just in front of the next step in a straight line.
+     `--segmenter WEIGHTS` takes the book masks from the learned segmenter (`learned_segmenter.py`, the `rl`
+     group) instead of the simulation's object ids, with the robust spine fit learned masks need.
+   - `noisy` and `noisy-learned`: no rendering; each look gives the ground truth with the camera's measured errors
+     (`perception.NoisyEyes`, what `gap_env.py` trains the residual on), those of the camera with the
+     simulation's masks or of the learned masks' pipeline (`NoisyPerception.learned`). The arm still moves to
+     the views.
+   - `eval_reshelve.py` runs the controller alone on many rows with any of these, in parallel (resumable, and
+     in shards for a cluster), and `eval_reshelve.py compare` puts the sources side by side: placed per
+     scenario, how the rest ended, and row by row against the first. It is the check that a noise model fails
+     the controller as often, and in the same ways, as the pipeline it stands in for.
    - On a look again, a book past the slot's neighbours that hasn't moved (within 3 mm and 1.5°) keeps what the
      sweep saw of it, and one that has keeps the size it saw: from the middle view, books further out come out
      too thick, and summed along the row that took 20 to 30 mm off the free space.
@@ -1078,6 +1090,96 @@ x[obs.actor_layout["gap_narrowest"]]                            # any part by na
 - SI units; normalise in the RL wrapper. The tool tip defaults to the fingertips (`tool_offset=` for a rod).
 
 Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
+
+## Residual PPO: start with insertion
+
+Train the shelf manipulation before adding the cart. The first milestone lets the scripted controller
+prepare the row and hand over the book, then gives PPO five bounded corrections during `slide` and `push`:
+x, y, z, yaw and pitch. Stopping stays scripted. A tight row can still be widened or shoved during
+preparation, but those contacts produce no policy decisions or training rewards in this mode.
+
+There are two separate phase options:
+
+| Option | Meaning |
+| --- | --- |
+| `--phases widen` | Sample only scenes whose **first contact** is a widening. Omit it to use every scene family in the selected pools. |
+| `--control-phases slide push` | Let PPO correct only insertion and final seating. The other contacts use zero correction. |
+| `--no-learn-stop` | Use five continuous actions. The controller decides when to stop each contact. |
+
+The default still controls all six contact phases and learns the stop action. `--no-insert` still supports
+gap-creation-only training. Actor observations retain their layout across these modes, but five-action
+checkpoints and six-action checkpoints have different output layers.
+
+### A small, reproducible first experiment
+
+Build separate training and validation pools. Each `--seeds` value counts shelf layouts, and
+`--error-variants` gives the number of perception/grasp error combinations per layout. These commands
+start with one fixed error combination per layout so a learning failure is easier to reproduce:
+
+```bash
+for scenario in clear tight
+do
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 16 --first-seed 10000 \
+    --error-variants 1 --error-seed 123 --name "${scenario}_insert_debug" --workers 2
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 16 --first-seed 20000 \
+    --error-variants 1 --error-seed 456 --name "${scenario}_insert_debug_val" --workers 2
+done
+
+uv run --group rl python train_residual.py --name insertion_debug --scenarios clear tight \
+  --train-suffix _insert_debug --val-suffix _insert_debug_val --val-scenes 16 \
+  --control-phases slide push --no-learn-stop --workers 2 --decisions 100000 \
+  --eval-action-scale 1
+```
+
+The decision budget above is a diagnostic run, not an established convergence budget. Check that the
+policy can recover some failures within its correction bounds. Inspect the baseline and policy returns
+alongside actual placements before committing to a long run. The reward weights and discount have not
+been retuned for this milestone.
+
+Once that works, build new pools with, for example, `--error-variants 4`, more layouts, and new names such
+as `tight_insert_var` and `tight_insert_var_val`. Pass the corresponding suffixes to the trainer.
+Pool creation refuses to overwrite existing pools. Training samples the stored layout/error variants
+in random order. Each variant keeps its cached inspection views and first plan, which are reused only
+when their inputs match.
+
+Geometry, perception and grasp seeds are recorded separately. Geometry stays the same across a layout's
+variants. Calibration error stays fixed within an episode, observation noise can change between looks,
+and the grasp error is applied once when the book is taken. Existing pools keep their original
+`[geometry_seed, 1]` perception and `[geometry_seed, 2]` grasp streams.
+
+### Evaluation and diagnostics
+
+- `--eval-action-scale` is fixed across checkpoints, independently of the training action ramp.
+- `--val-scenes` counts distinct layouts per scenario. `--val-variants 0` (the default) evaluates all stored
+  variants of those layouts. A positive value limits the variants per layout.
+- The script and policy use the same exact geometry, perception and grasp seeds. Cases are selected by
+  identity, not by a changing index into successful preparations. The baseline is regenerated when training
+  starts, including on resume, so an old baseline is not reused after code or configuration changes.
+- A validation case that fails before the first controlled contact is recorded as `preparation_failed`.
+  It stays in the overall success denominator. `success_given_control` reports the conditional result once
+  PPO can act. An explicit `--phases` filter restricts this evaluation population too.
+- Random training resets try other cases when preparation fails, without permanently removing a variant.
+  Those failed attempts are recorded. If no case in the selected scenario reaches a controlled contact,
+  reset raises an error instead of looping indefinitely.
+- `runs/<name>/baseline.json` and `val_*.json` contain per-case outcomes. `val_recovered`, `val_lost` and
+  `val_success_delta` compare each checkpoint with the script on identical cases.
+- `episodes.jsonl` records completed training episodes with their seeds, applied grasp error and reward
+  totals. `log.jsonl` and TensorBoard include each reward component and returns grouped by outcome.
+  Reward components are unnormalised: gap, tilt, lift, force, action, time, gap bonus, insertion progress,
+  disturbance and terminal reward. Their totals sum to the episode return.
+- Insertion progress rewards reducing the spine's distance to the scorer's accepted placement region.
+  For `flush`, this is the 1 cm tolerance band on either side of the neighbour's spine, so overshooting
+  the band incurs negative progress. For `inside`, the spine must be at least 1 cm behind the shelf's
+  front edge. Moving within an accepted region earns no extra depth reward. Uprightness and release
+  remain required for terminal success. The critic's `to_go` feature uses this same distance.
+
+An exact case can be replayed through `GapEnv.reset(options={"scenario": "tight", "geometry_seed": 10000,
+"variant": 0, "perception_seed": 123, "grasp_seed": 456})`. Supplying seeds overrides only those errors.
+Explicit cases raise `PreparationFailed` if preparation fails, rather than silently trying another row.
+
+After insertion works, expand `--control-phases` to include gap creation. Evaluate trained checkpoints
+with the actual RGB-D pipeline before integrating tray pickup and the cart. The cart and the standalone
+camera evaluator still need residual-checkpoint integration. This training mode does not add those connections.
 
 ## Settings (`ShelfConfig`)
 

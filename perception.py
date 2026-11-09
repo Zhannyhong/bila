@@ -494,3 +494,28 @@ class NoisyPerception:
         panels = tuple(x if x is not None and abs(x - x_slot) <= self.reach else None for x in est.panel_x)
         widths = gap_profile(books, panels, est.board_top, est.gap_heights)
         return replace(est, books=books, panel_x=panels, gap_widths=widths, source="noisy")
+
+
+class NoisyEyes:
+    """An Episode's eyes (the camera interface its look() uses: insert_book
+    --perception noisy, gap_env's training) through a NoisyPerception: one
+    estimate per look, with the camera's measured errors, drawn from rng,
+    and no rendering. The arm still moves to the views. learned: imitate the
+    learned pipeline (NoisyPerception.learned) instead of the camera with the
+    simulation's masks."""
+
+    def __init__(self, model: mujoco.MjModel, row: Row, rng: np.random.Generator, scale: float = 1.0,
+                 learned: bool = False):
+        make = NoisyPerception.learned if learned else NoisyPerception
+        self.perception = make(GroundTruthPerception(model, row), rng, scale)
+        self.data = None
+
+    def capture(self, data):
+        self.data = data                    # the arm holds still for the "image": estimate it at the end of the look
+        return None
+
+    def estimate_from_frames(self, frames, x_slot=None, placed_x=None):
+        return self.perception.estimate(self.data)
+
+    def close(self):
+        pass
