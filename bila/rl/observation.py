@@ -2,7 +2,7 @@
 What the gap-creation policy sees: fixed-size vectors built from a
 ShelfEstimate (what the robot knows about the row) and the robot's own readings.
 
-    from observation import ObservationBuilder, robot_state
+    from bila.rl.observation import ObservationBuilder, robot_state
     obs = ObservationBuilder(est, target=(thickness, height))      # once, after the look
     x = obs.actor(est, robot_state(model, data), now=data.time)    # every control step
     v = obs.critic(model, data, truth)                             # privileged extras, simulation only
@@ -48,8 +48,8 @@ from typing import Dict, List, Optional, Tuple
 import mujoco
 import numpy as np
 
-from insert_book import GAP_MARGIN
-from perception import FREE_SPACE_CAP, ShelfEstimate, free_space
+from bila.control.insert_book import GAP_MARGIN
+from bila.vision.perception import FREE_SPACE_CAP, ShelfEstimate, free_space
 
 BOOK_OFFSETS = (-3, -2, -1, 1, 2, 3)      # the books the policy sees, by place relative to the slot
 GAP_CAP = 0.10                            # m: gap widths are capped here; unseen counts as this wide

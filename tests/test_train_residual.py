@@ -13,8 +13,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from residual_ppo import Learner, Policy, gae  # noqa: E402
-from train_residual import Config, NumpyActor, RunningStats, ramp  # noqa: E402
+from bila.rl.residual_ppo import Learner, Policy, gae  # noqa: E402
+from bila.rl.train_residual import Config, NumpyActor, RunningStats, ramp  # noqa: E402
 
 
 def test_gae_by_hand():
@@ -93,6 +93,6 @@ def test_the_workers_numpy_actor_acts_as_the_policy():
 
 def test_the_worker_side_never_loads_torch():
     """Each worker would pay ~700 MB for it (they import train_residual and gap_env)."""
-    code = "import sys, train_residual, gap_env; print('torch' in sys.modules)"
+    code = "import sys; from bila.rl import train_residual, gap_env; print('torch' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False"

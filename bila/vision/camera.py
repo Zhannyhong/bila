@@ -2,7 +2,7 @@
 The wrist camera as an RGB-D sensor: images, the camera model, and depth turned
 into 3D points.
 
-    from camera import WristCamera, points, project
+    from bila.vision.camera import WristCamera, points, project
     cam = WristCamera(model)                  # 1280 x 720, like a D405 (~87 deg wide)
     frame = cam.capture(data)                 # rgb, depth, seg, K, pose, stamp
     xyz = points(frame)                       # (N, 3) world points, one per pixel with a reading

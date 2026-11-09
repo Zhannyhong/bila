@@ -14,8 +14,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
 
-import learned_segmenter as ls  # noqa: E402
-from rgbd_perception import Segment  # noqa: E402
+from bila.vision import learned_segmenter as ls  # noqa: E402
+from bila.vision.rgbd_perception import Segment  # noqa: E402
 
 
 def fake_output(masks, scores):

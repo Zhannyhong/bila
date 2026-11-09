@@ -2,8 +2,8 @@
 PPO for the gap-creation residual (gap_env.GapEnv), with each worker
 collecting its rollout on its own.
 
-    uv run --group rl python train_residual.py --name tight --decisions 2000000          # tight rows the script widens
-    uv run --group rl python train_residual.py --name tight --resume runs/tight/last.pt  # carry on after a stop
+    uv run --group rl python -m bila.rl.train_residual --name tight --decisions 2000000          # tight rows the script widens
+    uv run --group rl python -m bila.rl.train_residual --name tight --resume runs/tight/last.pt  # carry on after a stop
     uv run --group rl tensorboard --logdir runs
 
 Why not stable-baselines3: its vectorised envs step every worker in
@@ -42,7 +42,7 @@ from typing import List, Tuple
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 RUNS = os.path.join(HERE, "runs")
 
 
@@ -131,7 +131,7 @@ class NumpyActor:
 
 
 def make_env(cfg: Config, validation: bool = False):
-    from gap_env import GapEnv, load_pool
+    from bila.rl.gap_env import GapEnv, load_pool
     if validation:
         return GapEnv(scenarios=cfg.scenarios[:1], pool={cfg.scenarios[0]: load_pool(cfg.val_pool)},
                       first_phases=cfg.phases, noise_scale=cfg.noise_scale)
@@ -269,7 +269,7 @@ def summary(episodes: List[dict]) -> dict:
 
 
 def validation_count(cfg: Config) -> int:
-    from gap_env import load_pool
+    from bila.rl.gap_env import load_pool
     usable = [p for p in load_pool(cfg.val_pool) if p.contact is not False and p.phase in cfg.phases]
     return min(cfg.val_scenes, len(usable))
 
@@ -284,7 +284,7 @@ def run_eval(workers: Workers, learner, cfg: Config, n: int, zero: bool) -> List
 def train(cfg: Config) -> None:
     import torch
     from torch.utils.tensorboard import SummaryWriter
-    from residual_ppo import Learner
+    from bila.rl.residual_ppo import Learner
     torch.set_num_threads(4)
     out = os.path.join(RUNS, cfg.name)
     os.makedirs(out, exist_ok=True)

@@ -3,10 +3,10 @@ How well the camera-based ShelfEstimate matches the ground truth, over many
 scenes, for cameras with no error, basic depth noise, and a realistic D405.
 
     # slow (~1.5 h on 8 workers with software rendering): stores scenes/perception_eval.pkl
-    MUJOCO_GL=egl OMP_NUM_THREADS=1 uv run python eval_perception.py collect --workers 8
-    uv run python eval_perception.py report                             # tables from the stored estimates
-    uv run python eval_perception.py calibrate                          # noise for NoisyPerception, from them
-    uv run python eval_perception.py validate                           # does NoisyPerception err like the camera?
+    MUJOCO_GL=egl OMP_NUM_THREADS=1 uv run python -m bila.vision.eval_perception collect --workers 8
+    uv run python -m bila.vision.eval_perception report                             # tables from the stored estimates
+    uv run python -m bila.vision.eval_perception calibrate                          # noise for NoisyPerception, from them
+    uv run python -m bila.vision.eval_perception validate                           # does NoisyPerception err like the camera?
 
 `collect` takes, in each scene (seeds 1000-1019 of clear, tight, leaning and
 packed by default: away from the seeds the controllers are tested on), the
@@ -56,10 +56,10 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstimate, apply_shift, book_from_spine, fit_rigid,
+from bila.vision.perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstimate, apply_shift, book_from_spine, fit_rigid,
                         rotvec_from_matrix, slot_pivot)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 DEFAULT_PATH = os.path.join(HERE, "scenes", "perception_eval.pkl")
 OFFSET_BINS = {"neighbours (1)": (1, 1), "near (2-3)": (2, 3), "further (4-6)": (4, 6)}
 KINDS = ("perfect", "basic", "realistic", "robust", "learned")   # robust, learned: only with collect --segmenter
@@ -87,7 +87,7 @@ _segmenters = {}                      # learned segmenters loaded in this proces
 
 def learned_segmenter(weights: str):
     if weights not in _segmenters:
-        from learned_segmenter import LearnedSegmenter
+        from bila.vision.learned_segmenter import LearnedSegmenter
         _segmenters[weights] = LearnedSegmenter(weights)
     return _segmenters[weights]
 
@@ -99,13 +99,13 @@ def collect_scene(task) -> Optional[SceneRecord]:
     seed, segmenter weights) to add the learned kind."""
     scenario, seed, *weights = task
     if weights:
-        import learned_segmenter as _  # noqa: F401  (imports torch._dynamo, needed before the first render)
-    from camera import CalibrationError, DepthNoise, WristCamera
-    from insert_book import SWEEP
-    from inspection import look_from, solve_inspection
-    from perception import GroundTruthPerception
-    from rgbd_perception import RGBDPerception
-    from shelf_scene import ShelfConfig, make_episode
+        from bila.vision import learned_segmenter as _  # noqa: F401  (imports torch._dynamo, needed before the first render)
+    from bila.vision.camera import CalibrationError, DepthNoise, WristCamera
+    from bila.control.insert_book import SWEEP
+    from bila.control.inspection import look_from, solve_inspection
+    from bila.vision.perception import GroundTruthPerception
+    from bila.vision.rgbd_perception import RGBDPerception
+    from bila.sim.shelf_scene import ShelfConfig, make_episode
 
     panda = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
     model, data, row, _ = make_episode(ShelfConfig(), scenario, np.random.default_rng(seed), panda_xml=panda)
@@ -129,7 +129,7 @@ def collect_scene(task) -> Optional[SceneRecord]:
             camera[kind] = perception.estimate_from_frames(frames)
             truth_for[kind] = [index.get(g) for g in perception.last_labels]
         if kind == "realistic" and weights:
-            from learned_segmenter import OracleLabelled
+            from bila.vision.learned_segmenter import OracleLabelled
             for other, segmenter in (("robust", None),
                                      ("learned", OracleLabelled(learned_segmenter(weights[0]), model))):
                 p = RGBDPerception(model, row, camera=cam, segmenter=segmenter,   # cam is closed: these frames only
@@ -455,7 +455,7 @@ def with_model(records: List[SceneRecord], seed: int = 0, **calibration) -> List
     calibrated in perception.py, or with `calibration`: errors, systematic,
     reach) on each scene's ground truth."""
     from dataclasses import replace
-    from perception import NoisyPerception
+    from bila.vision.perception import NoisyPerception
     rng = np.random.default_rng(seed)
     out = []
     for rec in records:
@@ -471,7 +471,7 @@ def print_validation(records: List[SceneRecord], kind: str = CALIBRATE_ON):
     it (the learned constants for "learned", else the defaults): the
     whole-row shift, each book's error with and without it, and the gap and
     the books seen."""
-    from perception import LEARNED_CALIBRATION
+    from bila.vision.perception import LEARNED_CALIBRATION
     records = with_model(records, **(LEARNED_CALIBRATION if kind == "learned" else {}))
     kinds = (kind, "model")
     unit = lambda q: (180 / math.pi, "deg") if q in ("lean", "yaw", "rx", "ry", "rz") else (1000, "mm")

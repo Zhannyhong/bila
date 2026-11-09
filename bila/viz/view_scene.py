@@ -2,9 +2,9 @@
 Open a bookshelf scenario in the MuJoCo viewer, with the books already
 settled (so leaning and collapsed rows show their slanted books).
 
-    uv run python view_scene.py --scenario leaning --seed 0
-    uv run python view_scene.py --scenario collapsed --seed 3 --no-robot
-    uv run mjpython view_scene.py --scenario leaning --seed 0 --show-estimate [--noisy]
+    uv run python -m bila.viz.view_scene --scenario leaning --seed 0
+    uv run python -m bila.viz.view_scene --scenario collapsed --seed 3 --no-robot
+    uv run mjpython -m bila.viz.view_scene --scenario leaning --seed 0 --show-estimate [--noisy]
 
 Why this is needed: the scene XML starts with every book upright. The lean
 only appears after `settle()` pushes the chosen books over and lets physics
@@ -26,10 +26,10 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 
-from shelf_scene import SCENARIOS, ShelfConfig, book_tilt_deg, make_episode
-from visualize import draw_in_viewer, estimate_row, plot_estimate
+from bila.sim.shelf_scene import SCENARIOS, ShelfConfig, book_tilt_deg, make_episode
+from bila.viz.visualize import draw_in_viewer, estimate_row, plot_estimate
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 DEFAULT_PANDA = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
 
 

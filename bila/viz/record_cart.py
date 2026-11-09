@@ -1,14 +1,13 @@
 """Record cart_demo from a scene camera, row_cam and the hand's wrist_cam, side by side, to an mp4 (mediapy, needs ffmpeg).
 
-    uv run python notebooks/record_cart.py notebooks/cart_scan_demo.mp4 --scenario tight --seed 0
+    uv run python -m bila.viz.record_cart notebooks/cart_scan_demo.mp4 --scenario tight --seed 0
 
 or from Python: record(out, scenario, seed) returns out.
 """
-import argparse, builtins, contextlib, pathlib, sys
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))   # repo root: cart_demo
+import argparse, builtins, contextlib, sys
 import mediapy, mujoco, mujoco.viewer, numpy as np
 from PIL import Image, ImageDraw
-import cart_demo
+from bila.control import cart_demo
 
 W, H, FPS = 1280, 960, 30     # the scene's offscreen buffer is 1280x960 (shelf_scene)
 T_MAX = 300.0               # sim seconds: stop here even if the demo hasn't finished
@@ -54,7 +53,7 @@ def record(out, scenario="tight", seed=0):
 
     print_, launch, argv = builtins.print, mujoco.viewer.launch_passive, sys.argv
     builtins.print, mujoco.viewer.launch_passive = show, Recorder
-    sys.argv = ["cart_demo.py", "--view", "--scenario", scenario, "--seed", str(seed)]
+    sys.argv = ["cart_demo", "--view", "--scenario", scenario, "--seed", str(seed)]
     try:
         with mediapy.VideoWriter(out, (H, 3 * W), fps=FPS) as video, contextlib.suppress(SystemExit):
             cart_demo.main()

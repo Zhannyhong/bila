@@ -27,5 +27,5 @@ rl = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]   # the modules live at the repo root
+pythonpath = ["."]   # the repo root, so tests import the bila package
 testpaths = ["tests"]

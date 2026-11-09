@@ -9,9 +9,9 @@ import mujoco
 import numpy as np
 import pytest
 
-from insert_book import (DEFAULT_PANDA, GRIP_OPEN, PANDA_HOME, RESIDUAL_EVERY, RESIDUAL_MAX, RESIDUAL_STEP, ArmIK,
+from bila.control.insert_book import (DEFAULT_PANDA, GRIP_OPEN, PANDA_HOME, RESIDUAL_EVERY, RESIDUAL_MAX, RESIDUAL_STEP, ArmIK,
                          Runner, ShelfFrame, make_episode)
-from shelf_scene import ShelfConfig
+from bila.sim.shelf_scene import ShelfConfig
 
 MM = 0.001
 

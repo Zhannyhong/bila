@@ -8,10 +8,10 @@ import math
 import numpy as np
 import pytest
 
-from perception import (CAMERA_ERRORS, DEPTH_PRIOR, SYSTEMATIC_PARAMS, VIEW_REACH, GroundTruthPerception,
+from bila.vision.perception import (CAMERA_ERRORS, DEPTH_PRIOR, SYSTEMATIC_PARAMS, VIEW_REACH, GroundTruthPerception,
                         NoisyPerception, apply_shift, book_from_spine, fit_rigid, gap_profile, matrix_from_rotvec,
                         perturb_spine, rigid_shift, rotvec_from_matrix, slice_x, slot_pivot)
-from shelf_scene import ShelfConfig, make_episode
+from bila.sim.shelf_scene import ShelfConfig, make_episode
 
 MM = 0.001
 
@@ -243,7 +243,7 @@ def test_noisy_perception_draws_the_books_noise_the_same_with_or_without_the_shi
 def test_calibration_takes_the_shift_back_out(leaning_scene):
     """eval_perception fits each scene's rigid motion and takes it out: on an
     estimate that is the truth shifted, what is left is the truth."""
-    from eval_perception import SceneRecord, systematic_params, systematic_stats, without_systematic
+    from bila.vision.eval_perception import SceneRecord, systematic_params, systematic_stats, without_systematic
     model, data, row = leaning_scene
     gt = GroundTruthPerception(model, row)
     truth = gt.estimate(data)
@@ -265,7 +265,7 @@ def test_calibration_takes_the_shift_back_out(leaning_scene):
 def test_learned_calibration_is_opt_in(leaning_scene):
     """NoisyPerception's defaults stay the camera's (gap_env trains on them);
     NoisyPerception.learned uses the learned pipeline's calibration."""
-    from perception import CAMERA_SYSTEMATIC, LEARNED_CALIBRATION, LEARNED_CAMERA_ERRORS
+    from bila.vision.perception import CAMERA_SYSTEMATIC, LEARNED_CALIBRATION, LEARNED_CAMERA_ERRORS
     model, data, row = leaning_scene
     gt = GroundTruthPerception(model, row)
     default = NoisyPerception(gt, np.random.default_rng(7))
@@ -283,7 +283,7 @@ def test_failures_counts_missed_and_misnamed_books(leaning_scene):
     """eval_perception.failures: of the true books within reach, the share the
     camera missed and the share it named a place off."""
     from dataclasses import replace
-    from eval_perception import SceneRecord, failures
+    from bila.vision.eval_perception import SceneRecord, failures
     model, data, row = leaning_scene
     truth = GroundTruthPerception(model, row).estimate(data)
     near = [i for i, t in enumerate(truth.books) if abs(t.slot_offset) == 1]

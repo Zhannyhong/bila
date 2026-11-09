@@ -3,15 +3,15 @@ Reading call-number stickers from a camera image: find each sticker, read
 its two lines (the Dewey class, e.g. "031.0", over the author mark, "PDP"),
 and match what was read to the catalogue, or say it can't be read.
 
-    from label_reader import LabelReader
+    from bila.vision.label_reader import LabelReader
     reader = LabelReader("~/bila_data/labels/finder.pt", "~/bila_data/labels/reader.pt", catalogue=texts)
     for r in reader.read(rgb):        # Reading: corners (px), text (a catalogue entry or None), confidence
         ...
 
     # in WSL, on make_vision_dataset.py's images (needs `uv sync --group rl`)
-    uv run python label_reader.py train-finder --data ~/bila_data/train --out ~/bila_data/labels
-    uv run python label_reader.py train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels
-    uv run python label_reader.py eval --data ~/bila_data/val --weights ~/bila_data/labels
+    uv run python -m bila.vision.label_reader train-finder --data ~/bila_data/train --out ~/bila_data/labels
+    uv run python -m bila.vision.label_reader train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels
+    uv run python -m bila.vision.label_reader eval --data ~/bila_data/val --weights ~/bila_data/labels
 
 Three steps, each a plain function of the image:
   1. Find (StickerFinder): a small segmentation network (torchvision's
@@ -537,7 +537,7 @@ def evaluate(root: str, weights: str, min_confidence: float = MIN_CONFIDENCE):
     right (matched to the right catalogue entry), read wrong, and unreadable;
     the catalogue is every sticker text seen in that scene. Then the share
     read right and wrong at other confidence thresholds."""
-    from learned_segmenter import view_group
+    from bila.vision.learned_segmenter import view_group
     root = os.path.expanduser(root)
     reader = LabelReader(os.path.join(weights, "finder.pt"), os.path.join(weights, "reader.pt"),
                          min_confidence=0.0, min_char_logp=-1e9)

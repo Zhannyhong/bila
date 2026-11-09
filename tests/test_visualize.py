@@ -8,8 +8,8 @@ import pytest
 
 matplotlib.use("Agg")
 
-from shelf_scene import ShelfConfig, make_episode
-from visualize import book_box, draw_in_viewer, estimate_row, plot_estimate
+from bila.sim.shelf_scene import ShelfConfig, make_episode
+from bila.viz.visualize import book_box, draw_in_viewer, estimate_row, plot_estimate
 
 
 @pytest.fixture(scope="module")
@@ -53,8 +53,8 @@ def test_sticker_verdicts():
     """--learned --cart's colours: each reading right, wrong, unreadable or no
     sticker; stickers in clear view not found are missed (not tiny ones)."""
     pytest.importorskip("torch")
-    from label_reader import Reading
-    from visualize import sticker_verdicts
+    from bila.vision.label_reader import Reading
+    from bila.viz.visualize import sticker_verdicts
 
     def box(x, w=20, h=50, y=10):
         return np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], float)

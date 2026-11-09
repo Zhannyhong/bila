@@ -27,10 +27,10 @@ Frame convention (same as the Isaac Gym task)
 
 Usage
   # 1) Just write the XML (no mujoco install needed for this step)
-  python shelf_scene.py --scenario leaning --seed 3 --out scenes/
+  python -m bila.sim.shelf_scene --scenario leaning --seed 3 --out scenes/
 
   # 2) Build, settle and check in Python (needs `pip install mujoco`)
-  from shelf_scene import ShelfConfig, make_episode
+  from bila.sim.shelf_scene import ShelfConfig, make_episode
   model, data, row, report = make_episode(
       ShelfConfig(), "collapsed", np.random.default_rng(0),
       panda_xml="mujoco_menagerie/franka_emika_panda/panda.xml")
@@ -48,6 +48,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
 import numpy as np
+
+from bila import ROOT
 
 SCENARIOS = ("clear", "tight", "leaning", "collapsed", "packed")
 
@@ -562,7 +564,7 @@ VIEW_DISTANCE = 0.9   # m from the gap to where a viewer's camera starts
 # converts each book into six flat, textured face quads under this directory
 # (gitignored, so a checkout without the conversion silently keeps the boxes).
 # They are pure decoration: non-colliding, massless geoms on the box bodies.
-BOOK_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated_assets", "books")
+BOOK_ASSET_DIR = os.path.join(ROOT, "generated_assets", "books")
 # A book's DAE has x along its depth, y through its thickness and z up its
 # height, while the box geoms have x through the thickness: turning the faces
 # this far about z puts the DAE's axes back onto the box's.

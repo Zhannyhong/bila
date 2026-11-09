@@ -10,10 +10,10 @@ import mujoco
 import numpy as np
 import pytest
 
-from insert_book import ShelfFrame
-from inspection import CAMERA, STANDOFFS, camera_target, look_from, solve_inspection
-from perception import GroundTruthPerception
-from shelf_scene import ShelfConfig, make_episode
+from bila.control.insert_book import ShelfFrame
+from bila.control.inspection import CAMERA, STANDOFFS, camera_target, look_from, solve_inspection
+from bila.vision.perception import GroundTruthPerception
+from bila.sim.shelf_scene import ShelfConfig, make_episode
 
 PANDA = "mujoco_menagerie/franka_emika_panda/panda.xml"
 

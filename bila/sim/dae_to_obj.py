@@ -28,12 +28,12 @@ Usage
       https://github.com/TAMS-Group/PBBM-robot-librarian /tmp/pbbm
   git -C /tmp/pbbm sparse-checkout set librarian_common/tams_books_world
 
-  python dae_to_obj.py --src /tmp/pbbm/librarian_common/tams_books_world/meshes
+  python -m bila.sim.dae_to_obj --src /tmp/pbbm/librarian_common/tams_books_world/meshes
 
 Writes `generated_assets/books/` (gitignored) with index.json, and then:
 
-  from shelf_scene import ShelfConfig
-  ShelfConfig(book_meshes=True)          # or: python shelf_scene.py --book-meshes
+  from bila.sim.shelf_scene import ShelfConfig
+  ShelfConfig(book_meshes=True)          # or: python -m bila.sim.shelf_scene --book-meshes
   ShelfConfig(book_meshes=True, book_pages=4)   # articulated, as in the repo
 """
 
@@ -49,7 +49,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import Image
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 OUT_DEFAULT = os.path.join(HERE, "generated_assets", "books")
 
 VECTOR = {"VERTEX": 3, "NORMAL": 3, "TEXCOORD": 2}

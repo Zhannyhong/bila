@@ -4,9 +4,9 @@ real books standing spine-up (one per slot) and a row camera on the lift, in
 front of a bookcase of the repo's real books, each with a call-number sticker
 on its spine.
 
-    uv run python cart_demo.py --scenario tight             # headless: prints each step and the score
-    uv run mjpython cart_demo.py --scenario tight --view    # watch it (macOS needs mjpython)
-    uv run python cart_demo.py --scenario leaning --seed 3  # clear, tight, leaning or packed
+    uv run python -m bila.control.cart_demo --scenario tight             # headless: prints each step and the score
+    uv run mjpython -m bila.control.cart_demo --scenario tight --view    # watch it (macOS needs mjpython)
+    uv run python -m bila.control.cart_demo --scenario leaning --seed 3  # clear, tight, leaning or packed
 
 What the robot does, as a librarian would:
   1. Read the call numbers in the tray (tray_cam, looking down on the spines).
@@ -49,13 +49,13 @@ import mujoco
 import mujoco.viewer
 from PIL import Image, ImageDraw, ImageFont
 
-import insert_book
-from shelf_scene import (PANDA_HOME, ShelfConfig, _catalogue_book, _f, add_book_geoms, add_book_visual_assets,
+from bila.control import insert_book
+from bila.sim.shelf_scene import (PANDA_HOME, ShelfConfig, _catalogue_book, _f, add_book_geoms, add_book_visual_assets,
                          board_tops, build_scene, sample_row, settle)
-from insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_OPEN, MIN_MARGIN, PALM_GAP, PALM_Z,
+from bila.control.insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_OPEN, MIN_MARGIN, PALM_GAP, PALM_Z,
                          WAYPOINT_TRIES, ArmIK, Episode, Runner, compile_robot_scene, report, segment)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 LABEL_DIR = os.path.join(HERE, "generated_assets", "labels")   # git-ignored, made on demand
 
 LIFT_MAX = 0.70             # lift travel: the Panda's base this far above the deck at most
@@ -166,6 +166,24 @@ def sticker(number, mark, aspect) -> str:
             draw.text((w / 2, h * (0.25 + 0.22 * i)), line, fill="black", anchor="mm", font=font)
         img.save(path)
     return path
+
+
+def add_stickers(root, books, numbers):
+    """Call-number stickers near the bottom of the spine of every book in
+    `books` that has a number: visual only (massless, no contacts), a
+    `<book>_label` geom on the book's body, so book_of_geom counts it as part
+    of the book."""
+    asset, by_name = root.find("asset"), {b.name: b for b in books}
+    for body in root.find("worldbody").iter("body"):
+        b = by_name.get(body.get("name"))
+        if b is None or b.name not in numbers:
+            continue
+        n, hx = numbers[b.name], min(0.85 * b.thickness / 2, 0.012)
+        ET.SubElement(asset, "texture", name=f"label{n}", type="2d", hflip="true", file=sticker(n, cutter(b), hx / 0.03))
+        ET.SubElement(asset, "material", name=f"label{n}", texture=f"label{n}")
+        ET.SubElement(body, "geom", name=b.name + "_label", type="box", material=f"label{n}", group="2",
+                      size=_f(hx, 0.0005, 0.03),
+                      pos=_f(0, b.depth / 2 + 0.0008, -b.height / 2 + STICKER_UP), contype="0", conaffinity="0", mass="0")
 
 
 # ---------------------------------------------------------------------------
@@ -301,18 +319,7 @@ def build(cfg, row, tray, numbers):
     key.set("qpos", " ".join(qpos))
     key.attrib.pop("ctrl")                               # set by actuator name below: the lift's comes first
 
-    # Call-number stickers near the bottom of every spine.
-    books = {b.name: b for b in row.books + tray_books + [b for fl in row.filler_levels for b in fl.books]}
-    for body in wb.iter("body"):
-        b = books.get(body.get("name"))
-        if b is None or b.name not in numbers:
-            continue
-        n, hx = numbers[b.name], min(0.85 * b.thickness / 2, 0.012)
-        ET.SubElement(asset, "texture", name=f"label{n}", type="2d", hflip="true", file=sticker(n, cutter(b), hx / 0.03))
-        ET.SubElement(asset, "material", name=f"label{n}", texture=f"label{n}")
-        ET.SubElement(body, "geom", name=b.name + "_label", type="box", material=f"label{n}", group="2",
-                      size=_f(hx, 0.0005, 0.03),
-                      pos=_f(0, b.depth / 2 + 0.0008, -b.height / 2 + 0.045), contype="0", conaffinity="0", mass="0")
+    add_stickers(root, row.books + tray_books + [b for fl in row.filler_levels for b in fl.books], numbers)
 
     # A copy of each part of the cart's frame, CART_CLEAR bigger, for the arm's planner only (CartEpisode
     # turns them on for its collision checks; the simulation never sees them: they are compiled solid,
@@ -387,8 +394,8 @@ class LearnedLabels:
     also kept: the sticker's centre in the world, from the depth image)."""
 
     def __init__(self, model, weights: str, catalogue: dict):
-        from label_reader import LabelReader                 # imports torch (and torch._dynamo, before any render)
-        from rgbd_perception import book_of_geom
+        from bila.vision.label_reader import LabelReader                 # imports torch (and torch._dynamo, before any render)
+        from bila.vision.rgbd_perception import book_of_geom
         self.m = model
         self.reader = LabelReader(os.path.join(weights, "finder.pt"), os.path.join(weights, "reader.pt"),
                                   catalogue=list(catalogue))
@@ -403,7 +410,7 @@ class LearnedLabels:
         return all(os.path.exists(os.path.join(weights, f)) for f in ("finder.pt", "reader.pt"))
 
     def camera(self, name):
-        from camera import DepthNoise, WristCamera
+        from bila.vision.camera import DepthNoise, WristCamera
         if name not in self.cams:
             self.cams[name] = WristCamera(self.m, name=name, noise=DepthNoise.d405(),
                                           rng=np.random.default_rng(len(self.cams)))
@@ -457,7 +464,7 @@ def tray_closeup(model, data, ik, point, rng, above=CLOSE_ABOVE, yaws=(0.0, np.p
     """(lift height, arm joint angles) for a wrist view straight down onto
     `point` (a tray sticker) from one of `above` over it, the image's right
     turned by one of `yaws` from the world's x; None if the arm reaches none."""
-    from inspection import looking, solve_camera
+    from bila.control.inspection import looking, solve_camera
     lift = model.jnt_qposadr[model.joint("lift_z").id]
     keep = float(data.qpos[lift])
     try:
@@ -479,7 +486,7 @@ def tray_closeup(model, data, ik, point, rng, above=CLOSE_ABOVE, yaws=(0.0, np.p
 def row_closeup(model, data, ik, row, point):
     """Arm joint angles for a wrist view square onto the row at a sticker's
     `point` (world), close enough to read it, or None."""
-    from inspection import slot_x, solve_view
+    from bila.control.inspection import slot_x, solve_view
     p = insert_book.ShelfFrame(row).to_shelf(np.asarray(point))
     for standoff in CLOSE_STANDOFFS:
         q = solve_view(model, data, row, p[0] - slot_x(row), ik, standoff=standoff, height=p[2] - row.target_board_top)
@@ -529,7 +536,7 @@ def read_tray(labels, model, data, run, ik, tray, rng):
 def read_row(labels, model, data, run, ik, row, n):
     """row_cam, then close-ups near where the book goes until the two books
     whose numbers bracket n are read and stand side by side."""
-    from inspection import slot_x
+    from bila.control.inspection import slot_x
     found, read = labels.look(data, "row_cam")
     print(f"row_cam finds {found} stickers, reads {read}")
     shelf, looked = insert_book.ShelfFrame(row), set()

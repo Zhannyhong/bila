@@ -8,11 +8,11 @@ import math
 import numpy as np
 import pytest
 
-from camera import DepthNoise, WristCamera
-from inspection import look_from, solve_inspection
-from perception import GroundTruthPerception, book_from_spine, gap_profile
-from rgbd_perception import RGBDPerception, fit_spine
-from shelf_scene import ShelfConfig, make_episode
+from bila.vision.camera import DepthNoise, WristCamera
+from bila.control.inspection import look_from, solve_inspection
+from bila.vision.perception import GroundTruthPerception, book_from_spine, gap_profile
+from bila.vision.rgbd_perception import RGBDPerception, fit_spine
+from bila.sim.shelf_scene import ShelfConfig, make_episode
 
 PANDA = "mujoco_menagerie/franka_emika_panda/panda.xml"
 MM = 0.001
@@ -122,7 +122,7 @@ def sweep():
     """Images from 30 cm either side of the slot and in front of it, of a row
     where the right-hand view sees a book's side past its neighbour (clear 4),
     with the target book in the model (parked off the shelf)."""
-    import insert_book
+    from bila.control import insert_book
     model, data, row = insert_book.make_episode(ShelfConfig(), "clear", np.random.default_rng(4), PANDA)
     try:
         cam = WristCamera(model, noise=DepthNoise(), rng=np.random.default_rng(4))
@@ -153,7 +153,7 @@ def test_sweep_sees_the_whole_row_and_names_it(sweep):
 
 def test_a_book_put_into_the_slot_is_offset_0(sweep):
     import mujoco
-    from inspection import slot_x
+    from bila.control.inspection import slot_x
     model, data, row, perception, frames = sweep
     b, x = row.target_book, slot_x(row)
     qa = model.jnt_qposadr[model.joint(b.name + "_joint").id]

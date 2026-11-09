@@ -5,15 +5,15 @@ the MuJoCo viewer. Both read only the ShelfEstimate, so they show any
 perception source the same way: ground truth, noisy, and later the camera.
 And what the wrist camera sees, with the estimate drawn over its image.
 
-    uv run python visualize.py --scenario leaning --seed 0            # saves scenes/estimate_leaning_seed0.png
-    uv run python visualize.py --scenario leaning --seed 0 --noisy    # noisy estimate, ground truth dashed
-    uv run python visualize.py --scenario leaning --seed 0 --camera   # wrist camera image -> scenes/camera_*.png
-    uv run python view_scene.py --scenario leaning --seed 0 --show-estimate   # the same in 3D, in the viewer
+    uv run python -m bila.viz.visualize --scenario leaning --seed 0            # saves scenes/estimate_leaning_seed0.png
+    uv run python -m bila.viz.visualize --scenario leaning --seed 0 --noisy    # noisy estimate, ground truth dashed
+    uv run python -m bila.viz.visualize --scenario leaning --seed 0 --camera   # wrist camera image -> scenes/camera_*.png
+    uv run python -m bila.viz.view_scene --scenario leaning --seed 0 --show-estimate   # the same in 3D, in the viewer
 
 What the trained models see (`uv sync --group rl`, weights in ~/bila_data; ~1-2 min, MUJOCO_GL=egl in WSL):
 
-    uv run python visualize.py --scenario leaning --seed 3 --learned          # scenes/learned_*.png, estimate_learned_*.png
-    uv run python visualize.py --scenario tight --seed 1 --learned --cart     # scenes/stickers_*.png
+    uv run python -m bila.viz.visualize --scenario leaning --seed 3 --learned          # scenes/learned_*.png, estimate_learned_*.png
+    uv run python -m bila.viz.visualize --scenario tight --seed 1 --learned --cart     # scenes/stickers_*.png
 
   --learned: the first look's three views with the learned segmenter's masks
     in colour, books it missed outlined red, masks that are no book magenta,
@@ -44,11 +44,11 @@ from typing import Optional, Tuple
 import mujoco
 import numpy as np
 
-from camera import CameraFrame, WristCamera, project, robot_mask
-from perception import BookEstimate, GroundTruthPerception, NoisyPerception, ShelfEstimate, book_box, gap_edges
-from shelf_scene import SCENARIOS, ShelfConfig, make_episode
+from bila.vision.camera import CameraFrame, WristCamera, project, robot_mask
+from bila.vision.perception import BookEstimate, GroundTruthPerception, NoisyPerception, ShelfEstimate, book_box, gap_edges
+from bila.sim.shelf_scene import SCENARIOS, ShelfConfig, make_episode
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 
 NEIGHBOUR_RGBA = (0.91, 0.51, 0.23, 1.0)    # orange
 OTHER_RGBA = (0.30, 0.47, 0.66, 1.0)        # blue
@@ -346,11 +346,11 @@ def learned_shelf(scenario: str, seed: int, weights: str, path_for):
     plot_learned_views, and the estimate's front and top view with the
     estimate from the simulation's masks (same images, same fit) dotted and
     the ground truth dashed."""
-    import learned_segmenter as ls                         # imports torch._dynamo, before any render
-    from camera import CalibrationError, DepthNoise
-    from insert_book import SWEEP
-    from inspection import look_from, solve_inspection
-    from rgbd_perception import OracleSegmenter, RGBDPerception
+    from bila.vision import learned_segmenter as ls                         # imports torch._dynamo, before any render
+    from bila.vision.camera import CalibrationError, DepthNoise
+    from bila.control.insert_book import SWEEP
+    from bila.control.inspection import look_from, solve_inspection
+    from bila.vision.rgbd_perception import OracleSegmenter, RGBDPerception
 
     panda = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
     model, data, row, _ = make_episode(ShelfConfig(), scenario, np.random.default_rng(seed), panda_xml=panda)
@@ -383,7 +383,7 @@ def sticker_verdicts(readings, stickers):
     the stickers in clear view not found). Verdicts: "right", "wrong",
     "unreadable", or "no sticker" (found where there is none). A reading and
     a true sticker match if each one's centre is inside the other."""
-    from label_reader import inside
+    from bila.vision.label_reader import inside
     used, out = set(), []
     for r in readings:
         truth = next((i for i, s in enumerate(stickers) if i not in used and inside(r.centre, s["corners"])
@@ -446,13 +446,13 @@ def learned_cart(scenario: str, seed: int, weights: str, path):
     the label reader: row_cam (arm leaned out of its view), tray_cam, a wrist
     close-up where the shelf map puts the slot, and a wrist view of the whole
     tray; saves plot_stickers."""
-    import label_reader as lr                              # imports torch._dynamo, before any render
-    import cart_demo
-    from camera import DepthNoise
-    from insert_book import ArmIK, ShelfFrame
-    from inspection import look_from, slot_x
-    from make_vision_dataset import cart_numbers, sticker_labels
-    from shelf_scene import PANDA_HOME, settle
+    from bila.vision import label_reader as lr                              # imports torch._dynamo, before any render
+    from bila.control import cart_demo
+    from bila.vision.camera import DepthNoise
+    from bila.control.insert_book import ArmIK, ShelfFrame
+    from bila.control.inspection import look_from, slot_x
+    from bila.vision.make_vision_dataset import cart_numbers, sticker_labels
+    from bila.sim.shelf_scene import PANDA_HOME, settle
 
     cfg, row, tray, _ = cart_demo.sample(scenario, seed)
     numbers = cart_numbers(row, tray, seed)
@@ -556,9 +556,9 @@ def main():
         plot_estimate(est, truth, target, path_for("estimate"))
         return
 
-    from camera import DepthNoise
-    from inspection import look_from, solve_inspection
-    from rgbd_perception import RGBDPerception
+    from bila.vision.camera import DepthNoise
+    from bila.control.inspection import look_from, solve_inspection
+    from bila.vision.rgbd_perception import RGBDPerception
     view = solve_inspection(model, data, row)
     if view is None:
         raise SystemExit("no arm pose reaches the inspection view in this scene")

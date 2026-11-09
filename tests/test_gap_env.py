@@ -13,10 +13,10 @@ import pytest
 
 pytest.importorskip("gymnasium")
 
-from gap_env import (PHASES, TOPPLE_DEG, Abandon, GapEnv, GapEpisode, NoisyEyes, ReachedInsert, digest,  # noqa: E402
+from bila.rl.gap_env import (PHASES, TOPPLE_DEG, Abandon, GapEnv, GapEpisode, NoisyEyes, ReachedInsert, digest,  # noqa: E402
                      load_scene, make_entry)
-from insert_book import RESIDUAL_MAX, RESIDUAL_STEP  # noqa: E402
-from shelf_scene import ShelfConfig  # noqa: E402
+from bila.control.insert_book import RESIDUAL_MAX, RESIDUAL_STEP  # noqa: E402
+from bila.sim.shelf_scene import ShelfConfig  # noqa: E402
 
 SEED = 10_000              # a tight training scene the script widens
 
