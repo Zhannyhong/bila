@@ -4,9 +4,12 @@ update. Kept apart so the worker processes never import torch (~700 MB each
 with torch._dynamo; 12 of them don't fit in the laptop's WSL).
 
   - Actor: an MLP on the actor observation, its last layer zero, so it starts
-    as the script (a zero correction); a state-independent log std. The
-    workers run a numpy copy of it (actor_weights, train_residual.NumpyActor)
-    only to choose actions: log-probabilities and values are computed here.
+    as the script (a zero correction), but for the end action's bias
+    (end_bias, below RESIDUAL_END), with its own wider spread (end_log_std):
+    early on a move is ended by chance only rarely; a state-independent log
+    std. The workers run a numpy copy of it (actor_weights,
+    train_residual.NumpyActor) only to choose actions: log-probabilities and
+    values are computed here.
   - Critic: an MLP on the actor observation and the critic's privileged
     extras (asymmetric: only the actor has to run on the robot).
   - PPO: GAE, the clipped objective, Adam with the learning rate going
@@ -41,13 +44,21 @@ def mlp(n_in: int, n_out: int, hidden: int, last_gain: float) -> nn.Sequential:
 
 class Policy(nn.Module):
     """Gaussian actor on the actor observation (its last layer zero: it starts
-    as a zero correction) and a critic on both observations."""
+    as a zero correction, the end action at end_bias) and a critic on both
+    observations. The action: gap_env.GapEnv's, n_action of it (the end
+    action last, if there are 6)."""
 
-    def __init__(self, n_actor: int, n_critic: int, hidden: int = 256, log_std: float = -1.0):
+    def __init__(self, n_actor: int, n_critic: int, hidden: int = 256, log_std: float = -1.0, n_action: int = 6,
+                 end_log_std: float = -0.5, end_bias: float = -1.8):
         super().__init__()
-        self.actor = mlp(n_actor, 3, hidden, last_gain=0.0)
+        self.actor = mlp(n_actor, n_action, hidden, last_gain=0.0)
         self.critic = mlp(n_actor + n_critic, 1, hidden, last_gain=1.0)
-        self.log_std = nn.Parameter(torch.full((3,), float(log_std)))
+        log_stds = torch.full((n_action,), float(log_std))
+        if n_action == 6:
+            log_stds[5] = float(end_log_std)
+            with torch.no_grad():
+                self.actor[-1].bias[5] = float(end_bias)
+        self.log_std = nn.Parameter(log_stds)
 
     def dist(self, actor: torch.Tensor) -> torch.distributions.Normal:
         return torch.distributions.Normal(self.actor(actor), self.log_std.exp())
@@ -87,7 +98,9 @@ class Learner:
     def __init__(self, cfg: Config, sizes):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
-        self.policy = Policy(*sizes, cfg.hidden, cfg.log_std)
+        n_actor, n_critic, *n_action = sizes         # (n_action: 6 if left out)
+        self.policy = Policy(n_actor, n_critic, cfg.hidden, cfg.log_std, *n_action, end_log_std=cfg.end_log_std,
+                             end_bias=cfg.end_bias)
         self.opt = torch.optim.Adam(self.policy.parameters(), lr=cfg.lr, eps=1e-5)
         self.actor_stats, self.critic_stats = RunningStats(sizes[0]), RunningStats(sizes[1])
         self.ret_stats = RunningStats()
@@ -121,7 +134,7 @@ class Learner:
         critic = np.stack([r["critic"] for r in rollouts])
         rewards = self.scale_rewards(rollouts)
         a_t, c_t = self.tensors(actor.reshape(W * T, -1), critic.reshape(W * T, -1))
-        actions = torch.as_tensor(np.stack([r["action"] for r in rollouts]).reshape(W * T, 3))
+        actions = torch.as_tensor(np.stack([r["action"] for r in rollouts]).reshape(W * T, -1))
         with torch.no_grad():
             values = self.policy.value(a_t, c_t).numpy().reshape(W, T)
             old_logp = self.policy.dist(a_t).log_prob(actions).sum(-1)
