@@ -13,8 +13,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
 
-import cart_demo  # noqa: E402
-import label_reader as lr  # noqa: E402
+from bila.control import cart_demo  # noqa: E402
+from bila.vision import label_reader as lr  # noqa: E402
 
 
 def quad(cx, cy, w, h, angle_deg):

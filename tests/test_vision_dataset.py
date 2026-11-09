@@ -10,10 +10,10 @@ import mujoco
 import numpy as np
 import pytest
 
-import make_vision_dataset as mvd
-from camera import WristCamera, project
-from rgbd_perception import OracleSegmenter
-from shelf_scene import ShelfConfig, book_assets, build_scene, sample_row
+from bila.vision import make_vision_dataset as mvd
+from bila.vision.camera import WristCamera, project
+from bila.vision.rgbd_perception import OracleSegmenter
+from bila.sim.shelf_scene import ShelfConfig, book_assets, build_scene, sample_row
 
 PANDA = "mujoco_menagerie/franka_emika_panda/panda.xml"
 
@@ -65,8 +65,8 @@ def test_oracle_one_mask_per_book_with_covers_and_pages():
 
 @pytest.fixture(scope="module")
 def cart_frame():
-    import cart_demo
-    from inspection import look_from
+    from bila.control import cart_demo
+    from bila.control.inspection import look_from
     cfg, row, tray, _ = cart_demo.sample("tight", 0)
     numbers = mvd.cart_numbers(row, tray, 0)
     model, tray = cart_demo.build(cfg, row, tray, numbers)
@@ -111,7 +111,7 @@ def test_sticker_corners_in_reading_order(cart_frame):
 
 def test_make_scene_writes_matching_files(tmp_path, monkeypatch):
     """One shelf scene, one view: the mask's values match the label's book list."""
-    import insert_book
+    from bila.control import insert_book
     monkeypatch.setattr(insert_book, "SWEEP", (0.0,))
     monkeypatch.setattr(mvd, "SHELF_VIEWS", 0)
     for sub in ("rgb", "depth", "masks", "labels", "scenes"):

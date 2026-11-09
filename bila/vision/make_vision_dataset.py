@@ -4,7 +4,7 @@ a mask for every book and a box and text for every call-number sticker, all
 read off the simulation.
 
     # in WSL; software rendering is fine (~0.3 s an image, the arm poses cost more)
-    MUJOCO_GL=egl OMP_NUM_THREADS=1 uv run python make_vision_dataset.py \\
+    MUJOCO_GL=egl OMP_NUM_THREADS=1 uv run python -m bila.vision.make_vision_dataset \\
         --out ~/bila_data/train --first-seed 2000 --scenes 600 --workers 6
     ... --out ~/bila_data/val --first-seed 9000 --scenes 60
 
@@ -61,7 +61,7 @@ import cv2
 import mujoco
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 PANDA = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
 DEPTH_UNIT = 1e-4             # m per count in the depth PNGs: 1.5 m (the camera's range) is 15000
 CART_SHARE = 0.4              # share of scenes that are cart scenes (with stickers)
@@ -120,7 +120,7 @@ def vary_look(model: mujoco.MjModel, rng) -> dict:
 def cart_numbers(row, tray, seed):
     """Call numbers as cart_demo.main gives them: the shelf's from the map,
     and the returned books not for the target row get spare numbers of other rows."""
-    from cart_demo import STEP, call_numbers
+    from bila.control.cart_demo import STEP, call_numbers
     numbers, shelf_map = call_numbers(row)
     spare = [n for level, _, first, last in shelf_map if level != row.target_level
              for n in range(first + STEP // 2, last, STEP)]
@@ -135,12 +135,12 @@ def cart_numbers(row, tray, seed):
 # ---------------------------------------------------------------------------
 def solve_camera(model, data, ik, cam_pos, cam_rot, rng) -> Optional[np.ndarray]:
     """inspection.solve_camera with fewer random starts (IK_SEEDS)."""
-    from inspection import solve_camera as solve
+    from bila.control.inspection import solve_camera as solve
     return solve(model, data, ik, cam_pos, cam_rot, rng, seeds=IK_SEEDS)
 
 
 def looking(forward, ref) -> np.ndarray:
-    from inspection import looking as axes
+    from bila.control.inspection import looking as axes
     return axes(forward, ref)
 
 
@@ -180,7 +180,7 @@ def sticker_labels(model, data, frame, texts: dict) -> List[dict]:
     """Every sticker at least partly in the image: its text, corners (px, in
     reading order), pixels seen, and the share of its face that is seen (less
     than 1 when something covers it or it is cut off)."""
-    from camera import project
+    from bila.vision.camera import project
     out = []
     for book, text in texts.items():
         g = model.geom(book + "_label").id
@@ -204,7 +204,7 @@ class Writer:
     def __init__(self, out: str, seed: int, model, data, where, texts):
         self.out, self.seed, self.m, self.d = out, seed, model, data
         self.where, self.texts = where, texts
-        from rgbd_perception import OracleSegmenter
+        from bila.vision.rgbd_perception import OracleSegmenter
         self.oracle = OracleSegmenter(model)
         self.records, self.render_s = [], 0.0
 
@@ -232,7 +232,7 @@ class Writer:
 
 
 def make_shelf_scene(seed: int, rng):
-    from shelf_scene import SCENARIOS, ShelfConfig, make_episode
+    from bila.sim.shelf_scene import SCENARIOS, ShelfConfig, make_episode
     scenario = SCENARIOS[int(rng.integers(len(SCENARIOS)))]
     look = shelf_appearance(rng)
     model, data, row, _ = make_episode(ShelfConfig(**look), scenario, rng, panda_xml=PANDA)
@@ -243,9 +243,9 @@ def make_shelf_scene(seed: int, rng):
 
 def shelf_views(model, data, row, rng, write, cam):
     """The sweep of the first look, then random views."""
-    from insert_book import SWEEP, ArmIK
-    from inspection import STANDOFFS, look_from, solve_inspection, solve_view
-    from shelf_scene import PANDA_HOME
+    from bila.control.insert_book import SWEEP, ArmIK
+    from bila.control.inspection import STANDOFFS, look_from, solve_inspection, solve_view
+    from bila.sim.shelf_scene import PANDA_HOME
     ik = ArmIK(model, PANDA_HOME[:7])
     for dx in SWEEP:
         v = solve_inspection(model, data, row, dx, ik)
@@ -264,10 +264,10 @@ def shelf_views(model, data, row, rng, write, cam):
 def cart_views(model, data, row, tray, rng, write, cams):
     """row_cam and tray_cam as cart_demo uses them, the wrist camera's first
     look, then close-ups of the stickers in the row and in the tray."""
-    from cart_demo import SCAN_POSE
-    from insert_book import ArmIK
-    from inspection import look_from, slot_x, solve_inspection, solve_view
-    from shelf_scene import PANDA_HOME
+    from bila.control.cart_demo import SCAN_POSE
+    from bila.control.insert_book import ArmIK
+    from bila.control.inspection import look_from, slot_x, solve_inspection, solve_view
+    from bila.sim.shelf_scene import PANDA_HOME
     home = np.array(PANDA_HOME[:7])
     look_from(model, data, SCAN_POSE)                       # leaned out of row_cam's view, as cart_demo reads the row
     write(cams["row_cam"], "row_cam")
@@ -316,7 +316,7 @@ def cart_views(model, data, row, tray, rng, write, cams):
 def make_scene(task) -> List[dict]:
     """Every image of one scene; writes them and scenes/<seed>.json."""
     out, seed = task
-    from camera import DepthNoise, WristCamera
+    from bila.vision.camera import DepthNoise, WristCamera
     t0 = time.time()
     rng = np.random.default_rng(seed)
     kind = scene_kind(seed)
@@ -326,8 +326,8 @@ def make_scene(task) -> List[dict]:
             model, data, row, scenario, look, where = make_shelf_scene(seed, rng)
             texts, tray = {}, []
         else:
-            import cart_demo
-            from shelf_scene import settle
+            from bila.control import cart_demo
+            from bila.sim.shelf_scene import settle
             scenario = ("clear", "tight", "leaning", "packed")[int(rng.integers(4))]
             cfg, row, tray, _ = cart_demo.sample(scenario, seed)
             numbers = cart_numbers(row, tray, seed)

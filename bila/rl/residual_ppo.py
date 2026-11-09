@@ -27,7 +27,7 @@ import torch._dynamo  # noqa: F401  (now, not lazily at Adam's first step: impor
 #                        wrist camera has rendered through Mesa's software EGL, it segfaults)
 import torch.nn as nn
 
-from train_residual import Config, RunningStats
+from bila.rl.train_residual import Config, RunningStats
 
 
 def mlp(n_in: int, n_out: int, hidden: int, last_gain: float) -> nn.Sequential:

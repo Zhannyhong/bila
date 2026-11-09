@@ -2,7 +2,7 @@
 A ShelfEstimate from the wrist camera's RGB-D image: what the robot knows
 about the target row once it has looked at it.
 
-    from rgbd_perception import RGBDPerception
+    from bila.vision.rgbd_perception import RGBDPerception
     look_from(model, data, solve_inspection(model, data, row)[0])    # the arm at the inspection pose
     with RGBDPerception(model, row) as perception:
         est = perception.estimate(data)                              # a ShelfEstimate, like the others
@@ -60,12 +60,12 @@ import cv2
 import mujoco
 import numpy as np
 
-from camera import CameraFrame, WristCamera, project, robot_mask
-from insert_book import ShelfFrame
-from inspection import slot_x
-from perception import (DEPTH_PRIOR, DEPTH_CLEARANCE, GAP_HEIGHTS, BookEstimate, ShelfEstimate,
+from bila.vision.camera import CameraFrame, WristCamera, project, robot_mask
+from bila.control.insert_book import ShelfFrame
+from bila.control.inspection import slot_x
+from bila.vision.perception import (DEPTH_PRIOR, DEPTH_CLEARANCE, GAP_HEIGHTS, BookEstimate, ShelfEstimate,
                         book_from_spine, gap_profile)
-from shelf_scene import Row
+from bila.sim.shelf_scene import Row
 
 FACING_COS = math.cos(math.radians(30))   # a point is on a spine if its surface faces within 30 deg of out of the shelf
 NORMAL_STEP = 2                           # px: normals from the points this far to each side
@@ -301,10 +301,13 @@ class RGBDPerception:
         return self.estimate_from_frames([frame])
 
     def estimate_from_frames(self, frames: List[CameraFrame], x_slot: Optional[float] = None,
-                             placed_x: Optional[float] = None) -> ShelfEstimate:
+                             placed_x: Optional[float] = None, read_slot: Optional[float] = None) -> ShelfEstimate:
         """One estimate from several images of the row. x_slot: where the slot
         is along the row (default: the shelf map's place for it). placed_x:
-        where the robot let go of a book it put into the slot."""
+        where the robot let go of a book it put into the slot. read_slot:
+        where the slot is by the call numbers read off the spines
+        (call_numbers_seen.py); it overrides both the shelf map's place and
+        its count of the books left of the slot."""
         cams = [self.shelf.to_shelf(f.pose[:3, 3])[0] for f in frames]
         views = [self.sightings(f) for f in frames]
 
@@ -326,7 +329,9 @@ class RGBDPerception:
         row, shelf = self.row, self.shelf
         W_half, z0 = row.shelf_width / 2, row.target_board_top
         panels = tuple(x if any(self.panel_in_view(f, x) for f in frames) else None for x in (-W_half, W_half))
-        whole_row = None not in panels and len(kept) == len(row.books)
+        whole_row = None not in panels and len(kept) == len(row.books) and read_slot is None
+        if read_slot is not None:
+            x_slot = read_slot
         books, labels = self.name([s for _, s in kept], slot_x(row) if x_slot is None else x_slot, placed_x,
                                   n_left=row.target_index if whole_row else None)
         self.last_labels = labels

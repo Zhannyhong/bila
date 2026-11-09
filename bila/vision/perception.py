@@ -33,7 +33,7 @@ Frame: the shelf frame of shelf_scene / insert_book (x along the row, y out of
 the shelf, z up, origin on the floor at the bookcase's centre). The board's
 front edge is at y = shelf_depth / 2.
 
-    from perception import GroundTruthPerception
+    from bila.vision.perception import GroundTruthPerception
     est = GroundTruthPerception(model, row).estimate(data)
     left = est.book(-1)                        # the slot's left neighbour
     print(left.lean, est.min_gap_width(0.25))  # its lean, the narrowest gap up to 25 cm
@@ -48,8 +48,8 @@ from typing import List, Optional, Protocol, Tuple
 import mujoco
 import numpy as np
 
-from insert_book import ShelfFrame
-from shelf_scene import Row, ShelfConfig
+from bila.control.insert_book import ShelfFrame
+from bila.sim.shelf_scene import Row, ShelfConfig
 
 # Heights above the target board where the gap is measured (m). Books are
 # 17 to 30 cm tall, so these cover any target book; above a book's top the

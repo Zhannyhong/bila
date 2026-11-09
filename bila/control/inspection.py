@@ -23,7 +23,7 @@ tried, from 30 cm left to 30 cm right of the slot.
 Getting the arm there is not modelled: `look_from` puts it at the pose
 directly, as if a planner or the mobile base had brought it there.
 
-    from inspection import solve_inspection, look_from
+    from bila.control.inspection import solve_inspection, look_from
     q, standoff = solve_inspection(model, data, row)   # None if no safe arm pose reaches any of them
     look_from(model, data, q)                          # wrist_cam now looks at the slot
 """
@@ -35,9 +35,9 @@ from typing import Optional, Tuple
 import mujoco
 import numpy as np
 
-from camera import CAMERA
-from insert_book import MIN_MARGIN, ArmIK, ShelfFrame
-from shelf_scene import PANDA_HOME, Row
+from bila.vision.camera import CAMERA
+from bila.control.insert_book import MIN_MARGIN, ArmIK, ShelfFrame
+from bila.sim.shelf_scene import PANDA_HOME, Row
 
 STANDOFFS = (0.48, 0.43, 0.38)  # camera this far in front of the board's front edge, furthest tried first
                                 # (spines are 1-3 cm behind the edge: about 50, 45, 40 cm from them)

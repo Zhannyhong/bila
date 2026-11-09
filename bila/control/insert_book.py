@@ -2,13 +2,13 @@
 Scripted insertion of the target book: one controller for the clear, tight,
 leaning and packed scenarios.
 
-    uv run python insert_book.py --scenario clear --seed 0              # one episode, headless
-    uv run python insert_book.py --scenario tight --seed 0 --trials 50  # success rate over seeds 0..49
-    uv run mjpython insert_book.py --scenario tight --seed 0 --view     # watch it (macOS needs mjpython)
-    uv run mjpython insert_book.py --scenario leaning --seed 12 --view  # a leaner it has to clamp
-    uv run mjpython insert_book.py --scenario packed --seed 7 --view    # a packed row
-    uv run python insert_book.py --scenario tight --seed 0 --perception camera   # decide from the wrist camera
-    uv run mjpython insert_book.py --scenario tight --seed 0 --perception camera --view   # ... and see what it saw
+    uv run python -m bila.control.insert_book --scenario clear --seed 0              # one episode, headless
+    uv run python -m bila.control.insert_book --scenario tight --seed 0 --trials 50  # success rate over seeds 0..49
+    uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --view     # watch it (macOS needs mjpython)
+    uv run mjpython -m bila.control.insert_book --scenario leaning --seed 12 --view  # a leaner it has to clamp
+    uv run mjpython -m bila.control.insert_book --scenario packed --seed 7 --view    # a packed row
+    uv run python -m bila.control.insert_book --scenario tight --seed 0 --perception camera   # decide from the wrist camera
+    uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --perception camera --view   # ... and see what it saw
 
 The controller (Episode.reshelve) looks at the slot, takes the high-level step
 it needs next, and looks again. The scenario only picks the row; every row
@@ -146,11 +146,11 @@ from typing import Optional, Tuple
 import numpy as np
 import mujoco
 
-from shelf_scene import (FINGER_HALF_W, FINGER_LEN, FINGER_THICK, PANDA_HOME, ShelfConfig, _f, add_book_geoms,
+from bila.sim.shelf_scene import (FINGER_HALF_W, FINGER_LEN, FINGER_THICK, PANDA_HOME, ShelfConfig, _f, add_book_geoms,
                          add_book_visual_assets, add_page_visual_assets, book_children, book_tilt_deg,
                          build_scene, sample_row, settle)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 DEFAULT_PANDA = os.path.join(HERE, "mujoco_menagerie", "franka_emika_panda", "panda.xml")
 
 # Panda hand geometry, with the thin fingers shelf_scene gives it (Menagerie's
@@ -270,10 +270,11 @@ COLLISION_MIN_FORCE = 1.0   # N: the robot pressing on the shelf's structure, th
 # ---------------------------------------------------------------------------
 # 1. Scene: the generated bookcase plus the target book
 # ---------------------------------------------------------------------------
-def build_model(cfg: ShelfConfig, row, panda_xml: str) -> mujoco.MjModel:
+def build_model(cfg: ShelfConfig, row, panda_xml: str, stickers: bool = False) -> mujoco.MjModel:
     """The scene from shelf_scene.build_scene, plus the target book parked on
     the floor beside the bookcase (out of the way while the row settles), a
-    stronger gripper, and gravity compensation on the arm."""
+    stronger gripper, and gravity compensation on the arm. stickers: a
+    call-number sticker on every book's spine (cart_demo.call_numbers)."""
     root = ET.fromstring(build_scene(cfg, row, panda_xml))
     b = row.target_book
     park = (row.shelf_pos[0] + row.shelf_width / 2 + 0.5, 0.4, b.height / 2 + 0.0005)
@@ -288,6 +289,9 @@ def build_model(cfg: ShelfConfig, row, panda_xml: str) -> mujoco.MjModel:
     # section after the welded back one, all closed.
     hinges = _f(*([0.0] * max(0, len(b.parts) - 1)))
     key.set("qpos", key.get("qpos") + " " + _f(*park, 1, 0, 0, 0) + (" " + hinges if hinges else ""))
+    if stickers:
+        from bila.control.cart_demo import add_stickers, call_numbers                  # it imports this module
+        add_stickers(root, row.books + [b] + [o for fl in row.filler_levels for o in fl.books], call_numbers(row)[0])
 
     return compile_robot_scene(ET.tostring(root, encoding="unicode"))
 
@@ -793,7 +797,7 @@ def still(b, before) -> bool:
 def resized(b, like):
     """A seen book (BookEstimate) with the thickness and height of `like`, its
     spine face scaled about its centre."""
-    from perception import book_from_spine                     # perception imports this module
+    from bila.vision.perception import book_from_spine                     # perception imports this module
     c = b.spine_corners
     centre = c.mean(axis=0)
     across = ((c[1] - c[0]) + (c[2] - c[3])) / 2 * like.thickness / b.thickness
@@ -909,7 +913,7 @@ class Episode:
         look saw; else what a camera would report (ground truth)."""
         if self.eyes is not None:
             return self.seen()
-        from perception import GroundTruthPerception           # perception imports this module
+        from bila.vision.perception import GroundTruthPerception           # perception imports this module
         if self._perception is None:
             self._perception = GroundTruthPerception(self.m, self.row)
         return self._perception.estimate(self.d)
@@ -918,7 +922,7 @@ class Episode:
         """(x_left, x_right) of the slot at height z above the board, at the
         spine plane: the right-most edge of anything left of it and the
         left-most edge of anything right of it (side panels included)."""
-        from perception import slice_x
+        from bila.vision.perception import slice_x
         est = est or self.estimate()
         zz = self.z0 + z
         left = [s[1] for b in est.books if b.slot_offset < 0 and (s := slice_x(b.spine_corners, zz))]
@@ -993,7 +997,7 @@ class Episode:
         it inserted. Raises RuntimeError if no view is reachable, or the
         camera doesn't see both of the slot's neighbours."""
         from dataclasses import replace
-        from perception import gap_profile                          # perception imports this module
+        from bila.vision.perception import gap_profile                          # perception imports this module
         if self.run is None:                                         # the first look: start from where the arm is
             self.place_arm(self.d.qpos[self.ik.qadr].copy())
         run, t0 = self.run, self.run.t
@@ -1038,7 +1042,7 @@ class Episode:
         self.est, self.felt, self.carried, self.moved, self.far = est, {}, None, {}, True
         self.believe()
         if self.viewer is not None:                                  # draw what the camera saw over the scene
-            from visualize import draw_in_viewer
+            from bila.viz.visualize import draw_in_viewer
             with self.viewer.lock():
                 self.viewer.user_scn.ngeom = 0
                 draw_in_viewer(self.viewer.user_scn, est, (self.t, self.h))
@@ -1046,7 +1050,7 @@ class Episode:
     def inspection_views(self):
         """[(dx, arm angles)] of the views in SWEEP the arm reaches, the scene
         as it is now. (Its own method so a training env can cache it.)"""
-        from inspection import solve_inspection                     # inspection imports this module
+        from bila.control.inspection import solve_inspection                     # inspection imports this module
         return [(dx, v[0]) for dx in SWEEP if (v := solve_inspection(self.m, self.d, self.row, dx))]
 
     def slot_now(self):
@@ -1064,7 +1068,7 @@ class Episode:
         real size, in the planner's model) behind it; and as if the books the
         camera didn't see weren't there. The book it let go of in the slot:
         where the camera saw it, else where the hand let go of it."""
-        from perception import book_box
+        from bila.vision.perception import book_box
         ti, by_offset, belief = self.row.target_index, {b.slot_offset: b for b in self.est.books}, []
 
         def pose_of(b, geom):
@@ -1092,7 +1096,7 @@ class Episode:
         """Row book i (a BookEstimate) as the last look saw it, moved and
         turned with the hand if the hand has pinched it since (carry, let_go);
         None if the camera didn't see it."""
-        from perception import book_from_spine                     # perception imports this module
+        from bila.vision.perception import book_from_spine                     # perception imports this module
         b = self.seen().book(self.offset(i))
         if i in self.moved:
             return self.moved[i]
@@ -1150,7 +1154,7 @@ class Episode:
 
     def seen_box(self, b):
         """Corners (8, 3; shelf frame) of a seen book's box, as the robot models it."""
-        from perception import book_box
+        from bila.vision.perception import book_box
         centre, R, half = book_box(b)
         return centre + (np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)]) * half) @ R.T
 
@@ -1946,7 +1950,7 @@ class Episode:
             R = self.shelf.R.T @ self.d.xmat[body].reshape(3, 3)      # its axes, shelf frame
             c = self.shelf.to_shelf(self.d.xpos[body])
         else:                                                         # its box as the camera saw it (depth: the prior)
-            from perception import book_box
+            from bila.vision.perception import book_box
             c, R, half = book_box(self.seen().book(side))
             t, depth, h = 2 * half
         out = -side                                                   # toward the slot along x
@@ -2531,7 +2535,7 @@ class Episode:
         it has turned more than atan(thickness / depth). With eyes: from its
         box as seen (book_seen)."""
         if self.eyes is not None:
-            from perception import book_box
+            from bila.vision.perception import book_box
             centre, R, (half_t, half_d, half_h) = book_box(self.book_seen(i))
         else:
             g = self.row_geoms[i]
@@ -2588,27 +2592,29 @@ class Episode:
 # ---------------------------------------------------------------------------
 # 4. Episodes and CLI
 # ---------------------------------------------------------------------------
-def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries: int = 10):
+def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries: int = 10, stickers: bool = False):
     """Like shelf_scene.make_episode, on the model with the target book."""
     for _ in range(max_tries):
         row = sample_row(cfg, scenario, rng)
-        model = build_model(cfg, row, panda_xml)
+        model = build_model(cfg, row, panda_xml, stickers)
         data = mujoco.MjData(model)
         if settle(model, data, row)["stable"]:
             return model, data, row
     raise RuntimeError(f"No stable {scenario} row in {max_tries} tries")
 
 
-def make_eyes(model, row, seed, noise="realistic"):
+def make_eyes(model, row, seed, noise="realistic", segmenter=None):
     """The wrist camera's perception for --perception camera: with `noise`
     realistic, a D405's stereo errors and a calibration error drawn per
-    episode; basic, only independent depth noise per pixel."""
-    from camera import CalibrationError, DepthNoise, WristCamera
-    from rgbd_perception import RGBDPerception                       # it imports this module
+    episode; basic, only independent depth noise per pixel. A segmenter
+    (e.g. a LearnedSegmenter) replaces the simulation's masks, with the
+    robust spine fit learned masks need."""
+    from bila.vision.camera import CalibrationError, DepthNoise, WristCamera
+    from bila.vision.rgbd_perception import RGBDPerception                       # it imports this module
     rng = np.random.default_rng(seed)
     cam = (WristCamera(model, noise=DepthNoise.d405(), rng=rng, calibration=CalibrationError())
            if noise == "realistic" else WristCamera(model, noise=DepthNoise(), rng=rng))
-    return RGBDPerception(model, row, cam)
+    return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None)
 
 
 def report_collisions(res: dict) -> str:

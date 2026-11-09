@@ -4,9 +4,9 @@ controller (insert_book.Episode) makes room for the book, and the policy
 corrects its hand during the contact moves (Runner.contact: widen's pushes,
 the lift and the clamp's swing, the shove).
 
-    uv run python gap_env.py pool --scenario tight --seeds 1000 --workers 12   # build the training scenes once
-    uv run python gap_env.py pool --scenario tight --seeds 40 --first-seed 20000 --name tight_val   # validation
-    from gap_env import GapEnv
+    uv run python -m bila.rl.gap_env pool --scenario tight --seeds 1000 --workers 12   # build the training scenes once
+    uv run python -m bila.rl.gap_env pool --scenario tight --seeds 40 --first-seed 20000 --name tight_val   # validation
+    from bila.rl.gap_env import GapEnv
     env = GapEnv(scenarios=("tight",), first_phases=("widen",))                 # loads scenes/gap_pool_tight.pkl
 
 One env step is one residual decision (every RESIDUAL_EVERY physics steps,
@@ -85,13 +85,13 @@ import gymnasium as gym
 import mujoco
 import numpy as np
 
-from insert_book import (DEFAULT_PANDA, GAP_MARGIN, LEAN_MIN_DEG, RESIDUAL_MAX, RESIDUAL_STEP, Episode, build_model,
+from bila.control.insert_book import (DEFAULT_PANDA, GAP_MARGIN, LEAN_MIN_DEG, RESIDUAL_MAX, RESIDUAL_STEP, Episode, build_model,
                          make_episode)
-from observation import TOOL_OFFSET, ObservationBuilder, book_names_by_offset, robot_state
-from perception import GroundTruthPerception, NoisyPerception
-from shelf_scene import ShelfConfig, book_tilt_deg
+from bila.rl.observation import TOOL_OFFSET, ObservationBuilder, book_names_by_offset, robot_state
+from bila.vision.perception import GroundTruthPerception, NoisyPerception
+from bila.sim.shelf_scene import ShelfConfig, book_tilt_deg
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+from bila import ROOT as HERE
 POOL_DIR = os.path.join(HERE, "scenes")
 POOL_FIRST_SEED = 10_000     # training scene seeds start here (test seeds are 0-49)
 STATE = mujoco.mjtState.mjSTATE_INTEGRATION
@@ -513,7 +513,7 @@ def pool_path(name: str, root: str = POOL_DIR) -> str:
 def load_pool(name: str, root: str = POOL_DIR) -> List[Packed]:
     path = pool_path(name, root)
     if not os.path.exists(path):
-        raise FileNotFoundError(f"{path} is missing: build it with `python gap_env.py pool --scenario ...`")
+        raise FileNotFoundError(f"{path} is missing: build it with `python -m bila.rl.gap_env pool --scenario ...`")
     with open(path, "rb") as f:
         return pickle.load(f)
 
@@ -627,5 +627,5 @@ def main():
 
 
 if __name__ == "__main__":
-    import gap_env                          # so the pool pickles gap_env.PoolEntry, not __main__'s (unloadable)
+    from bila.rl import gap_env                          # so the pool pickles gap_env.PoolEntry, not __main__'s (unloadable)
     gap_env.main()

@@ -3,14 +3,14 @@ A learned book segmenter: Mask R-CNN (torchvision, fine-tuned from COCO) that
 finds one mask per book in a colour image, in place of OracleSegmenter's
 reading of the simulation's object ids.
 
-    from learned_segmenter import LearnedSegmenter
+    from bila.vision.learned_segmenter import LearnedSegmenter
     with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt")) as perception:
         est = perception.estimate(data)
 
     # in WSL, on the dataset make_vision_dataset.py writes (needs `uv sync --group rl`)
-    MUJOCO_GL=egl uv run python learned_segmenter.py train --data ~/bila_data/train --val ~/bila_data/val \
+    MUJOCO_GL=egl uv run python -m bila.vision.learned_segmenter train --data ~/bila_data/train --val ~/bila_data/val \
         --out ~/bila_data/segmenter
-    uv run python learned_segmenter.py eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
+    uv run python -m bila.vision.learned_segmenter eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
 
 It sees only the colour image (depth comes in afterwards, in RGBDPerception's
 spine fits), so the COCO-pretrained backbone is used as it is. There is one
@@ -41,7 +41,7 @@ import cv2
 import numpy as np
 import torch
 
-from rgbd_perception import OracleSegmenter, Segment
+from bila.vision.rgbd_perception import OracleSegmenter, Segment
 
 MIN_TRAIN_PIXELS = 40           # a book showing fewer pixels than this isn't a training target (a sliver at an edge)
 SCORE = 0.5                     # detections less sure than this are dropped
@@ -55,6 +55,11 @@ MATCH_IOU = 0.5                 # a prediction this close to a true book counts 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
+def default_device() -> str:
+    """An NVIDIA GPU, else Apple's (MPS: full precision only), else the CPU."""
+    return "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+
 def build_model(pretrained: bool = True):
     """Mask R-CNN (ResNet-50 FPN) for one class, at the images' own size
     (1280 x 720: the default would scale them up to 800 high). Starts from the
@@ -119,7 +124,7 @@ class LearnedSegmenter:
 
     def __init__(self, weights: str, device: Optional[str] = None, score: float = SCORE,
                  mask_threshold: float = MASK_THRESHOLD):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or default_device()
         self.model = load_model(weights, self.device)
         self.score, self.mask_threshold = score, mask_threshold
 
@@ -253,7 +258,7 @@ def train(data: str, out: str, val: Optional[str] = None, epochs: int = 8, batch
     out/segmenter.pt after every epoch (with the optimiser, to resume from)
     and logs the losses and, if `val` is given, the validation scores."""
     os.makedirs(out, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = default_device()
     torch.manual_seed(0)
     loader = torch.utils.data.DataLoader(BookImages(data, augment=True), batch_size=batch, shuffle=True,
                                          num_workers=workers, collate_fn=collate, persistent_workers=workers > 0)
@@ -384,7 +389,7 @@ def main():
     if a.command == "train":
         train(a.data, os.path.expanduser(a.out), a.val, a.epochs, a.batch, a.lr, a.workers, a.max_steps)
     else:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = default_device()
         print_scores(evaluate(load_model(os.path.expanduser(a.weights), device), a.data, device, by=True))
 
 

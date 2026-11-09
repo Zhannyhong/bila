@@ -10,14 +10,13 @@ import mujoco
 import numpy as np
 import pytest
 
-import shelf_scene
-from perception import GroundTruthPerception
-from shelf_scene import (FINGER_HALF_W, FINGER_LEN, ShelfConfig, book_children, build_scene, make_episode,
+from bila.sim import shelf_scene
+from bila.vision.perception import GroundTruthPerception
+from bila.sim.shelf_scene import (FINGER_HALF_W, FINGER_LEN, ShelfConfig, book_children, build_scene, make_episode,
                          sample_row)
 
 MM = 0.001
-PANDA = os.path.join(os.path.dirname(os.path.abspath(shelf_scene.__file__)),
-                     "mujoco_menagerie", "franka_emika_panda", "panda.xml")
+from bila.control.insert_book import DEFAULT_PANDA as PANDA  # noqa: E402
 
 
 @pytest.mark.parametrize("seed", [0, 1])
