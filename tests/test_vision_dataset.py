@@ -66,14 +66,16 @@ def test_oracle_one_mask_per_book_with_covers_and_pages():
 @pytest.fixture(scope="module")
 def cart_frame():
     from bila.control import cart_demo
-    from bila.control.inspection import look_from
+    from bila.control.insert_book import ArmIK
+    from bila.control.inspection import look_from, solve_inspection
+    from bila.sim.shelf_scene import PANDA_HOME
     cfg, row, tray, _ = cart_demo.sample("tight", 0)
     numbers = mvd.cart_numbers(row, tray, 0)
     model, tray = cart_demo.build(cfg, row, tray, numbers)
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, 0)
-    look_from(model, data, cart_demo.SCAN_POSE)
-    return model, data, row, capture(model, data, "row_cam")
+    look_from(model, data, solve_inspection(model, data, row, 0.0, ArmIK(model, PANDA_HOME[:7]))[0])   # the first look's middle view
+    return model, data, row, capture(model, data, "panda/wrist_cam")
 
 
 def test_stickers_are_part_of_their_book(cart_frame):

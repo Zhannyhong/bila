@@ -7,14 +7,18 @@ on its spine.
     uv run python -m bila.control.cart_demo --scenario tight             # headless: prints each step and the score
     uv run mjpython -m bila.control.cart_demo --scenario tight --view    # watch it (macOS needs mjpython)
     uv run python -m bila.control.cart_demo --scenario leaning --seed 3  # clear, tight, leaning or packed
+    uv run python -m bila.control.cart_demo --scenario tight --segmenter ~/bila_data/segmenter/segmenter.pt   # learned book masks
 
-What the robot does, as a librarian would:
-  1. Read the call numbers in the tray (tray_cam, looking down on the spines).
+What the robot does, as a librarian would, with one camera, on its wrist:
+  1. Read the call numbers in the tray: a wrist view down onto the whole
+     tray, then a close-up of each sticker it couldn't read from there.
   2. Look each one up in the shelf map, which it knows: every row's board
      height and the first and last call number on it. That names the row.
-  3. Raise the lift to that row, lean the arm out of row_cam's view, and read
-     the spines along the row, to find the slot: between the two books whose
-     numbers bracket the book's.
+  3. Raise the lift to that row. The episode's first look (insert_book's
+     sweep of wrist views along the row) reads the spines' stickers, and the
+     slot is between the two books whose numbers bracket the book's
+     (call_numbers_seen.ReadingEyes); the row is estimated from the same
+     images (RGBDPerception).
   4. Make room there with the empty hand (insert_book's skills: widen a tight
      gap, stand a leaning neighbour up, shove a packed row aside).
   5. Pick the book out of the tray and insert it. The tray holds it spine-up,
@@ -24,10 +28,7 @@ What the robot does, as a librarian would:
 
 Reading a sticker here means enough of it is visible in the camera image; its
 number then comes from the simulation. With `--labels learned` the numbers
-are read from the images instead (label_reader.py; train it first): tray_cam
-and row_cam find the stickers and read what they can, and the wrist camera
-takes a close look (~20 cm) at those they can't, in the tray, and in the row
-until the two books whose numbers bracket the book's are read side by side.
+are read from the images instead (label_reader.py; train it first).
 Books the robot can't handle (shelvable()) go to the librarian, not the tray.
 Only the scenario's target row has a slot to fill: the other tray books are
 read and looked up, but stay in the tray.
@@ -35,8 +36,7 @@ read and looked up, but stay in the tray.
 Cart frame (the old robot mount, which faces the shelf): +x toward the shelf,
 +y to the tray side, z up, origin at the Panda's base at the target row's
 usual height. The cart does not drive yet. Its parts are visual except the
-tray, its dividers, the lift rail, the deck and the camera posts, which the
-arm must not hit.
+tray, its dividers, the lift rail and the deck, which the arm must not hit.
 """
 
 import argparse
@@ -52,7 +52,8 @@ from PIL import Image, ImageDraw, ImageFont
 from bila.control import insert_book
 from bila.sim.shelf_scene import (PANDA_HOME, ShelfConfig, _catalogue_book, _f, add_book_geoms, add_book_visual_assets,
                          board_tops, build_scene, sample_row, settle)
-from bila.control.insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_OPEN, MIN_MARGIN, PALM_GAP, PALM_Z,
+from bila.control.insert_book import (DEFAULT_PANDA, FINGERTIP_Z, GAP_MARGIN, GRIP_CLOSED, GRIP_FORCE, GRIP_OPEN, MIN_MARGIN,
+                         PAD_INSET, PALM_GAP, PALM_Z,
                          WAYPOINT_TRIES, ArmIK, Episode, Runner, compile_robot_scene, report, segment)
 
 from bila import ROOT as HERE
@@ -66,24 +67,28 @@ TRAY = (-0.12, 0.50, 0.72)  # tray centre (cart x, y) and its floor's height abo
 TRAY_HALF = (0.27, 0.15)
 SLOT_CLEAR = 0.025          # room each side of a book in its slot: finger 12 mm + opening 8 mm + 5 mm
 DIVIDER_H = 0.08
-TRAY_CAM_UP = 0.95          # tray_cam's boom this far above the tray floor
 TRAY_BOOKS = 5              # books the tray is loaded with (if they fit)
 OPEN_SPARE = 0.008          # the fingers open this much wider than the book, each side
 LIFT_SPEED = 0.10           # m/s, peak, of the lift's moves
 CARRY_JOINT_SPEED = 0.3     # rad/s, peak, of the arm's joint moves while it carries a book
 CARRY_CHECK = 0.01          # rad: ... checked for collisions this often along the way (~4 mm at the book's far end)
 CART_CLEAR = 0.01           # the arm's planner keeps the arm this far from the cart's frame (KEEP_OUT parts)
-KEEP_OUT = ("deck", "lift_rail", "cam_arm", "cam_post", "lip_back", "lip_front", "lip_in", "lip_out",
-            "tray_cam_post", "tray_cam_boom", "tray_leg0", "tray_leg1", "tray_leg2", "tray_leg3")
+KEEP_OUT = ("deck", "lift_rail", "lip_back", "lip_front", "lip_in", "lip_out",
+            "tray_leg0", "tray_leg1", "tray_leg2", "tray_leg3")
 PAD_TORSION = 0.05          # torsional friction of the finger pads (m): resists a held book twisting
 CARRY_OUT = (0.12, 0.09, 0.06, 0.04, 0.02)   # the book comes down on the lift this far in front of its pre-insertion pose
 APPROACH_ABOVE = 0.012      # ... and comes in over the board this much higher (if the level has room), then down
-MAX_KG = 1.5                # heaviest book the grip is trusted with (a guess, to be measured)
+MAX_KG = 1.5                # assumption: heavier returns go to the librarian, whatever the grip could do
+# Carried at its spine end, a book's weight twists it in the pinch: kg g (depth/2 - PAD_INSET) about the
+# fingers' axis. The pads' torsional friction holds about 2 GRIP_FORCE PAD_TORSION of it: in the slip
+# runs (tests/test_grasp_slip.py, pad torsion 0.005-0.02) a 20 cm book began to creep in the grip at
+# 0.8-1.4 times that, and turned 10-75 deg at 2. So the book's twist is kept to TWIST_SAFETY of it.
+# Only as good as PAD_TORSION, which is not measured on the real pads yet.
+TWIST_SAFETY = 0.5
+# Carrying it from the tray stops if it turns or moves this much in the grip. Normal carries (seeds 0-9)
+# drift up to 0.8 deg / 4.3 mm; a 3 kg book with pads of torsion 0.01 crept 7.4 deg / 11.5 mm.
+SLIP_TURN_DEG, SLIP_MM = 5.0, 10.0
 STEP = 10                   # call numbers go up in tens along the shelves, so a returned book fits between two
-CAM_MOUNT = (-0.14, -0.27, 0.55)   # row camera (D435-like) on the carriage, from the Panda's base
-CAM_AIM = (0.75, 0.0, 0.45)        # where it looks: the target row's front, ~0.40 m + a third of a level above the base
-SCAN_POSE = [0.6, -0.6, 0, -1.5, 0, 2.0, 0.7853]  # arm leaned back and turned to the tray side, out of row_cam's view
-# (leaned back further, at -1.2, its elbow went into the lift rail with the lift below ~0.4 m)
 
 
 def shelvable(t, d, h, kg) -> list:
@@ -98,8 +103,15 @@ def shelvable(t, d, h, kg) -> list:
     if d < FINGERTIP_Z - PALM_Z - PALM_GAP + 0.01:
         why.append("too shallow: the fingertips would reach the slot floor")
     if kg > MAX_KG:
-        why.append("too heavy to trust the grip")
+        why.append("heavier than the robot is allowed to carry")
+    if twist(d, kg) > TWIST_SAFETY * 2 * GRIP_FORCE * PAD_TORSION:
+        why.append("its weight would twist it in the grip")
     return why
+
+
+def twist(d, kg) -> float:
+    """N m a book's weight puts about the fingers' axis, held at its spine end and level."""
+    return kg * 9.81 * max(0.0, d / 2 - PAD_INSET)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +266,7 @@ def build(cfg, row, tray, numbers):
         geom(cart, f"wheel{i}", dark, False, type="cylinder", size="0.06 0.02", pos=_f(x, y, fz + 0.06), euler="1.5708 0 0")
 
     # Lift: a rail behind the arm, and a carriage on the lift_z joint carrying the Panda. The rail stands
-    # clear of the arm's elbow in the tucked home pose and in SCAN_POSE (at -0.22 m both ran link3 into it).
+    # clear of the arm's elbow in the tucked home pose (at -0.22 m it ran link3 into it).
     box("lift_rail", (0.035, 0.09, (LIFT_MAX + 0.15) / 2), (RAIL_X, 0, deck + (LIFT_MAX + 0.15) / 2), "0.25 0.25 0.28 1")
     lift = ET.Element("body", name="lift", pos=_f(0, 0, deck))
     ET.SubElement(lift, "joint", name="lift_z", type="slide", axis="0 0 1", range=_f(0, LIFT_MAX), damping="3000")
@@ -266,16 +278,6 @@ def build(cfg, row, tray, numbers):
     if act is None:
         act = ET.SubElement(root, "actuator")
     ET.SubElement(act, "position", name="lift", joint="lift_z", kp="60000", ctrlrange=_f(0, LIFT_MAX))
-
-    # Row camera on a post on the carriage, beside the arm on the side away from the tray. It rides the lift
-    # with the arm, and the arm's base tracks the target board, so it sees every row from the same angle.
-    cx, cy, cz = CAM_MOUNT
-    box("cam_arm", (0.015, (0.09 - cy) / 2 - 0.09, 0.015), (cx, (cy - 0.09) / 2, -0.03), grey, True, lift)
-    geom(lift, "cam_post", grey, type="cylinder", size="0.015", fromto=_f(cx, cy, -0.03, cx, cy, cz - 0.02))
-    box("cam_head", (0.0125, 0.045, 0.0125), (cx, cy, cz), dark, False, lift)
-    fwd = np.subtract(CAM_AIM, CAM_MOUNT) / np.linalg.norm(np.subtract(CAM_AIM, CAM_MOUNT))
-    right = np.array([fwd[1], -fwd[0], 0.0]) / np.hypot(fwd[0], fwd[1])
-    ET.SubElement(lift, "camera", name="row_cam", pos=_f(cx + 0.015, cy, cz), xyaxes=_f(*right, *np.cross(right, fwd)), fovy="58")
 
     # Return tray on the +y side: one slot per book, books spine-up, dividers between the slots.
     tx, ty, tz = TRAY[0], TRAY[1], TRAY[2] - zb
@@ -295,14 +297,6 @@ def build(cfg, row, tray, numbers):
         slots.append((b, x + pitch / 2))
         x += pitch
         box(f"divider{len(slots)}", (0.003, hy - 0.01, DIVIDER_H / 2), (x, ty, tz + 0.008 + DIVIDER_H / 2), wood)
-
-    # Tray camera on a boom over the tray, looking straight down at the spines. High enough that the wrist
-    # clears the boom lifting a book out of the tray (at 0.75 m it didn't); its fov sees the tray as from 0.75 m.
-    px, py, ptop = tx - hx - 0.06, ty + hy + 0.04, tz + TRAY_CAM_UP
-    geom(cart, "tray_cam_post", grey, type="cylinder", size="0.015", fromto=_f(px, py, deck, px, py, ptop))
-    geom(cart, "tray_cam_boom", grey, type="cylinder", size="0.012", fromto=_f(px, py, ptop, tx, ty, ptop))
-    ET.SubElement(cart, "camera", name="tray_cam", pos=_f(tx, ty, ptop - 0.02), xyaxes="1 0 0 0 1 0",
-                  fovy=_f(2 * np.degrees(np.arctan(np.tan(np.radians(30)) * 0.73 / (TRAY_CAM_UP - 0.02)))))
 
     # Tray books: free bodies in the world, spine-up, their fore-edges on the tray floor (after all else in qpos).
     key = root.find("keyframe/key")
@@ -353,25 +347,43 @@ def build(cfg, row, tray, numbers):
     return model, tray_books
 
 
-def read_labels(model, data, camera, names, min_pixels=25):
-    """The books in `names` whose sticker shows clearly enough in `camera`'s image to read."""
-    # Without multisampling: anti-aliased edges blend the id colours into ids of no object (an IndexError).
-    samples, model.vis.quality.offsamples = model.vis.quality.offsamples, 0
-    try:
-        r = mujoco.Renderer(model, 480, 640)
-    finally:
-        model.vis.quality.offsamples = samples
-    with r:
-        r.enable_segmentation_rendering()
-        r.update_scene(data, camera=camera)
-        seg = r.render()[..., 0]
-    return [n for n in names if (seg == model.geom(n + "_label").id).sum() >= min_pixels]
+class OracleLabels:
+    """Call numbers "read" by the simulation: a sticker is read if at least
+    `min_pixels` of it show in the wrist camera's image, and its number is
+    the one the scene gave it. Same interface as LearnedLabels."""
+
+    def __init__(self, model, numbers: dict, min_pixels=25):
+        self.m, self.number_of, self.min_pixels = model, numbers, min_pixels
+        self.label = {model.geom(n + "_label").id: n for n in numbers
+                      if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, n + "_label") >= 0}
+        self.cam = None
+        self.numbers, self.where = {}, {}
+
+    def look(self, data, camera="panda/wrist_cam") -> tuple:
+        """(stickers showing, stickers read) in `camera`'s image now."""
+        from bila.vision.camera import WristCamera
+        if self.cam is None:
+            self.cam = WristCamera(self.m, name=camera)
+        ids, counts = np.unique(self.cam.capture(data).seg, return_counts=True)
+        shown = {self.label[int(g)]: c for g, c in zip(ids, counts) if int(g) in self.label}
+        for n, c in shown.items():
+            self.where[n] = data.geom_xpos[self.m.geom(n + "_label").id].copy()
+            if c >= self.min_pixels:
+                self.numbers[n] = (self.number_of[n], 1.0)
+        return len(shown), sum(c >= self.min_pixels for c in shown.values())
+
+    def read(self, names) -> dict:
+        return {n: self.numbers[n][0] for n in names if n in self.numbers}
+
+    def close(self):
+        if self.cam is not None:
+            self.cam.close()
 
 
 # ---------------------------------------------------------------------------
 # Reading the stickers from the images (--labels learned)
 # ---------------------------------------------------------------------------
-CLOSE_STANDOFFS = (0.18, 0.22, 0.14)   # m: wrist close-ups of the row's stickers, this far in front of the board
+CLOSE_STANDOFFS = (0.18, 0.22, 0.14)   # m: wrist close-ups of the row's stickers, this far in front of the board (row_closeup)
 CLOSE_ABOVE = (0.20, 0.25)             # m: wrist close-ups of a tray sticker, this far above it
 OVERVIEW_ABOVE = (0.30, 0.27, 0.33)    # m: a wrist view of the whole tray from this far above the stickers
 STICKER_UP = 0.045                     # m: stickers sit this far up from a spine's bottom (build)
@@ -386,7 +398,7 @@ def sticker_text(number, mark) -> str:
 
 class LearnedLabels:
     """Call numbers read from camera images by label_reader.LabelReader, in
-    place of read_labels' "visible enough, so the simulation's number". The
+    place of OracleLabels' "visible enough, so the simulation's number". The
     catalogue (every sticker's text and its number) is what the library
     knows. A sticker read is tied to the book it is on by the simulation's
     object ids under it: bookkeeping only, since the demo names books by
@@ -495,76 +507,26 @@ def row_closeup(model, data, ik, row, point):
     return None
 
 
-def bracket(row, read, n):
-    """(index of the book with the largest number below n, of the one with
-    the smallest above it), among the row's books read; None for a side with
-    none read."""
-    below = [i for i, b in enumerate(row.books) if b.name in read and read[b.name] < n]
-    above = [i for i, b in enumerate(row.books) if b.name in read and read[b.name] > n]
-    return (max(below, key=lambda i: read[row.books[i].name]) if below else None,
-            min(above, key=lambda i: read[row.books[i].name]) if above else None)
-
-
-def read_tray(labels, model, data, run, ik, tray, rng):
-    """tray_cam; then, if it left any tray book unread, a wrist view of the
-    whole tray from above (the tray's place on the cart is known), and a
-    close-up of each sticker still unread that was found."""
+def read_tray(labels, model, data, run, ik, tray, rng, log=print):
+    """A wrist view of the whole tray from above (the tray's place on the
+    cart is known), then a close-up of each sticker found but not read."""
     def look_down(point, what, **kw):
         plan = tray_closeup(model, data, ik, point, rng, **kw)
         if plan is None:
-            print(f"  no arm pose looks down on {what}")
+            log(f"  no arm pose looks down on {what}")
             return
         data.ctrl[model.actuator("lift").id] = plan[0]
         run.wait(f"lift to {plan[0]:.2f} m to look into the tray", 1.0)
         run.move_joints(f"look down on {what}", plan[1])
         found, read = labels.look(data, "panda/wrist_cam")
-        print(f"  finds {found} stickers, reads {read}")
+        log(f"  finds {found} stickers, reads {read}")
 
-    unread = lambda: [o for o in tray if o.name not in labels.numbers]
-    found, read = labels.look(data, "tray_cam")
-    print(f"tray_cam finds {found} stickers, reads {read}")
-    if unread():
-        centre = data.geom_xpos[model.geom("tray").id].copy()
-        tops = [labels.where[o.name][2] for o in tray if o.name in labels.where]
-        centre[2] = np.median(tops) if tops else centre[2] + 0.20         # the spines' tops, or about
-        look_down(centre, "the whole tray", above=OVERVIEW_ABOVE, yaws=(np.pi / 2, -np.pi / 2))
-    for o in [o for o in unread() if o.name in labels.where][:MAX_CLOSEUPS]:
+    centre = data.geom_xpos[model.geom("tray").id].copy()
+    centre[2] += 0.20                                       # about the spines' tops
+    look_down(centre, "the whole tray", above=OVERVIEW_ABOVE, yaws=(np.pi / 2, -np.pi / 2))
+    for o in [o for o in tray if o.name not in labels.numbers and o.name in labels.where][:MAX_CLOSEUPS]:
         look_down(labels.where[o.name], f"{o.asset[5:]}'s sticker")
     run.move_joints("tuck the arm", PANDA_HOME[:7])
-
-
-def read_row(labels, model, data, run, ik, row, n):
-    """row_cam, then close-ups near where the book goes until the two books
-    whose numbers bracket n are read and stand side by side."""
-    from bila.control.inspection import slot_x
-    found, read = labels.look(data, "row_cam")
-    print(f"row_cam finds {found} stickers, reads {read}")
-    shelf, looked = insert_book.ShelfFrame(row), set()
-    for _ in range(MAX_CLOSEUPS):
-        i_lo, i_hi = bracket(row, labels.read([b.name for b in row.books]), n)
-        if i_lo is not None and i_hi is not None and abs(i_lo - i_hi) == 1:
-            break
-        lo, hi = sorted(i for i in (i_lo, i_hi) if i is not None) if i_lo is not None and i_hi is not None else (-1, len(row.books))
-        unread = [i for i, b in enumerate(row.books) if lo < i < hi and b.name not in labels.numbers
-                  and b.name in labels.where and b.name not in looked]
-        if unread:                                  # the unread sticker nearest the map's place for the slot
-            i = min(unread, key=lambda i: abs(shelf.to_shelf(labels.where[row.books[i].name])[0] - slot_x(row)))
-            what, point = f"book {i}'s sticker", labels.where[row.books[i].name]
-            looked.add(row.books[i].name)
-        elif "slot" not in looked:                  # none found there: the map's place for the slot itself
-            what = "the map's place for the slot"
-            point = shelf.to_world(np.array([slot_x(row), row.shelf_depth / 2, row.target_board_top + STICKER_UP]))
-            looked.add("slot")
-        else:
-            break
-        q = row_closeup(model, data, ik, row, point)
-        if q is None:
-            print(f"  no arm pose for a close-up of {what}")
-            continue
-        run.move_joints(f"close-up of {what}", q)
-        found, read = labels.look(data, "panda/wrist_cam")
-        print(f"  close-up finds {found}, reads {read}")
-    run.move_joints("lean the arm out of row_cam's view", SCAN_POSE)
 
 
 # ---------------------------------------------------------------------------
@@ -574,12 +536,13 @@ class CartEpisode(Episode):
     """insert_book's episode, with the book picked out of the tray instead of
     handed over: take_book() is the only step that changes."""
 
-    def __init__(self, model, data, row, viewer=None, log=print):
-        super().__init__(model, data, row, viewer, log)
+    def __init__(self, model, data, row, viewer=None, log=print, eyes=None):
+        super().__init__(model, data, row, viewer, log, eyes)
         self.lift_act = model.actuator("lift").id
         self.lift_q = model.jnt_qposadr[model.joint("lift_z").id]
         self.lift_row = float(data.qpos[self.lift_q])     # where the lift stands for the target row
         self.carrying = False                             # a book swings with the hand (joint_route checks closer)
+        self.next_grip_check = 0.0                        # sim time of check_grip's next look
         self.keepout = [g for g in range(model.ngeom) if model.geom(g).name.endswith("_keepout")]
         arm_collides = self.ik.collides
         self.ik.collides = lambda q, allowed=(): self.with_keepouts(arm_collides, q, allowed)
@@ -629,9 +592,9 @@ class CartEpisode(Episode):
         opening = self.t / 2 + OPEN_SPARE
         seeds = [goal_q] + [np.array(PANDA_HOME[:7]) + [a, 0, 0, 0, 0, 0, 0] for a in (0.8, 1.6, -0.8)]
         # It comes out of its slot until its fore-edge clears the tallest spine in the tray, so it can
-        # swing; the hand comes down onto it from that height, so check the arm there (checked 15 cm
-        # up, the lift out ran the wrist into tray_cam's boom). Where the boom is in the way at every
-        # lift height, out less: the swing's collision check (joint_route) takes the tray's books in.
+        # swing; the hand comes down onto it from that height, so check the arm there. Where that is out
+        # of reach at every lift height, out less: the swing's collision check (joint_route) takes the
+        # tray's books in.
         floor = d.xpos[self.book_body][2] - self.depth / 2
         spines = max(d.xpos[i][2] + d.xmat[i].reshape(3, 3)[2, 1] * self.m.geom_size[g][1] for i, g in self.tray_bodies)
         clear = spines - floor + 0.06
@@ -660,7 +623,7 @@ class CartEpisode(Episode):
         ik.sync(d)
         ik.d.qpos[self.lift_q] = self.lift_row
         carry = None
-        for out in CARRY_OUT:                                        # as far out as the arm (and row_cam's post) allow
+        for out in CARRY_OUT:                                        # as far out as the arm allows
             ik.q_rest = goal_q
             q, worst, ok = ik.follow(goal_q, segment((goal_pos, goal_rot), (goal_pos + self.ys * out, goal_rot), 20),
                                      allowed=frozenset())
@@ -688,6 +651,8 @@ class CartEpisode(Episode):
         collides, ik.collides = ik.collides, self.collides_carrying
         move_joints = run.move_joints
         run.move_joints = lambda name, q, speed=CARRY_JOINT_SPEED: move_joints(name, q, speed)
+        step = run.step
+        run.step = lambda: (step(), self.check_grip(run))
         self.carrying = True
         try:
             ik.sync(d)
@@ -707,7 +672,7 @@ class CartEpisode(Episode):
                 self.reposition(q_carry, "take the book out in front of the slot")
         finally:
             ik.collides = collides
-            del run.move_joints
+            del run.move_joints, run.step
             self.carrying = False
         if posture is not None:
             ik.q_rest = posture                                      # and come back in to insert()'s configuration
@@ -757,6 +722,26 @@ class CartEpisode(Episode):
                 return [w, q]
         return None
 
+    def slip(self):
+        """(deg, mm) the held book has turned and moved in the hand since measure_in_hand."""
+        d, ik = self.d, self.ik
+        R_h = d.xmat[ik.hand].reshape(3, 3)
+        R = R_h.T @ d.xmat[self.book_body].reshape(3, 3)
+        p = R_h.T @ (d.xpos[self.book_body] - d.xpos[ik.hand])
+        turn = np.degrees(np.arccos(np.clip((np.trace(self.in_hand_R.T @ R) - 1) / 2, -1, 1)))
+        return float(turn), 1000 * float(np.linalg.norm(p - self.in_hand_p))
+
+    def check_grip(self, run):
+        """While carrying: stop if the book is slipping (SLIP_TURN_DEG, SLIP_MM). Read from the
+        simulation; a robot would compare its wrist torque with the book's expected twist instead."""
+        if run.d.time < self.next_grip_check:
+            return
+        self.next_grip_check = run.d.time + 0.05
+        turn, moved = self.slip()
+        if turn > SLIP_TURN_DEG or moved > SLIP_MM:
+            raise RuntimeError(f"the book slipped in the grip on the way from the tray "
+                               f"({turn:.1f} deg, {moved:.0f} mm): hand it to the librarian")
+
     def measure_in_hand(self):
         d, ik = self.d, self.ik
         R_h = d.xmat[ik.hand].reshape(3, 3)
@@ -788,6 +773,71 @@ class CartEpisode(Episode):
 
 
 # ---------------------------------------------------------------------------
+def setup(scenario, seed, log=print):
+    """The cart scene for a scenario and seed, settled: (model, data, row,
+    tray books, {book: call number}, shelf map). Returned books that belong
+    on other rows get spare numbers of those rows."""
+    cfg, row, tray, librarian = sample(scenario, seed)
+    numbers, shelf_map = call_numbers(row)
+    spare = [n for level, _, first, last in shelf_map if level != row.target_level
+             for n in range(first + STEP // 2, last, STEP)]
+    others = [o for o in tray if o is not row.target_book]
+    for o, n in zip(others, np.random.default_rng(seed).choice(spare, len(others), replace=False)):
+        numbers[o.name] = int(n)
+    model, tray = build(cfg, row, tray, numbers)
+    data = mujoco.MjData(model)
+    log(f"settled: {settle(model, data, row)['stable']}")
+    log("shelf map (the robot knows this):")
+    for level, top, first, last in shelf_map:
+        log(f"  row {level}: board top {top:.2f} m, call numbers {dewey(first)}-{dewey(last)}")
+    for o, why in librarian:
+        log(f"  to the librarian, not the tray: {o.asset[5:]} ({'; '.join(why)})")
+    return model, data, row, tray, numbers, shelf_map
+
+
+def run(model, data, row, tray, shelf_map, labels, eyes_for, viewer=None, log=print, seed=0, numbers=None):
+    """Steps 1-5 with the wrist camera: read the tray (`labels`: OracleLabels
+    or LearnedLabels), find the row, lift to it, and reshelve the book with
+    eyes_for(its call number) as the episode's eyes. Returns the episode's
+    result (insert_book.report formats it). `numbers` (the true ones) only
+    flags misreads."""
+    # 1-2. Read the tray and look each book up in the shelf map.
+    ik = ArmIK(model, PANDA_HOME[:7])
+    runner = Runner(model, data, ik, data.qpos[ik.qadr].copy(), 255.0, viewer, log)
+    try:
+        read_tray(labels, model, data, runner, ik, tray, np.random.default_rng(seed), log)
+    finally:
+        labels.close()
+    read = labels.read([o.name for o in tray])
+    log(f"read {len(read)}/{len(tray)} tray spines:")
+    todo = None
+    for o in tray:
+        if o.name not in read:
+            log(f"  {o.asset[5:]}: its sticker can't be read from above")
+            continue
+        level, top = row_for(read[o.name], shelf_map)
+        here = level == row.target_level
+        wrong = f"  MISREAD (it says {dewey(numbers[o.name])})" if numbers and read[o.name] != numbers[o.name] else ""
+        log(f"  {dewey(read[o.name])} {cutter(o)} ({o.asset[5:]}) belongs on row {level} (board {top:.2f} m)"
+            f"{'  <- shelve this one' if here else ''}{wrong}")
+        todo = o if here else todo
+    if todo is None:
+        raise RuntimeError("no readable book in the tray belongs on the simulated row")
+
+    # 3. Lift to that row (the cart already stands for it); the episode's first look reads the row's spines.
+    n = read[todo.name]
+    level, top = row_for(n, shelf_map)
+    data.ctrl[model.actuator("lift").id] = top - REACH_BELOW - DECK
+    runner.wait(f"lift to row {level}: {top - REACH_BELOW - DECK:.2f} m", 1.0)
+
+    # 4-5. Make room there and insert the book, picked out of the tray.
+    eyes = eyes_for(n)
+    try:
+        return CartEpisode(model, data, row, viewer, log, eyes).reshelve(GAP_MARGIN)
+    finally:
+        eyes.close()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--scenario", choices=("clear", "tight", "leaning", "packed"), default="tight")
@@ -796,97 +846,30 @@ def main():
     ap.add_argument("--labels", choices=("oracle", "learned"), default="oracle",
                     help="read call numbers from the simulation (oracle) or the camera images (learned; label_reader.py)")
     ap.add_argument("--label-weights", default="~/bila_data/labels", help="folder with label_reader's finder.pt and reader.pt")
+    ap.add_argument("--segmenter", help="learned segmenter weights (segmenter.pt) for the book masks; "
+                                        "default: the simulation's (notebooks/04_train_segmenter.ipynb trains one)")
     a = ap.parse_args()
 
-    cfg, row, tray, librarian = sample(a.scenario, a.seed)
-    numbers, shelf_map = call_numbers(row)
-    spare = [n for level, _, first, last in shelf_map if level != row.target_level
-             for n in range(first + STEP // 2, last, STEP)]
-    others = [o for o in tray if o is not row.target_book]
-    for o, n in zip(others, np.random.default_rng(a.seed).choice(spare, len(others), replace=False)):
-        numbers[o.name] = int(n)                                     # returned books that belong on other rows
-    model, tray = build(cfg, row, tray, numbers)
-    data = mujoco.MjData(model)
-    labels = None
-    if a.labels == "learned":
-        weights = os.path.expanduser(a.label_weights)
-        if LearnedLabels.available(weights):
-            books = row.books + tray + [b for fl in row.filler_levels for b in fl.books]
-            labels = LearnedLabels(model, weights, {sticker_text(numbers[b.name], cutter(b)): numbers[b.name]
-                                                    for b in books if b.name in numbers})
-        else:
-            print(f"no label reader in {weights}: reading call numbers from the simulation")
-    print(f"settled: {settle(model, data, row)['stable']}")
-    print("shelf map (the robot knows this):")
-    for level, top, first, last in shelf_map:
-        print(f"  row {level}: board top {top:.2f} m, call numbers {dewey(first)}-{dewey(last)}")
-    for o, why in librarian:
-        print(f"  to the librarian, not the tray: {o.asset[5:]} ({'; '.join(why)})")
+    weights = os.path.expanduser(a.label_weights)
+    learned = a.labels == "learned" and LearnedLabels.available(weights)
+    if a.labels == "learned" and not learned:
+        print(f"no label reader in {weights}: reading call numbers from the simulation")
+    if learned:
+        from bila.vision import label_reader  # noqa: F401  (imports torch._dynamo, before any render)
+    segmenter = None
+    if a.segmenter:
+        from bila.vision.learned_segmenter import LearnedSegmenter    # before any rendering (see learned_segmenter.py)
+        segmenter = LearnedSegmenter(os.path.expanduser(a.segmenter))
+    model, data, row, tray, numbers, shelf_map = setup(a.scenario, a.seed)
+    labels, eyes_for = readers(model, row, tray, numbers, a.seed, weights if learned else None, segmenter)
 
     viewer = None
     if a.view:
         viewer = mujoco.viewer.launch_passive(model, data)
         with viewer.lock():
             mujoco.mjv_defaultFreeCamera(model, viewer.cam)
-
-    # 1-2. Read the tray and look each book up in the shelf map.
-    if labels is None:
-        seen = read_labels(model, data, "tray_cam", [o.name for o in tray])
-        read = {o.name: numbers[o.name] for o in tray if o.name in seen}
-        print(f"tray_cam reads {len(seen)}/{len(tray)} spines:")
-    else:
-        ik = ArmIK(model, PANDA_HOME[:7])
-        run = Runner(model, data, ik, data.qpos[ik.qadr].copy(), 255.0, viewer)
-        read_tray(labels, model, data, run, ik, tray, np.random.default_rng(a.seed))
-        read = labels.read([o.name for o in tray])
-        print(f"read {len(read)}/{len(tray)} tray spines:")
-    todo = None
-    for o in tray:
-        if o.name not in read:
-            print(f"  {o.asset[5:]}: its sticker can't be read from above")
-            continue
-        level, top = row_for(read[o.name], shelf_map)
-        here = level == row.target_level
-        wrong = f"  MISREAD (it says {dewey(numbers[o.name])})" if read[o.name] != numbers[o.name] else ""
-        print(f"  {dewey(read[o.name])} {cutter(o)} ({o.asset[5:]}) belongs on row {level} (board {top:.2f} m)"
-              f"{'  <- shelve this one' if here else ''}{wrong}")
-        todo = o if here else todo
-    if todo is None:
-        raise SystemExit("no readable book in the tray belongs on the simulated row")
-
-    # 3. Lift to that row (the cart already stands for it), lean the arm aside, and scan the row for the slot.
-    n = read[todo.name]
-    level, top = row_for(n, shelf_map)
-    ik = ArmIK(model, PANDA_HOME[:7])
-    run = Runner(model, data, ik, data.qpos[ik.qadr].copy(), 255.0, viewer)
-    data.ctrl[model.actuator("lift").id] = top - REACH_BELOW - DECK
-    run.wait(f"lift to row {level}: {top - REACH_BELOW - DECK:.2f} m", 1.0)
-    run.move_joints("lean the arm out of row_cam's view", SCAN_POSE)
-    if labels is None:
-        visible = read_labels(model, data, "row_cam", [b.name for b in row.books])
-        print(f"row_cam reads {len(visible)}/{len(row.books)} spines on row {level}")
-        read = {b.name: numbers[b.name] for b in row.books if b.name in visible}
-    else:
-        read_row(labels, model, data, run, ik, row, n)
-        read = labels.read([b.name for b in row.books])
-        wrong = [b.name for b in row.books if b.name in read and read[b.name] != numbers[b.name]]
-        print(f"read {len(read)}/{len(row.books)} spines on row {level}" + (f"; MISREAD {wrong}" if wrong else ""))
-    i_lo, i_hi = bracket(row, read, n)
-    if i_lo is None or i_hi is None:
-        raise SystemExit(f"can't read call numbers on both sides of where {dewey(n)} goes")
-    if abs(i_lo - i_hi) != 1:
-        raise SystemExit(f"{dewey(n)} goes somewhere between books {i_lo} and {i_hi}: look closer")
-    print(f"{dewey(n)} goes between {dewey(read[row.books[i_lo].name])} and {dewey(read[row.books[i_hi].name])}: "
-          f"slot {max(i_lo, i_hi)} (the scene's: {row.target_index})")
-    run.move_joints("tuck the arm", PANDA_HOME[:7])
-    if labels is not None:
-        labels.close()
-
-    # 4-5. Make room there and insert the book, picked out of the tray.
-    ep = CartEpisode(model, data, row, viewer)
     try:
-        res = ep.reshelve(GAP_MARGIN)          # insert_book's controller picks the steps the row needs
-        print(report(res))
+        print(report(run(model, data, row, tray, shelf_map, labels, eyes_for, viewer, seed=a.seed, numbers=numbers)))
     except RuntimeError as e:
         print(f"  FAIL: {e}")
     if viewer is not None:
@@ -895,6 +878,20 @@ def main():
             mujoco.mj_step(model, data)
             viewer.sync()
             time.sleep(model.opt.timestep)
+
+
+def readers(model, row, tray, numbers, seed, weights=None, segmenter=None, noise="realistic", fiducials=True):
+    """(tray labels, eyes_for): what reads the tray's stickers, and the
+    episode's eyes for a call number (the wrist camera's RGBDPerception, with
+    the row's stickers read in every look: the slot from them on the first,
+    and each book read sized from the library's catalogue). weights: label_reader's
+    folder, to read the stickers from the images; None: the simulation's."""
+    from bila.vision.call_numbers_seen import LearnedStickers, OracleStickers, ReadingEyes, catalogue
+    texts, database = catalogue(numbers, row.books + tray + [b for fl in row.filler_levels for b in fl.books])
+    labels = LearnedLabels(model, weights, texts) if weights else OracleLabels(model, numbers)
+    stickers = LearnedStickers(weights, texts) if weights else OracleStickers(model, numbers)
+    return labels, lambda n: ReadingEyes(insert_book.make_eyes(model, row, seed, noise, segmenter, fiducials), stickers, row, n,
+                                         database=database)
 
 
 if __name__ == "__main__":

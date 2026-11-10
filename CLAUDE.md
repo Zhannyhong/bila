@@ -16,6 +16,7 @@ uv run pytest tests/test_scenes.py::test_name -x
 uv run python -m bila.sim.shelf_scene --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
 uv run python -m bila.viz.view_scene --scenario leaning --seed 0
 uv run python -m bila.control.cart_demo --scenario tight                          # cart: read tray + row labels, make the gap, pick from the tray, insert
+uv run python -m bila.viz.live_view --scenario tight                             # the cart demo on a web page: wrist + scene cameras, what it recognised
 uv run python -m bila.control.insert_book --scenario tight --seed 0 [--trials 50]   # clear|tight|leaning|packed
 ```
 
@@ -46,4 +47,5 @@ Code lives in the `bila` package, grouped by job; run scripts as modules from th
 - Score "toppled" as tilt *change* from the settled pose, not absolute tilt (some settled books lean >45°).
 - Measure gaps from the books (as `bila/vision/perception.py` does); `row.gap_right - row.gap_left` can be up to 3 mm short.
 - `scenes/` is git-ignored (XML contains absolute paths). `bila/sim/shelf_scene.py` writes `panda_shelf.xml` into `mujoco_menagerie/franka_emika_panda/` so mesh paths resolve; the submodule ignores untracked files.
+- The camera pose is corrected per image from the ArUco markers on the boards' front edges (`shelf_scene.fiducials` is their map, `vision/fiducials.py` the correction; `make_eyes(..., fiducials=False)` turns it off). See docs/calibration-and-insertion.md.
 - Robot base height tracks the target board (board top − 0.40 m); don't lower `target_band` below 0.40 m without raising the base.

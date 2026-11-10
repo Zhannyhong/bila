@@ -488,6 +488,9 @@ FINGER_HALF_W = 0.005       # half-width across the finger's travel
 FINGER_THICK = 0.012        # thickness out from the gripping face
 FINGER_LEN = 0.12           # length from where it is mounted (Menagerie's: 0.0539)
 PAD_LEN = FINGER_LEN - 0.008  # pad strip on the gripping side, from the tip back to the palm
+PAD_FRICTION = 1.0          # rubber fingertip pads. A contact takes the larger of its two geoms' friction, so
+                            # this, not the book's sampled friction, sets the grip. Calibrate to the real pads.
+                            # Above ~0.5 it hardly matters: a heavy book turns in the pinch (tests/test_grasp_slip.py).
 
 
 def make_panda_with_sensors(panda_xml: str) -> str:
@@ -519,10 +522,11 @@ def make_panda_with_sensors(panda_xml: str) -> str:
         finger = root.find(f".//body[@name='{name}']")
         for g in finger.findall("geom"):
             finger.remove(g)
-        for half, pos in (bar, pad):
+        pad_attrs = {"name": name + "_pad", "friction": _f(PAD_FRICTION, 0.005, 0.0001)}
+        for (half, pos), extra in ((bar, {}), (pad, pad_attrs)):
             ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), material="black",
                           **{"class": "visual"})
-            ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), **{"class": "collision"})
+            ET.SubElement(finger, "geom", type="box", size=_f(*half), pos=_f(*pos), **{"class": "collision"}, **extra)
     sensor = root.find("sensor")
     if sensor is None:
         sensor = ET.SubElement(root, "sensor")
@@ -565,6 +569,50 @@ VIEW_DISTANCE = 0.9   # m from the gap to where a viewer's camera starts
 # (gitignored, so a checkout without the conversion silently keeps the boxes).
 # They are pure decoration: non-colliding, massless geoms on the box bodies.
 BOOK_ASSET_DIR = os.path.join(ROOT, "generated_assets", "books")
+FIDUCIAL_DIR = os.path.join(ROOT, "generated_assets", "fiducials")   # git-ignored, made on demand
+FIDUCIAL_SPACING = 0.15        # m between markers along a board's front edge
+FIDUCIAL_DICT = "DICT_4X4_250"  # cv2.aruco dictionary the markers are printed from
+
+
+@dataclass
+class Fiducial:
+    """A marker printed on a board's front edge, as the shelf map records it."""
+    id: int                     # its ArUco id: 20 x board + place along it
+    centre: tuple               # its printed face's centre, shelf frame (m)
+    size: float                 # side of its black square (m): the corners a detector finds
+
+    def corners(self) -> np.ndarray:
+        """The black square's corners (4, 3; shelf frame) in the order an ArUco
+        detector reports them: top-left, top-right, bottom-right, bottom-left
+        as seen from the front (from there, the shelf's +x is on the left)."""
+        h, (x, y, z) = self.size / 2, self.centre
+        return np.array([[x + h, y, z + h], [x - h, y, z + h], [x - h, y, z - h], [x + h, y, z - h]])
+
+
+def fiducials(cfg: ShelfConfig, row: Row) -> List[Fiducial]:
+    """The shelf map's markers: on every board's front edge, FIDUCIAL_SPACING
+    apart and centred on the board. Each is a plate as tall as the board is
+    thick, a white margin of one cell around the black square (8 cells
+    across), so it stays below the board top and never hides a spine."""
+    t, W, D = cfg.board_thickness, row.shelf_width, row.shelf_depth
+    n = int((W - 0.04) // FIDUCIAL_SPACING) + 1
+    xs = (np.arange(n) - (n - 1) / 2) * FIDUCIAL_SPACING
+    return [Fiducial(20 * k + j, (float(x), D / 2 + 0.0011, top - t / 2), 0.75 * t)
+            for k, top in enumerate(board_tops(cfg, row.plinth_height, row.level_heights))
+            for j, x in enumerate(xs)]
+
+
+def fiducial_texture(marker_id: int) -> str:
+    """The marker's image (a PNG made once): its ArUco pattern, 6 cells with
+    the black border, on a white margin of one cell."""
+    import cv2
+    path = os.path.join(FIDUCIAL_DIR, f"aruco4x4_{marker_id:03d}.png")
+    if not os.path.exists(path):
+        os.makedirs(FIDUCIAL_DIR, exist_ok=True)
+        dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, FIDUCIAL_DICT))
+        img = cv2.aruco.generateImageMarker(dictionary, marker_id, 120, borderBits=1)
+        cv2.imwrite(path, cv2.copyMakeBorder(img, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255))
+    return path
 # A book's DAE has x along its depth, y through its thickness and z up its
 # height, while the box geoms have x through the thickness: turning the faces
 # this far about z puts the DAE's axes back onto the box's.
@@ -865,11 +913,15 @@ def build_scene(cfg: ShelfConfig, row: Row, panda_xml: Optional[str] = None) -> 
     ET.SubElement(shelf, "geom", name="plinth", **{"class": "shelf"},
                   size=_f(W / 2, t / 2, row.plinth_height / 2),
                   pos=_f(0, D / 2 - t / 2, row.plinth_height / 2))
-    # Fiducial marker: a flat, non-colliding plate on the front edge of the
-    # target board. Swap rgba for an AprilTag texture when you add perception.
-    ET.SubElement(shelf, "geom", name="fiducial", type="box", contype="0", conaffinity="0",
-                  size="0.025 0.0005 0.025", pos=_f(-W / 2 + 0.04, D / 2 + 0.0006, target_top - t / 2),
-                  rgba="0 0 0 1")
+    # Fiducial markers (fiducials()): flat, non-colliding plates on the boards' front edges,
+    # printed with ArUco patterns. The robot finds them in its images to correct where it
+    # believes its camera is (vision/fiducials.py).
+    for fd in fiducials(cfg, row):
+        ET.SubElement(asset, "texture", name=f"fiducial{fd.id}", type="2d", hflip="true", file=fiducial_texture(fd.id))
+        ET.SubElement(asset, "material", name=f"fiducial{fd.id}", texture=f"fiducial{fd.id}")
+        ET.SubElement(shelf, "geom", name=f"fiducial_{fd.id}", type="box", contype="0", conaffinity="0", group="2",
+                      material=f"fiducial{fd.id}", size=_f(t / 2, 0.0005, t / 2),
+                      pos=_f(fd.centre[0], fd.centre[1] - 0.0005, fd.centre[2]))
     # Sites mark the target level: the row frame and the centre of the gap.
     ET.SubElement(shelf, "site", name="shelf_frame", pos=_f(0, 0, target_top), size="0.01", group="4")
     ET.SubElement(shelf, "site", name="target_slot",

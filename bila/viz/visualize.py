@@ -19,7 +19,7 @@ What the trained models see (`uv sync --group rl`, weights in ~/bila_data; ~1-2 
     in colour, books it missed outlined red, masks that are no book magenta,
     each target-row book's mask IoU, and the fitted spines; then the front and
     top view of its estimate, the one from the simulation's masks dotted.
-  --learned --cart: row_cam, tray_cam, a wrist close-up at the slot and a
+  --learned --cart: the first look's middle view, a wrist close-up at the slot and a
     wrist view of the tray, each sticker the label reader found labelled with
     what it read and how sure it is (green right, red wrong, grey unreadable),
     stickers it missed dashed.
@@ -443,14 +443,14 @@ def plot_stickers(shots, path: Optional[str] = None):
 
 def learned_cart(scenario: str, seed: int, weights: str, path):
     """The cart scene cart_demo.py makes for this scenario and seed, through
-    the label reader: row_cam (arm leaned out of its view), tray_cam, a wrist
-    close-up where the shelf map puts the slot, and a wrist view of the whole
+    the label reader, all from the wrist camera: the first look's middle view,
+    a close-up where the shelf map puts the slot, and a view of the whole
     tray; saves plot_stickers."""
     from bila.vision import label_reader as lr                              # imports torch._dynamo, before any render
     from bila.control import cart_demo
     from bila.vision.camera import DepthNoise
     from bila.control.insert_book import ArmIK, ShelfFrame
-    from bila.control.inspection import look_from, slot_x
+    from bila.control.inspection import look_from, slot_x, solve_inspection
     from bila.vision.make_vision_dataset import cart_numbers, sticker_labels
     from bila.sim.shelf_scene import PANDA_HOME, settle
 
@@ -464,19 +464,19 @@ def learned_cart(scenario: str, seed: int, weights: str, path):
              if b.name in numbers and mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, b.name + "_label") >= 0}
     reader = lr.LabelReader(os.path.join(weights, "labels", "finder.pt"), os.path.join(weights, "labels", "reader.pt"),
                             catalogue=sorted(set(texts.values())))
-    cams = {n: WristCamera(model, name=n, noise=DepthNoise.d405(), rng=np.random.default_rng([seed, i]))
-            for i, n in enumerate(("row_cam", "tray_cam", "panda/wrist_cam"))}
+    cams = {"panda/wrist_cam": WristCamera(model, name="panda/wrist_cam", noise=DepthNoise.d405(),
+                                           rng=np.random.default_rng(seed))}
     shots = []
 
     def shoot(name, camera):
         frame = cams[camera].capture(data)
         shots.append((name, frame, reader.read(frame.rgb), sticker_labels(model, data, frame, texts)))
 
-    look_from(model, data, cart_demo.SCAN_POSE)
-    shoot("row_cam", "row_cam")
-    look_from(model, data, PANDA_HOME[:7])
-    shoot("tray_cam", "tray_cam")
     ik, rng = ArmIK(model, PANDA_HOME[:7]), np.random.default_rng(seed)
+    v = solve_inspection(model, data, row, 0.0, ik)
+    if v is not None:
+        look_from(model, data, v[0])
+        shoot("wrist camera, the first look's middle view", "panda/wrist_cam")
     point = ShelfFrame(row).to_world(np.array([slot_x(row), row.shelf_depth / 2, row.target_board_top + cart_demo.STICKER_UP]))
     q = cart_demo.row_closeup(model, data, ik, row, point)
     if q is not None:

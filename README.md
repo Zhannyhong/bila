@@ -15,7 +15,7 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 | `bila/sim/shelf_scene.py` | Builds a randomized bookcase and target row for one of five scenarios, adds the Panda, settles the row with physics; can split every book into page sections hinged on the spine |
 | `bila/sim/dae_to_obj.py` | Converts the PBBM repo's Collada book covers (and, for the shaped books, their page sections) to the OBJ/PNG assets `bila/sim/shelf_scene.py` draws (run once, optional) |
 | `bila/viz/view_scene.py` | Opens a settled scenario in the MuJoCo viewer |
-| `bila/control/cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython -m bila.control.cart_demo --scenario tight --view`) |
+| `bila/control/cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, call-number labels on every spine; its only camera is the wrist camera. Reads the tray from above, looks the book's row up in the shelf map, lifts to it, reads the row's stickers on its first look to find the slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython -m bila.control.cart_demo --scenario tight --view`) |
 | `bila/control/insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
 | `bila/vision/perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
 | `bila/vision/make_vision_dataset.py` | Training images for the learned perception: RGB-D, a mask per book, and every sticker's corners and text |
@@ -977,7 +977,7 @@ with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robu
   `--learned`: the first look's three views with the learned masks in colour, books missed outlined red, masks
   that are no book magenta, each target-row book's mask IoU, and the fitted spines; plus
   `estimate_learned_*.png`, its estimate with the one from the simulation's masks dotted and the truth dashed.
-  `--learned --cart`: row_cam, tray_cam, a wrist close-up at the slot and a wrist view of the tray, every sticker
+  `--learned --cart`: the first look's middle view, a wrist close-up at the slot and a wrist view of the tray, every sticker
   found labelled with what was read and how sure (green right, red wrong, grey unreadable), missed ones dashed.
 - `NoisyPerception.learned(source, rng)` imitates this pipeline instead of the camera with the simulation's masks
   (`perception.LEARNED_CALIBRATION`, from `bila/vision/eval_perception.py calibrate --kind learned` on those 80 scenes;
@@ -1021,14 +1021,15 @@ MUJOCO_GL=egl uv run python -m bila.control.cart_demo --scenario tight --labels 
   0.15% of the stickers found are read wrong (0.8% at confidence 0.9). Most close-ups left unreadable are thin
   books: the label shrinks its text to the sticker's width. tray_cam gets no depth on half the stickers, and finds
   few of those.
-- So the cart's cameras mostly find stickers and the wrist reads them: in the tray, a view of the whole tray from
-  ~30 cm, then a close-up of any sticker still unread; in the row, close-ups (~18 cm) near the slot, at the unread
-  sticker nearest the map's place for it, until the two books whose numbers bracket the book's are read side by
-  side. A sticker read is tied to its book by the simulation's object ids under it (bookkeeping: the demo names
-  books by body).
-- In 12 cart scenes (clear, tight, leaning, packed; seeds 0-2): all 5 tray books read in every one, no number
-  misread, and the right slot found in 10. In the other two the one book between the bracketing pair stayed
-  unreadable (a thin book), and the demo stops rather than guess.
+- The cart now has only the wrist camera (the row_cam and tray_cam rows above, and the 12-scene result below,
+  are from when it also had a camera on the lift carriage and one over the tray). In the tray: a wrist view of
+  the whole tray from ~30 cm, then a close-up of any sticker still unread. In the row: the episode's first look
+  (the three sweep views) reads the stickers (`bila/vision/call_numbers_seen.py`), and the slot is between the
+  two whose numbers bracket the book's. With the simulation's reading (the default), clear, tight and leaning
+  seed 0 succeed; packed seed 0 skips, as `insert_book --perception camera` does on it.
+- Earlier, with the fixed cameras, in 12 cart scenes (clear, tight, leaning, packed; seeds 0-2): all 5 tray books
+  read in every one, no number misread, and the right slot found in 10. In the other two the one book between the
+  bracketing pair stayed unreadable (a thin book), and the demo stopped rather than guess.
 
 **What the policy sees** (`bila/rl/observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
 

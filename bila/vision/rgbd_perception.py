@@ -281,8 +281,9 @@ class RGBDPerception:
 
     def __init__(self, model: mujoco.MjModel, row: Row, camera: Optional[WristCamera] = None,
                  segmenter=None, depth_prior: float = DEPTH_PRIOR, gap_heights=GAP_HEIGHTS,
-                 robust_fit: bool = False):
+                 robust_fit: bool = False, reference=None):
         self.m, self.row = model, row
+        self.reference = reference         # a fiducials.FiducialReference: corrects each image's camera pose
         self.robust_fit = robust_fit
         self.shelf = ShelfFrame(row)
         self.camera = camera or WristCamera(model)
@@ -292,7 +293,8 @@ class RGBDPerception:
         self.last_labels: List[Optional[int]] = []   # segment label of each book in the last estimate, for checking
 
     def capture(self, data: mujoco.MjData) -> CameraFrame:
-        return self.camera.capture(data)
+        frame = self.camera.capture(data)
+        return frame if self.reference is None else self.reference(frame)
 
     def estimate(self, data: mujoco.MjData) -> ShelfEstimate:
         return self.estimate_from_frame(self.capture(data))
