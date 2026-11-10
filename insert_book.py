@@ -99,7 +99,10 @@ home). Every RESIDUAL_EVERY steps it adds up to RESIDUAL_STEP per shelf axis
 and RESIDUAL_TURN_STEP of yaw and pitch (turning about where the hand
 touches), ramped in, RESIDUAL_MAX and RESIDUAL_TURN_MAX in all, inside each
 move's bounds (never past the row's room, nor deeper into the shelf than the
-insertion's moves go); after the move it fades out over the next one. It may
+insertion's moves go); after the move it fades out over the next one. In the
+insertion it gives the correction itself instead, inside tighter bounds
+(SLIDE_LO..., PUSH_LO...), and the hand moves toward it at the same rate: a
+steady small correction stays small. It may
 also end the move where the hand is (the slide only once the book is over the
 board): the script carries on as after the move. The rules, the plans and
 every other move stay the script's. Without one the controller runs exactly
@@ -272,7 +275,15 @@ RESIDUAL_TURN_MAX = math.radians(3.0)    # rad of each in all
 RESIDUAL_END = 0.5          # an end action above this ends the contact move where the hand is
 RESIDUAL_FADE = 0.3         # s: once a contact move ends, the correction fades out over the next move's first this
 RESIDUAL_FLOOR = 0.002      # m: the correction keeps the hand this much of its clearance (board, books pushed back)
-INSERT_RESIDUAL = (0.008, 0.015, 0.005)   # m: the insertion's bounds along the row, in or out, up or down
+# The insertion's corrections are targets (Contact.target), inside these bounds: x along the row, y in
+# (-) or out (+) of the shelf, z up or down (m), then yaw and pitch (rad). The slide never lifts the book
+# off the board it rests on (lifted, it pitches in the fingers and can drop off at release), and the push
+# never holds the hand back from where the script pushes to (that leaves the book proud).
+INSERT_TURN = math.radians(1.5)
+SLIDE_LO = (-0.004, -0.008, -0.002, -INSERT_TURN, -INSERT_TURN)
+SLIDE_HI = (0.004, 0.002, 0.0, INSERT_TURN, INSERT_TURN)
+PUSH_LO = (-0.004, -0.008, -0.0025, -INSERT_TURN, -INSERT_TURN)
+PUSH_HI = (0.004, 0.0, 0.0025, INSERT_TURN, INSERT_TURN)
 END_OVER_BOARD = 0.005      # m: the slide may be ended once the book's centre is this much further over the board
 #                             than where it can be let go of (CLEAR inside the edge)
 
@@ -574,7 +585,11 @@ class Contact:
     move that point. no_deeper: the fingertips never go further into the
     shelf than the script's move is going (the insertion: the hand can't
     follow the book in past where the script stops it). may_end: whether the
-    residual may end the move now (None: always)."""
+    residual may end the move now (None: always). target: the residual says
+    where the correction should be (inside lo, hi), not how far it should
+    change; it gets there at RESIDUAL_STEPS a decision at most. A residual
+    that gives the same small correction every decision then holds it there,
+    where increments of it would add up to the bounds."""
     phase: str                                  # "widen", "lift", "clamp", "shove", "slide" or "push"
     lo: np.ndarray
     hi: np.ndarray
@@ -582,6 +597,7 @@ class Contact:
     pivot: float = FINGERTIP_Z
     no_deeper: bool = False
     may_end: Optional[Callable[[], bool]] = None
+    target: bool = False
     steps: int = 0                              # physics steps of hand moves taken in it so far
     goal_tip: Optional[float] = None            # shelf y of the fingertips where the move running ends
     ended: bool = False                         # the residual ended it
@@ -601,8 +617,9 @@ class Runner:
     min-jerk paths. Each step re-solves IK from the last command.
 
     A residual (any object with decide(runner, contact) -> up to 6 numbers:
-    the increments of x, y, z (m, shelf frame), yaw and pitch (rad), then the
-    end action; left out, they are 0) may correct the hand during the moves
+    the increments of x, y, z (m, shelf frame), yaw and pitch (rad), or in a
+    contact.target move the correction itself, then the end action; left
+    out, they are 0) may correct the hand during the moves
     marked with contact(): IK then aims at the script's pose with `offset` on
     it (corrected()). self.pos and self.rot stay the script's pose
     throughout, so the script's next move starts from where it planned. With
@@ -654,9 +671,9 @@ class Runner:
     # --- The residual's correction -----------------------------------------
     @contextmanager
     def contact(self, phase, lo=(-RESIDUAL_MAX,) * 3, hi=(RESIDUAL_MAX,) * 3, x_limit=None, pivot=FINGERTIP_Z,
-                no_deeper=False, may_end=None):
+                no_deeper=False, may_end=None, target=False):
         """Mark the hand moves inside as the contact move `phase` (see Contact
-        for the bounds; lo and hi may leave out the turns: +-RESIDUAL_TURN_MAX):
+        for the bounds and target; lo and hi may leave out the turns: +-RESIDUAL_TURN_MAX):
         the residual, if any, corrects them, and may end them (ContactEnded:
         the block is left where the hand is, and the script carries on after
         it). Its correction outlives the block and fades out over the next
@@ -671,7 +688,7 @@ class Runner:
             T = self.turn()
             self.offset[:3] += self.shelf.R.T @ (np.eye(3) - T) @ self.rot @ [0.0, 0.0, self.pivot - pivot]
         self.pivot = pivot
-        self.touching, self.fade = Contact(phase, lo, hi, x_limit, pivot, no_deeper, may_end), None
+        self.touching, self.fade = Contact(phase, lo, hi, x_limit, pivot, no_deeper, may_end, target=target), None
         self.rate[:] = 0.0
         try:
             yield self.touching
@@ -724,9 +741,11 @@ class Runner:
     def correct(self):
         """Advance the correction by one physics step of a hand move: in a
         contact, every RESIDUAL_EVERY steps ask the residual for an increment
-        (at most RESIDUAL_STEPS) and ramp it in over the steps to the next
-        decision, or end the move if it asks to and may; after a contact,
-        fade the correction out (min-jerk) over fade_steps."""
+        (at most RESIDUAL_STEPS), or in a target contact for the correction
+        (moved toward by at most RESIDUAL_STEPS), and ramp the change in over
+        the steps to the next decision, or end the move if it asks to and
+        may; after a contact, fade the correction out (min-jerk) over
+        fade_steps."""
         c = self.touching
         if c is not None:
             if c.steps % RESIDUAL_EVERY == 0:
@@ -739,7 +758,8 @@ class Runner:
                     self.halt()
                     self.log(f"  {self.t:5.2f} s    stopped: the residual ended it")
                     raise ContactEnded
-                inc = np.clip(a[:5], -RESIDUAL_STEPS, RESIDUAL_STEPS)
+                change = (self.bounded(a[:5].copy(), c) - self.offset) if c.target else a[:5]
+                inc = np.clip(change, -RESIDUAL_STEPS, RESIDUAL_STEPS)
                 self.rate = (self.bounded(self.offset + inc, c) - self.offset) / RESIDUAL_EVERY
             c.steps += 1
             self.offset = self.bounded(self.offset + self.rate, c)
@@ -1601,12 +1621,13 @@ class Episode:
         # A two-finger pinch can't stop a heavy book from pitching nose-down (its
         # weight acts several cm behind the pads). Resting its back on the board
         # first lets the board carry that, as a person would do it.
-        # The residual may correct the slide (turning about the pads), never taking the fingertips
-        # deeper than the script sends them, and end it once the book is far enough over the board.
+        # The residual may correct the slide (turning about the pads, a target correction inside
+        # SLIDE_LO..SLIDE_HI: never lifting the book), never taking the fingertips deeper than the
+        # script sends them, and end it once the book is far enough over the board.
         slid = False
         over_board = lambda: self.held_y() < self.D / 2 - CLEAR - END_OVER_BOARD
-        with run.contact("slide", lo=[-b for b in INSERT_RESIDUAL], hi=INSERT_RESIDUAL, pivot=PAD_Z, no_deeper=True,
-                         may_end=over_board):
+        with run.contact("slide", lo=SLIDE_LO, hi=SLIDE_HI, pivot=PAD_Z, no_deeper=True, may_end=over_board,
+                         target=True):
             run.move("rest it on the board", *self.hand_for_book([x_slot, y_from, self.z_rest]), speed=0.01)
             # If the book runs into a neighbour (in a tight row, the pushed
             # neighbours' backs still narrow the gap), stop rather than force it:
@@ -1730,11 +1751,13 @@ class Episode:
 
     def push_contact(self):
         """The push home as a contact move (Runner.contact): the residual may
-        correct it, turning about the fingertips, never deeper into the shelf
-        than the script pushes, nor lower than keeps the hand above the
-        board, and may end it (no more pushes then)."""
-        lo = (-INSERT_RESIDUAL[0], -INSERT_RESIDUAL[1], -min(INSERT_RESIDUAL[2], PUSH_LIFT - RESIDUAL_FLOOR))
-        return self.run.contact("push", lo=lo, hi=INSERT_RESIDUAL, no_deeper=True)
+        correct it (a target correction inside PUSH_LO..PUSH_HI: never holding
+        the hand back from the script's push), turning about the fingertips,
+        never deeper into the shelf than the script pushes, nor lower than
+        keeps the hand above the board, and may end it (no more pushes then)."""
+        lo = list(PUSH_LO)
+        lo[2] = max(lo[2], -(PUSH_LIFT - RESIDUAL_FLOOR))
+        return self.run.contact("push", lo=lo, hi=PUSH_HI, no_deeper=True, target=True)
 
     def held_y(self):
         """Shelf y of the held book's centre, as the robot knows it: with eyes,
@@ -2804,21 +2827,23 @@ def make_eyes(model, row, seed, noise="realistic", segmenter=None):
     return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None)
 
 
-def make_noisy_eyes(model, row, seed, learned=False):
+def make_noisy_eyes(model, row, seed, learned=False, scale=1.0):
     """--perception noisy / noisy-learned: no rendering, the ground truth with
     the camera's measured errors (perception.NoisyEyes), as gap_env trains on;
     learned: imitating the learned masks' pipeline instead. Drawn from the
-    seed as gap_env draws a scene's (default_rng([seed, 1]))."""
+    seed as gap_env draws a scene's (default_rng([seed, 1])). scale: the
+    errors' spread, as gap_env's noise_scale."""
     from perception import NoisyEyes                                 # it imports this module
-    return NoisyEyes(model, row, np.random.default_rng([seed, 1]), learned=learned)
+    return NoisyEyes(model, row, np.random.default_rng([seed, 1]), scale, learned=learned)
 
 
-def eyes_for(perception, model, row, seed, camera_noise="realistic", segmenter=None):
-    """An Episode's eyes for a --perception choice (None: the simulation's truth)."""
+def eyes_for(perception, model, row, seed, camera_noise="realistic", segmenter=None, noise_scale=1.0):
+    """An Episode's eyes for a --perception choice (None: the simulation's
+    truth). noise_scale: the noisy choices' spread (make_noisy_eyes)."""
     if perception == "camera":
         return make_eyes(model, row, seed, camera_noise, segmenter)
     if perception in ("noisy", "noisy-learned"):
-        return make_noisy_eyes(model, row, seed, learned=perception == "noisy-learned")
+        return make_noisy_eyes(model, row, seed, learned=perception == "noisy-learned", scale=noise_scale)
     return None
 
 

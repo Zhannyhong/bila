@@ -8,6 +8,8 @@ home).
 
     uv run python gap_env.py pool --scenario tight --seeds 1000 --workers 12   # build the training scenes once
     uv run python gap_env.py pool --scenario tight --seeds 40 --first-seed 20000 --name tight_val   # validation
+    uv run python gap_env.py pool --scenario tight --seeds 100 --perception camera \
+        --segmenter bila_weights/segmenter/segmenter.pt --name tight_camera      # what the robot sees
     from gap_env import GapEnv
     env = GapEnv(scenarios=("clear", "tight"))                       # loads scenes/gap_pool_<scenario>.pkl
     env = GapEnv(scenarios=("tight",), first_phases=("widen",), insert=False)   # gap creation only
@@ -28,11 +30,23 @@ creation only: it ends when the script would insert the book (Episode.insert
 is replaced with a stop).
 
 Errors the policy has to make up for:
-  - perception: the script and the policy both see the row through NoisyEyes,
-    a NoisyPerception (the wrist camera's measured errors, and one rigid
-    shift of everything it sees per episode, as a hand-eye calibration error
-    gives; no rendering) behind the interface Episode uses for its camera.
-    The arm still moves to the views;
+  - perception: the script and the policy both see the row through the same
+    eyes (perception=):
+      noisy          NoisyEyes, a NoisyPerception (the wrist camera's
+                     measured errors, and one rigid shift of everything it
+                     sees per episode, as a hand-eye calibration error gives;
+                     no rendering) behind the interface Episode uses for its
+                     camera. The arm still moves to the views;
+      noisy-learned  the same, imitating the learned masks' pipeline;
+      camera         the rendered wrist camera itself (insert_book.make_eyes:
+                     a D405's stereo errors and a calibration error drawn per
+                     episode), with the simulation's book masks or, with
+                     segmenter=WEIGHTS, the learned ones (learned_segmenter.py,
+                     loaded once per process). What a robot would see: the
+                     noise models fail the script as often but in other ways
+                     (eval_reshelve.py), so a policy should train on this.
+    A pool records how its first runs saw the rows (PoolEntry.perception),
+    and an env only takes a pool that saw them as it does;
   - the grasp (GraspError): the book sits a little off in the fingers from
     where the script believes it took it (further out or deeper in, higher
     or lower, turned about the fingers' axis), which it doesn't know of.
@@ -54,11 +68,17 @@ Observation (a Dict):
           and how far it is from the believed one, its spine's distance to
           acceptable placement, and the contact forces on it. A critic built for it reads
           both.
-Action: (6,) in [-1, 1]: the increments of the correction (shelf frame) at
-this decision, x, y, z times RESIDUAL_STEP and yaw, pitch times
-RESIDUAL_TURN_STEP, all times action_scale (set_action_scale ramps it up),
-then the end action: above RESIDUAL_END it ends the move where the hand is
-(the slide only once the book is over the board; Runner.contact).
+Action: (6,) in [-1, 1], all times action_scale (set_action_scale ramps it
+up), then the end action: above RESIDUAL_END it ends the move where the hand
+is (the slide only once the book is over the board; Runner.contact). The first
+five parts (x, y, z in the shelf frame, yaw, pitch):
+  making room   the increments of the correction at this decision: times
+                RESIDUAL_STEP and RESIDUAL_TURN_STEP;
+  insertion     the correction itself (Contact.target): 0 the script's pose,
+                +-1 the move's bounds on that side (insert_book.SLIDE_LO...,
+                PUSH_LO...), reached at RESIDUAL_STEPS a decision at most. A
+                steady small action stays a small correction instead of adding
+                up to the bounds, and the action cost is on the correction.
 With learn_stop=False the action has only the five correction parts. The
 observation layout stays the same, with may_end and the previous end action 0.
 
@@ -119,6 +139,7 @@ import threading
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing import Pool
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -127,7 +148,7 @@ import mujoco
 import numpy as np
 
 from insert_book import (DEFAULT_PANDA, GAP_MARGIN, LEAN_MIN_DEG, PAD_Z, RESIDUAL_LIMITS, RESIDUAL_STEPS, Episode,
-                         axis_rot, build_model, make_episode, mat2quat)
+                         axis_rot, build_model, make_episode, make_eyes, mat2quat)
 from observation import TOOL_OFFSET, ObservationBuilder, Parts, book_names_by_offset, robot_state
 from perception import GroundTruthPerception, NoisyEyes  # (NoisyEyes: perception without rendering)
 from shelf_scene import ShelfConfig, book_tilt_deg
@@ -263,6 +284,7 @@ class PoolEntry:
     variant: int = 0                         # independent error variant of this geometry
     perception_seed: Optional[Union[int, Sequence[int]]] = None  # None preserves the old [seed, 1] stream
     grasp_seed: Optional[Union[int, Sequence[int]]] = None       # None preserves the old [seed, 2] stream
+    perception: str = "noisy"               # how its first run saw the row (sight); older pools: noisy
 
     def identity(self) -> dict:
         """A replayable case, including the legacy seed streams of old pools."""
@@ -286,10 +308,11 @@ class Packed:
     unpickled, a pool of 1000 takes ~270 MB in every worker."""
     phase = ""                              # (pools packed before phases were recorded)
     variant = 0                             # (pools made before independent error variants)
+    perception = "noisy"                    # (pools made before the camera could be chosen)
 
     def __init__(self, entry: PoolEntry):
         self.seed, self.contact, self.phase, self.blob = entry.seed, entry.contact, entry.phase, pickle.dumps(entry)
-        self.variant = entry.variant
+        self.variant, self.perception = entry.variant, entry.perception
 
     def unpack(self) -> PoolEntry:
         return pickle.loads(self.blob)
@@ -301,6 +324,49 @@ def make_entry(cfg: ShelfConfig, scenario: str, seed: int) -> PoolEntry:
     state = np.empty(mujoco.mj_stateSize(model, STATE))
     mujoco.mj_getState(model, data, state, STATE)
     return PoolEntry(scenario, seed, row, state)
+
+
+PERCEPTIONS = ("noisy", "noisy-learned", "camera")
+_segmenters: Dict[tuple, object] = {}
+
+
+def sight(perception: str = "noisy", segmenter: Optional[str] = None) -> str:
+    """How eyes see the row, as pools record it: the perception, and for the
+    camera with learned masks, the weights' file name."""
+    if perception not in PERCEPTIONS:
+        raise ValueError(f"perception must be one of {PERCEPTIONS}, not {perception!r}")
+    if segmenter and perception != "camera":
+        raise ValueError("a segmenter goes with perception='camera'")
+    return f"camera+{os.path.basename(segmenter)}" if segmenter else perception
+
+
+def learned_masks(weights: str, device: Optional[str] = None):
+    """The learned segmenter (learned_segmenter.LearnedSegmenter), loaded
+    once per process: it is ~350 MB, and an env or pool worker makes a
+    camera every episode."""
+    key = (os.path.abspath(os.path.expanduser(weights)), device)
+    if key not in _segmenters:
+        from learned_segmenter import LearnedSegmenter   # (it imports torch's dynamo, which must precede rendering)
+        import torch
+        torch.set_num_threads(1)              # (one per worker process: a thread pool in each overloads the machine)
+        _segmenters[key] = LearnedSegmenter(key[0], device=device)
+    return _segmenters[key]
+
+
+def make_eyes_for(entry: PoolEntry, model, perception: str = "noisy", noise_scale: float = 1.0,
+                  segmenter: Optional[str] = None, segmenter_device: Optional[str] = None):
+    """An episode's eyes on a pool entry's row (see the module docstring),
+    drawn from its perception seed: the same every time it is used.
+    noise_scale: the noise models' spread (the camera has none to scale)."""
+    sight(perception, segmenter)
+    if perception == "camera":
+        if noise_scale != 1.0:
+            raise ValueError("noise_scale applies to the noise models, not the camera")
+        import cv2
+        cv2.setNumThreads(1)                  # (one per worker process, as above)
+        masks = learned_masks(segmenter, segmenter_device) if segmenter else None
+        return make_eyes(model, entry.row, entry.identity()["perception_seed"], "realistic", masks)
+    return NoisyEyes(model, entry.row, entry.noise_rng, noise_scale, learned=perception == "noisy-learned")
 
 
 def load_scene(cfg: ShelfConfig, entry: PoolEntry):
@@ -446,6 +512,7 @@ class Bridge:
 
     def __init__(self, control_phases=PHASES):
         self.control_phases = frozenset(control_phases)
+        self.episode: Optional[GapEpisode] = None   # the one the thread made (run_script)
         self.decisions: queue.Queue = queue.Queue()
         self.actions: queue.Queue = queue.Queue()
 
@@ -459,20 +526,32 @@ class Bridge:
         return action
 
 
-def run_script(ep: GapEpisode, bridge: Bridge):
-    """The worker thread: the script to its score (or to insert), then report how it ended."""
+def run_script(make_episode, bridge: Bridge):
+    """The worker thread: make the episode (make_episode(), into
+    bridge.episode), run the script to its score (or to insert), let go of
+    its eyes, then report how it ended. The eyes are made, used and let go of
+    in this thread: a rendered camera's OpenGL context (macOS's CGL) is
+    locked to the thread that made it, and another one rendering with it
+    waits for ever."""
+    eyes, end = None, None
     try:
+        ep = bridge.episode = make_episode()
+        eyes, ep.residual = ep.eyes, bridge
         res = ep.reshelve()
         end = ("gave_up", res["skipped"]) if "skipped" in res else ("scored", res)
     except ReachedInsert:
         end = ("insert", "")
     except Abandon:
-        return
+        pass
     except RuntimeError as e:                # the script found no way to go on (no plan, unseen books, a jam)
         end = ("error", str(e))
     except Exception as e:                   # a bug: still end the episode, and say what it was
         end = ("crash", f"{type(e).__name__}: {e}")
-    bridge.decisions.put(("done", end))
+    finally:
+        if eyes is not None:
+            eyes.close()
+    if end is not None:
+        bridge.decisions.put(("done", end))
 
 
 class PreparationFailed(RuntimeError):
@@ -494,6 +573,8 @@ class GapEnv(gym.Env):
     control_phases: contacts where PPO acts. Other contacts run with zero
     corrections before/between decisions. ("slide", "push") trains insertion
     after scripted preparation. learn_stop=False uses five continuous actions.
+    perception, segmenter (weights), segmenter_device: the eyes (module
+    docstring, make_eyes_for); the pool must have seen its rows the same way.
     noise_scale: NoisyPerception's scale. grasp_scale: GraspError's.
     action_scale: of the correction's steps. insert: run through the
     insertion to the score (False: gap creation only).
@@ -509,9 +590,13 @@ class GapEnv(gym.Env):
                  first_phases: Optional[Sequence[str]] = None, noise_scale: float = 1.0, action_scale: float = 1.0,
                  max_decisions: int = MAX_DECISIONS, cfg: Optional[ShelfConfig] = None, insert: bool = True,
                  grasp: GraspError = GraspError(), grasp_scale: float = 1.0,
-                 control_phases: Sequence[str] = PHASES, learn_stop: bool = True):
+                 control_phases: Sequence[str] = PHASES, learn_stop: bool = True, perception: str = "noisy",
+                 segmenter: Optional[str] = None, segmenter_device: Optional[str] = None):
         if not control_phases or set(control_phases) - set(PHASES):
             raise ValueError(f"control_phases must be a nonempty subset of {PHASES}")
+        self.sight = sight(perception, segmenter)
+        if perception == "camera" and noise_scale != 1.0:
+            raise ValueError("noise_scale applies to the noise models, not the camera")
         if first_phases is not None and set(first_phases) - set(PHASES):
             raise ValueError(f"unknown first contact phase: {first_phases}")
         if not insert and not (set(control_phases) - {"slide", "push"}):
@@ -520,11 +605,17 @@ class GapEnv(gym.Env):
         self.scenarios = tuple(scenarios)
         pool = pool if pool is not None else {s: load_pool(s) for s in self.scenarios}
         packed = {s: [e if isinstance(e, Packed) else Packed(e) for e in pool[s]] for s in self.scenarios}
+        for s in self.scenarios:
+            seen = sorted({p.perception for p in packed[s]} - {self.sight})
+            if seen:
+                raise ValueError(f"the {s} pool saw its rows as {', '.join(seen)}, this env as {self.sight}: "
+                                 f"build one with the same perception (gap_env.py pool --perception ...)")
         self.pool = {s: [p for p in packed[s] if first_phases is None or p.phase in first_phases]
                      for s in self.scenarios}
         for s in self.scenarios:
             if not self.pool[s]:
                 raise ValueError(f"no {s} scene matches the first-contact filter")
+        self.perception, self.segmenter, self.segmenter_device = perception, segmenter, segmenter_device
         self.noise_scale, self.action_scale, self.max_decisions = noise_scale, action_scale, max_decisions
         self.insert, self.grasp, self.grasp_scale = insert, grasp, grasp_scale
         self.control_phases, self.learn_stop = tuple(control_phases), learn_stop
@@ -613,13 +704,16 @@ class GapEnv(gym.Env):
     def start(self, entry: PoolEntry):
         """Start the script on a pool entry; return its first message."""
         model, data = load_scene(self.cfg, entry)
-        self.ep = GapEpisode(model, data, entry, NoisyEyes(model, entry.row, entry.noise_rng, self.noise_scale),
-                             through_insert=self.insert, grasp=self.grasp.draws(entry.grasp_rng, self.grasp_scale))
+        grasp = self.grasp.draws(entry.grasp_rng, self.grasp_scale)
+        make = lambda: GapEpisode(model, data, entry, make_eyes_for(entry, model, self.perception, self.noise_scale,
+                                                                      self.segmenter, self.segmenter_device),
+                                  through_insert=self.insert, grasp=grasp)
         self.bridge = Bridge(self.control_phases)
-        self.ep.residual = self.bridge
-        self.thread = threading.Thread(target=run_script, args=(self.ep, self.bridge), daemon=True)
+        self.thread = threading.Thread(target=run_script, args=(make, self.bridge), daemon=True)
         self.thread.start()
-        return self.bridge.decisions.get()
+        msg = self.bridge.decisions.get()
+        self.ep = self.bridge.episode          # (None if making it failed: msg says why)
+        return msg
 
     def see(self, contact):
         """The contact the script now asks about (None: the episode is over)."""
@@ -631,7 +725,7 @@ class GapEnv(gym.Env):
         a = np.zeros(6)
         a[:self.action_space.shape[0]] = np.clip(np.asarray(action, dtype=float).reshape(self.action_space.shape), -1, 1)
         self.ep.peak_force = 0.0
-        self.bridge.actions.put(np.concatenate([a[:5] * RESIDUAL_STEPS * self.action_scale, a[5:]]))
+        self.bridge.actions.put(np.concatenate([self.correction(a[:5] * self.action_scale), a[5:]]))
         kind, what = self.bridge.decisions.get()
         self.decisions += 1
         ep = self.ep
@@ -680,8 +774,20 @@ class GapEnv(gym.Env):
             self.stop()
         return obs, float(reward), terminated, truncated, info
 
+    def correction(self, a) -> np.ndarray:
+        """The five correction parts of an action (in [-1, 1], times the action
+        scale) as the Runner takes them for the contact deciding now: in a
+        target contact (the insertion) the correction itself, 0 the script's
+        pose and +-1 the move's bounds on that side; otherwise its change,
+        +-1 a full RESIDUAL_STEPS."""
+        c = self.contact
+        if c is not None and c.target:
+            return np.where(a >= 0, a * c.hi, -a * c.lo)
+        return a * RESIDUAL_STEPS
+
     def stop(self):
-        """End the script's thread, if it is waiting for an action."""
+        """End the script's thread, if it is waiting for an action (it lets
+        go of the episode's eyes as it ends: run_script)."""
         if self.thread is not None and self.thread.is_alive():
             self.bridge.actions.put(None)
             self.thread.join()
@@ -859,21 +965,25 @@ class FirstContact:
         raise Abandon
 
 
-def warm(args) -> PoolEntry:
+def warm(args, perception: str = "noisy", segmenter: Optional[str] = None,
+         segmenter_device: Optional[str] = None) -> PoolEntry:
     """Make a pool entry and run the script on it up to its first contact
     move (the slide, for a row wide enough already), so the entry holds its
-    inspection views and first plan."""
+    inspection views and first plan. perception, segmenter: the eyes it sees
+    the row with (make_eyes_for), recorded in the entry."""
     scenario, seed, *errors = args
     variant, perception_seed, grasp_seed = errors or (0, None, None)
-    cfg = ShelfConfig()
+    cfg, seen = ShelfConfig(), sight(perception, segmenter)
     try:
         entry = make_entry(cfg, scenario, seed)
     except RuntimeError as e:                # no stable row for this seed
         return PoolEntry(scenario, seed, None, np.zeros(0), contact=False, why=str(e),
-                         variant=variant, perception_seed=perception_seed, grasp_seed=grasp_seed)
+                         variant=variant, perception_seed=perception_seed, grasp_seed=grasp_seed, perception=seen)
     entry.variant, entry.perception_seed, entry.grasp_seed = variant, perception_seed, grasp_seed
+    entry.perception = seen
     model, data = load_scene(cfg, entry)
-    ep = GapEpisode(model, data, entry, NoisyEyes(model, entry.row, entry.noise_rng))
+    eyes = make_eyes_for(entry, model, perception, 1.0, segmenter, segmenter_device)
+    ep = GapEpisode(model, data, entry, eyes)
     ep.residual = first = FirstContact()
     try:
         res = ep.reshelve()
@@ -884,6 +994,8 @@ def warm(args) -> PoolEntry:
         entry.contact, entry.why = False, str(e)
     except Exception as e:                   # a bug: leave the scene out rather than lose the whole pool
         entry.contact, entry.why = False, f"crash: {type(e).__name__}: {e}"
+    finally:
+        eyes.close()
     return entry
 
 
@@ -907,28 +1019,32 @@ def pool_jobs(scenario: str, seeds: int, first_seed: int, error_variants: int = 
 
 def build_pool(scenario: str, seeds: int, first_seed: int = POOL_FIRST_SEED, workers: int = 1,
                root: str = POOL_DIR, name: Optional[str] = None, error_variants: int = 1,
-               error_seed: Optional[int] = None) -> List[PoolEntry]:
-    """Build and save a pool (as `name`, default the scenario). Refuses to
+               error_seed: Optional[int] = None, perception: str = "noisy", segmenter: Optional[str] = None,
+               segmenter_device: Optional[str] = None) -> List[PoolEntry]:
+    """Build and save a pool (as `name`, default the scenario), seeing the
+    rows with `perception` (and `segmenter`: make_eyes_for). Refuses to
     overwrite one: they take hours."""
     path = pool_path(name or scenario, root)
     if os.path.exists(path):
         raise FileExistsError(f"{path} exists: move it away first")
+    sight(perception, segmenter)
     jobs = pool_jobs(scenario, seeds, first_seed, error_variants, error_seed)
+    see = partial(warm, perception=perception, segmenter=segmenter, segmenter_device=segmenter_device)
     if workers > 1:
         with Pool(workers) as p:
             entries = []
-            for i, e in enumerate(p.imap(warm, jobs)):
+            for i, e in enumerate(p.imap(see, jobs)):
                 entries.append(e)
                 print(f"  {i + 1}/{len(jobs)}  seed {e.seed}, variant {e.variant}: "
                       f"{e.phase if e.contact else e.why}", flush=True)
     else:
-        entries = [warm(j) for j in jobs]
+        entries = [see(j) for j in jobs]
     os.makedirs(root, exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump([Packed(e) for e in entries], f)
     phases = {p: sum(e.phase == p for e in entries) for p in PHASES}
-    print(f"{scenario}: {sum(e.contact for e in entries)} of {len(entries)} scenes make contact "
-          f"(first contact: {phases}) -> {path}")
+    print(f"{scenario} ({sight(perception, segmenter)}): {sum(e.contact for e in entries)} of {len(entries)} "
+          f"scenes make contact (first contact: {phases}) -> {path}")
     return entries
 
 
@@ -972,13 +1088,18 @@ def main():
     p.add_argument("--name", help="save as gap_pool_<name>.pkl (default: the scenario)")
     p.add_argument("--error-variants", type=int, default=1, help="independent error variants per shelf layout")
     p.add_argument("--error-seed", type=int, help="seed for generating independent perception and grasp seeds")
+    p.add_argument("--perception", default="noisy", choices=PERCEPTIONS, help="how the rows are seen")
+    p.add_argument("--segmenter", metavar="WEIGHTS", help="camera: learned book masks (learned_segmenter.py)")
+    p.add_argument("--segmenter-device", choices=("cuda", "mps", "cpu"),
+                   help="where the segmenter runs (default: the GPU if there is one)")
     p = sub.add_parser("phases", help="record each scene's first contact phase in an older pool")
     p.add_argument("name")
     p.add_argument("--workers", type=int, default=1)
     args = ap.parse_args()
     if args.cmd == "pool":
         build_pool(args.scenario, args.seeds, args.first_seed, args.workers, name=args.name,
-                   error_variants=args.error_variants, error_seed=args.error_seed)
+                   error_variants=args.error_variants, error_seed=args.error_seed, perception=args.perception,
+                   segmenter=args.segmenter, segmenter_device=args.segmenter_device)
     elif args.cmd == "phases":
         add_phases(args.name, args.workers)
 

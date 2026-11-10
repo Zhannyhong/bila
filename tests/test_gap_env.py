@@ -8,6 +8,7 @@ the observation, action and failure tests say what they should.
 """
 
 import copy
+import os
 
 import mujoco
 import numpy as np
@@ -16,13 +17,15 @@ import pytest
 pytest.importorskip("gymnasium")
 
 from gap_env import (PHASES, PROGRESS_REWARD, TOPPLE_DEG, Abandon, GapEnv, GapEpisode, GraspError, NoisyEyes,  # noqa: E402
-                     Packed, PreparationFailed, ReachedInsert, axis_rot, digest, load_scene, make_entry,
-                     pool_jobs, quat_to_mat, shift_in_hand, to_go, warm)
-from insert_book import (CLEAR, PAD_Z, RESIDUAL_MAX, RESIDUAL_STEP, RESIDUAL_TURN_MAX, Episode,  # noqa: E402
+                     Packed, PreparationFailed, ReachedInsert, axis_rot, digest, learned_masks, load_scene,
+                     make_entry, make_eyes_for, pool_jobs, quat_to_mat, shift_in_hand, sight, to_go, warm)
+from insert_book import (CLEAR, PAD_Z, RESIDUAL_MAX, RESIDUAL_STEP, RESIDUAL_TURN_MAX, SLIDE_HI, Episode,  # noqa: E402
                          RESIDUAL_TURN_STEP)
 from shelf_scene import ShelfConfig  # noqa: E402
 
 SEED = 10_000              # a tight training scene the script widens; as a clear one, it inserts at once
+WEIGHTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bila_weights", "segmenter",
+                       "segmenter.pt")       # Victor's learned masks (not in git)
 END = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
 
 
@@ -427,3 +430,86 @@ def test_pool_with_only_failed_preparations_can_be_evaluated(warmed, monkeypatch
             env.reset(seed=0)
     finally:
         env.close()
+
+
+def test_an_insertion_action_is_a_bounded_target(clear_env):
+    """The slide (a target contact): an action is where the correction goes,
+    inside SLIDE_LO..SLIDE_HI, reached at RESIDUAL_STEP a decision; a steady
+    small action holds a small correction; it never lifts the book."""
+    clear_env.reset(options={"index": 0})
+    clear_env.set_action_scale(1.0)
+    assert clear_env.contact.phase == "slide" and clear_env.contact.target
+    run = clear_env.ep.run
+    full = np.array([1.0, 1.0, 1.0, 0.0, 0.0, -1.0])                         # along, out of the shelf, up
+    clear_env.step(full)
+    assert run.offset[0] == pytest.approx(RESIDUAL_STEP)                      # rate-limited ...
+    clear_env.step(full)
+    np.testing.assert_allclose(run.offset[:3], [SLIDE_HI[0], SLIDE_HI[1], 0.0], atol=1e-12)   # ... to the bounds, no lift
+    for _ in range(3):
+        clear_env.step(np.zeros(6))
+    np.testing.assert_allclose(run.offset, 0.0, atol=1e-12)                   # zero: back to the script's pose
+    small = np.array([0.1, 0.0, 0.0, 0.0, 0.0, -1.0])
+    for _ in range(20):
+        clear_env.step(small)
+        assert clear_env.contact.phase == "slide"
+        assert run.offset[0] == pytest.approx(0.1 * SLIDE_HI[0])              # held, not adding up
+
+
+@pytest.fixture(scope="module")
+def clear_camera():
+    """The clear row's pool entry, seen by the rendered camera (the simulation's masks)."""
+    entry = warm(("clear", SEED), perception="camera")
+    assert entry.contact and entry.phase == "slide" and entry.perception == "camera"
+    return entry
+
+
+def test_camera_zero_actions_follow_the_script(clear_camera):
+    """Through the camera, the env changes nothing either: zero corrections
+    end where the script alone does, though the env runs it in a thread."""
+    entry = copy.deepcopy(clear_camera)
+    model, data = load_scene(ShelfConfig(), entry)
+    eyes = make_eyes_for(entry, model, "camera")
+    try:
+        ep = GapEpisode(model, data, entry, eyes, grasp=GraspError().draws(entry.grasp_rng, 1.0))
+        ep.residual = Zero()
+        alone = ep.reshelve()
+    finally:
+        eyes.close()
+    env = GapEnv(scenarios=("clear",), pool={"clear": [copy.deepcopy(clear_camera)]}, perception="camera",
+                 control_phases=("slide", "push"), learn_stop=False)
+    try:
+        env.reset(seed=0)
+        camera = env.ep.eyes.camera
+        n, info = episode(env, np.zeros(5))
+        assert info["outcome"] == ("success" if alone["success"] else "missed") and info["decisions"] == n
+        np.testing.assert_array_equal(env.ep.d.qpos, data.qpos)
+        assert env.ep.d.time == data.time
+        assert camera.renderer._gl_context is None   # let go of (by the script's thread) as it ended
+        env.reset(seed=0)                            # and a new episode makes its own
+        assert env.ep.eyes.camera is not camera
+    finally:
+        env.close()
+
+
+def test_an_env_takes_only_a_pool_that_saw_its_rows_as_it_does(clear, clear_camera):
+    with pytest.raises(ValueError, match="saw its rows as noisy"):
+        GapEnv(scenarios=("clear",), pool={"clear": [copy.deepcopy(clear)]}, perception="camera")
+    with pytest.raises(ValueError, match="saw its rows as camera"):
+        GapEnv(scenarios=("clear",), pool={"clear": [copy.deepcopy(clear_camera)]})
+    with pytest.raises(ValueError, match="not the camera"):
+        GapEnv(scenarios=("clear",), pool={"clear": [copy.deepcopy(clear_camera)]}, perception="camera",
+               noise_scale=2.0)
+    with pytest.raises(ValueError, match="segmenter goes with"):
+        sight("noisy", "segmenter.pt")
+    assert sight("camera", "/a/segmenter.pt") == "camera+segmenter.pt" and sight() == "noisy"
+    assert Packed(clear).perception == "noisy"
+
+
+@pytest.mark.skipif(not os.path.exists(WEIGHTS), reason="the learned masks' weights aren't here")
+def test_camera_with_learned_masks_loads_them_once(clear_camera):
+    model, _ = load_scene(ShelfConfig(), clear_camera)
+    a, b = (make_eyes_for(clear_camera, model, "camera", segmenter=WEIGHTS) for _ in range(2))
+    try:
+        assert a.segment is b.segment is learned_masks(WEIGHTS) and a.robust_fit
+    finally:
+        a.close(), b.close()

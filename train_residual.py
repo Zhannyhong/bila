@@ -6,6 +6,10 @@ with each worker collecting its rollout on its own.
     uv run --group rl python train_residual.py --name tight --scenarios tight --phases widen --no-insert   # gap only
     uv run --group rl python train_residual.py --name insertion --scenarios clear tight \
         --control-phases slide push --no-learn-stop                    # script prepares, PPO inserts
+    uv run --group rl python train_residual.py --name insertion_camera --scenarios clear tight \
+        --control-phases slide push --no-learn-stop --perception camera \
+        --segmenter bila_weights/segmenter/segmenter.pt --train-suffix _camera --val-suffix _camera_val
+        # what the robot sees: the rendered camera with learned masks (pools built the same way)
     uv run --group rl python train_residual.py --resume runs/reshelve/last.pt              # carry on after a stop
     uv run --group rl tensorboard --logdir runs
 
@@ -23,7 +27,8 @@ until the end of the rollout.
 This module stays free of torch: the worker processes import it (spawn), and
 torch would cost each ~700 MB. The learner (the policy, the PPO update) is
 residual_ppo.py, imported only by train(). The workers act with NumpyActor,
-a numpy copy of the policy's actor.
+a numpy copy of the policy's actor. (With --segmenter the workers load
+torch after all, for the learned masks: ~1.2 GB each on Metal.)
 
 action_scale ramps from ramp_start to 1 over the first ramp_decisions: early
 corrections are small, as random full ones topple books. (Not the end
@@ -87,6 +92,9 @@ class Config:
     end_bias: float = -1.8                       # ... and its mean: above 0.5 in 1 decision of ~10,000
     ramp_start: float = 0.25
     ramp_decisions: int = 300_000
+    perception: str = "noisy"                    # the eyes: noisy, noisy-learned or camera (gap_env)
+    segmenter: str = ""                          # camera: learned masks' weights ("": the simulation's masks)
+    segmenter_device: str = ""                   # where they run ("": the GPU if there is one)
     noise_scale: float = 1.0                     # NoisyPerception's
     grasp_scale: float = 1.0                     # gap_env.GraspError's
     eval_every: int = 10                         # updates
@@ -154,7 +162,8 @@ def make_env(cfg: Config, validation: bool = False):
     pool = {s: load_pool(s + suffix) for s in cfg.scenarios}
     return GapEnv(scenarios=cfg.scenarios, pool=pool, first_phases=cfg.phases or None, noise_scale=cfg.noise_scale,
                   insert=cfg.insert, grasp_scale=cfg.grasp_scale, control_phases=cfg.control_phases,
-                  learn_stop=cfg.learn_stop)
+                  learn_stop=cfg.learn_stop, perception=cfg.perception, segmenter=cfg.segmenter or None,
+                  segmenter_device=cfg.segmenter_device or None)
 
 
 def episode_record(info: dict, ret: float, scenario: str = "") -> dict:
