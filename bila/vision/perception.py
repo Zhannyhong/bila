@@ -75,8 +75,10 @@ class BookEstimate:
     lean: float                 # rad, about the shelf's y axis; + = top toward +x
     yaw: float                  # rad, swivel about vertical; + = right edge of the spine further out
     spine_y: float              # how far out the spine's centre sits (shelf y)
-    depth: float                # front to back: ASSUMED (DEPTH_PRIOR), not measured
+    depth: float                # front to back: ASSUMED (DEPTH_PRIOR), not measured, unless from the catalogue
     visible: float              # fraction of the spine face in view, 0..1
+    call_number: Optional[int] = None   # read off its sticker: then its size and mass are the catalogue's
+    mass: Optional[float] = None        # kg, from the catalogue; None if its sticker wasn't read
 
 
 @dataclass

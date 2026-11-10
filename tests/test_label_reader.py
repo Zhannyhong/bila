@@ -109,20 +109,6 @@ def test_sticker_text_matches_the_dataset():
     assert cart_demo.sticker_text(310, "") == "031.0"
 
 
-def test_bracket():
-    class B:
-        def __init__(self, name):
-            self.name = name
-
-    class R:
-        books = [B("a"), B("b"), B("c"), B("d")]
-
-    read = {"a": 100, "b": 110, "d": 130}
-    assert cart_demo.bracket(R, read, 115) == (1, 3)           # c unread: not side by side
-    assert cart_demo.bracket(R, read, 105) == (0, 1)
-    assert cart_demo.bracket(R, read, 95) == (None, 0)
-
-
 def test_locate_finds_the_book_and_the_sticker_in_the_world():
     class Frame:
         pass

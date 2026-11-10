@@ -1,26 +1,32 @@
 """
-A web page that shows an insertion as it runs: what the wrist camera sees,
-with the books the robot recognised drawn over it, next to a scene camera.
+A web page that shows the book-return cart at work as it runs: what the wrist
+camera sees, with the books the robot recognised drawn over it, next to a
+scene camera.
 
     uv run python -m bila.viz.live_view --scenario leaning --seed 0          # opens http://localhost:8000
-    uv run python -m bila.viz.live_view --scenario leaning --plain-books      # sampled plain boxes instead of the real 3D books
     uv run python -m bila.viz.live_view --scenario tight --segmenter ~/bila_data/segmenter/segmenter.pt
     uv run python -m bila.viz.live_view --scenario tight --label-weights ~/bila_data/labels   # read stickers with label_reader
+    uv run python -m bila.viz.live_view --scenario clear --seed 0 --no-fiducials   # the calibration error uncorrected: it jams
 
-The episode is insert_book's Episode with --perception camera (RGBDPerception,
-the realistic D405 camera), started when the page is first opened. The page has:
+The episode is cart_demo's, started when the page is first opened: the Panda
+on the cart's lift reads the return tray's stickers with its wrist camera,
+lifts to the held book's row, reads the row's stickers on its first look to
+find the slot, makes room, picks the book out of the tray and inserts it. Its
+only camera is the wrist camera (RGBDPerception, the realistic D405). The page has:
   wrist camera  live, with the last look's estimate projected onto it: each
                 spine as the robot believes it (the slot's neighbours orange,
                 others blue, labelled by place from the slot). It is drawn
                 with the camera's true pose, so where an outline is off its
                 spine, that is the estimate's error.
-  scene camera  live, from the free camera aimed at the gap, with the
+  scene camera  live, from a free camera on the cart and the bookcase, with the
                 estimate's boxes drawn into the scene (as --view does).
   last look     the images the estimate came from, every book mask the
                 segmenter found tinted, the fitted spines, and the call-number
                 stickers read (call_numbers_seen.py): the two whose numbers
                 bracket the held book's, which put the slot between them, green.
-  books, log    the estimate as numbers, and the controller's steps.
+  books, log    the estimate as numbers (a book whose sticker was read: its call
+                number, and its size and mass from the catalogue), and the
+                controller's steps.
 No rendering happens unless the episode's Runner asks for a frame (15 fps of
 sim time); the sim runs at most real time, slower when rendering can't keep up.
 """
@@ -31,6 +37,7 @@ import argparse
 import contextlib
 import json
 import math
+import os
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,7 +47,6 @@ import mujoco
 import numpy as np
 
 from bila.vision.camera import CAMERA, TO_OPENCV, TURN_180, CameraFrame, intrinsics, project
-from bila.sim.shelf_scene import ShelfConfig
 
 LIVE_SIZE = (640, 360)      # wrist camera, live (the looks use the camera's own 1280 x 720)
 SCENE_SIZE = (960, 540)
@@ -74,7 +80,7 @@ class Live:
     def log(self, *parts):
         print(*parts)
         with self.cond:
-            self.state["log"] = (self.state["log"] + [" ".join(map(str, parts))])[-40:]
+            self.state["log"] = (self.state["log"] + [" ".join(map(str, parts))])[-500:]
 
 
 def draw_spines(img, frame: CameraFrame, est, fill=0.25):
@@ -108,8 +114,8 @@ class Screen:
     drive (is_running, sync, lock, user_scn): every sync renders the wrist and
     scene cameras and publishes them."""
 
-    def __init__(self, model, live: Live):
-        self.m, self.live, self.syncs = model, live, 0
+    def __init__(self, model, data, live: Live):
+        self.m, self.data, self.live, self.syncs = model, data, live, 0
         self.est = None                                   # the last look's estimate, set by WatchedEyes
         self.user_scn = mujoco.MjvScene(model, maxgeom=2000)
         self.wrist = mujoco.Renderer(model, LIVE_SIZE[1], LIVE_SIZE[0])
@@ -118,8 +124,9 @@ class Screen:
         self.K = intrinsics(model.cam_fovy[self.cam_id], *LIVE_SIZE)
         self.hide_sites = mujoco.MjvOption()
         self.hide_sites.sitegroup[:] = 0
-        self.free = mujoco.MjvCamera()
-        mujoco.mjv_defaultFreeCamera(model, self.free)    # aimed at the gap, as insert_book --view does
+        self.free = mujoco.MjvCamera()                    # the cart and the bookcase both in view (as record_cart)
+        self.free.lookat[:] = data.xpos[model.body("lift").id] + [0.2, 0, 0.3]
+        self.free.azimuth, self.free.elevation, self.free.distance = -35, -18, 2.6
 
     def is_running(self):
         return True
@@ -195,6 +202,8 @@ class WatchedEyes:
         gap = est.min_gap_width(self.target[1])
         self.live.update(looks=self.looks, narrowest_gap_mm=None if math.isnan(gap) else round(1000 * gap, 1),
                          books=[{"offset": b.slot_offset, "x_mm": round(1000 * b.spine_corners[:2, 0].mean()),
+                        "call": None if b.call_number is None else dewey(b.call_number),
+                        "depth_mm": round(1000 * b.depth), "kg": None if b.mass is None else round(b.mass, 2),
                                  "thickness_mm": round(1000 * b.thickness, 1), "height_mm": round(1000 * b.height),
                                  "lean_deg": round(math.degrees(b.lean), 1), "yaw_deg": round(math.degrees(b.yaw), 1),
                                  "visible": round(b.visible, 2)} for b in est.books])
@@ -205,51 +214,65 @@ class WatchedEyes:
 
 
 PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Shelf robot: live view</title>
+<html lang="en" data-bs-theme="dark"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Shelf robot: live view</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
 <style>
-  body { margin: 0; padding: 16px; background: #15171a; color: #e6e6e6; font: 14px system-ui, sans-serif; }
-  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 0 0 6px; color: #aab; font-weight: 600; }
-  #status { color: #9ad; margin-bottom: 12px; }
-  .row { display: grid; grid-template-columns: 1fr 1.5fr; gap: 12px; margin-bottom: 12px; }
-  .panel { background: #1e2125; border-radius: 6px; padding: 10px; min-width: 0; }
-  img { width: 100%; display: block; background: #000; border-radius: 4px; min-height: 120px; }
-  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-  td, th { padding: 3px 8px; text-align: right; border-bottom: 1px solid #2c3036; }
-  tr.nb td { color: #ffa060; }
-  #log { font: 12px ui-monospace, monospace; white-space: pre-wrap; max-height: 320px; overflow-y: auto; color: #bbb; }
-</style></head><body>
-<h1>Shelf robot: live view</h1>
-<div id="status">connecting…</div>
-<div id="slot" style="color:#7d7; margin:-6px 0 12px; font-weight:600"></div>
-<div class="row">
-  <div class="panel"><h2>Wrist camera: live, last estimate projected</h2><img src="/stream/wrist" alt="wrist camera"></div>
-  <div class="panel"><h2>Scene camera</h2><img src="/stream/scene" alt="scene camera"></div>
-</div>
-<div class="panel" style="margin-bottom:12px"><h2>Last look: segmenter masks, fitted spines, call numbers read</h2>
-  <img src="/stream/look" alt="no look yet"></div>
-<div class="row">
-  <div class="panel"><h2>Books recognised <span id="gap"></span></h2>
-    <table><thead><tr><th>place</th><th>x mm</th><th>thick mm</th><th>height mm</th><th>lean °</th><th>yaw °</th><th>visible</th></tr></thead>
-    <tbody id="books"></tbody></table></div>
-  <div class="panel"><h2>Controller log</h2><div id="log"></div></div>
-</div>
+  .cam { object-fit: contain; background: #000; }
+  .card-header { font-size: .85rem; font-weight: 600; color: var(--bs-secondary-color); }
+  #books td, #books th { text-align: right; font-variant-numeric: tabular-nums; }
+  #log { font: 12px ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; height: 360px; overflow-y: auto; }
+</style></head><body class="bg-body-tertiary">
+<nav class="navbar bg-body border-bottom sticky-top"><div class="container-fluid gap-2">
+  <span class="navbar-brand mb-0 h1">Shelf robot <small class="text-body-secondary fw-normal">live view</small></span>
+  <div class="d-flex flex-wrap gap-2 align-items-center small">
+    <span class="badge text-bg-secondary" id="b-scn">–</span>
+    <span class="badge text-bg-secondary" id="b-seg">–</span>
+    <span class="badge text-bg-dark border" id="b-t">t = 0 s</span>
+    <span class="badge text-bg-dark border" id="b-looks">0 looks</span>
+    <span class="badge text-bg-info" id="status">connecting…</span>
+  </div></div></nav>
+<main class="container-fluid py-3">
+  <div class="alert py-2 mb-3" id="slot" role="status">–</div>
+  <div class="row g-3 mb-3">
+    <div class="col-lg-6"><div class="card h-100"><div class="card-header">Wrist camera · live, last estimate projected</div>
+      <div class="card-body p-2"><div class="ratio ratio-16x9"><img class="cam rounded" src="/stream/wrist" alt="wrist camera"></div></div></div></div>
+    <div class="col-lg-6"><div class="card h-100"><div class="card-header">Scene camera</div>
+      <div class="card-body p-2"><div class="ratio ratio-16x9"><img class="cam rounded" src="/stream/scene" alt="scene camera"></div></div></div></div>
+  </div>
+  <div class="card mb-3"><div class="card-header">Last look · segmenter masks, fitted spines, call numbers read</div>
+    <div class="card-body p-2"><img class="cam rounded w-100" src="/stream/look" alt="no look yet"></div></div>
+  <div class="row g-3">
+    <div class="col-xl-7"><div class="card h-100"><div class="card-header">Books recognised <span id="gap" class="fw-normal"></span></div>
+      <div class="table-responsive"><table class="table table-sm table-hover mb-0" id="books">
+        <thead><tr><th>place</th><th>call no.</th><th>x mm</th><th>thick mm</th><th>height mm</th><th>depth mm</th><th>kg</th><th>lean °</th><th>yaw °</th><th>visible</th></tr></thead>
+        <tbody id="books-body"></tbody></table></div></div></div>
+    <div class="col-xl-5"><div class="card h-100"><div class="card-header">Controller log</div>
+      <div class="card-body p-2"><div id="log" class="bg-body-secondary rounded p-2 text-body-secondary"></div></div></div></div>
+  </div>
+</main>
 <script>
+const $ = id => document.getElementById(id);
 async function poll() {
   try {
     const s = await (await fetch('/state')).json();
-    document.getElementById('status').textContent =
-      `${s.scenario} seed ${s.seed} · ${s.segmenter} masks · t = ${s.sim_time ?? 0} s · ${s.looks} looks · ${s.status}`;
-    document.getElementById('slot').textContent = s.slot ? `Slot from call numbers: ${s.slot}` :
-      `Holding ${s.book_number}: call numbers not read yet`;
-    document.getElementById('gap').textContent = s.narrowest_gap_mm == null ? '' :
+    $('b-scn').textContent = `${s.scenario} · seed ${s.seed}`;
+    $('b-seg').textContent = `${s.segmenter} masks`;
+    $('b-t').textContent = `t = ${s.sim_time ?? 0} s`;
+    $('b-looks').textContent = `${s.looks} looks`;
+    $('status').textContent = s.status;
+    $('slot').className = `alert py-2 mb-3 ${s.slot ? 'alert-success' : 'alert-secondary'}`;
+    $('slot').textContent = s.slot ? `Slot from call numbers: ${s.slot}` :
+      `Returning ${s.book_number}: the row's call numbers not read yet`;
+    $('gap').textContent = s.narrowest_gap_mm == null ? '' :
       `· narrowest gap ${s.narrowest_gap_mm} mm for a ${s.book_mm} mm book`;
-    document.getElementById('books').innerHTML = s.books.map(b =>
-      `<tr class="${Math.abs(b.offset) == 1 ? 'nb' : ''}"><td>${b.offset > 0 ? '+' : ''}${b.offset}</td><td>${b.x_mm}</td>
-       <td>${b.thickness_mm}</td><td>${b.height_mm}</td><td>${b.lean_deg}</td><td>${b.yaw_deg}</td><td>${b.visible}</td></tr>`).join('');
-    const log = document.getElementById('log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    $('books-body').innerHTML = s.books.map(b =>
+      `<tr class="${Math.abs(b.offset) == 1 ? 'table-warning' : ''}"><td>${b.offset > 0 ? '+' : ''}${b.offset}</td><td>${b.call ?? '–'}</td><td>${b.x_mm}</td>
+       <td>${b.thickness_mm}</td><td>${b.height_mm}</td><td>${b.depth_mm}</td><td>${b.kg ?? '–'}</td><td>${b.lean_deg}</td><td>${b.yaw_deg}</td><td>${b.visible}</td></tr>`).join('');
+    const log = $('log'), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
     log.textContent = s.log.join('\\n');
     if (atEnd) log.scrollTop = log.scrollHeight;
-  } catch (e) { document.getElementById('status').textContent = 'server stopped'; }
+  } catch (e) { $('status').textContent = 'server stopped'; $('status').className = 'badge text-bg-danger'; }
   setTimeout(poll, 500);
 }
 poll();
@@ -313,8 +336,8 @@ def main():
     ap.add_argument("--label-weights", help="label_reader's folder (finder.pt, reader.pt) to read the stickers "
                                             "from the images; default: from the simulation")
     ap.add_argument("--camera-noise", choices=("realistic", "basic"), default="realistic")
-    ap.add_argument("--plain-books", action="store_true",
-                    help="sampled plain boxes instead of the repo's real 3D books (covers from dae_to_obj.py)")
+    ap.add_argument("--no-fiducials", action="store_true",
+                    help="don't correct the camera pose from the shelf's markers (see the calibration error's effect)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-browser", action="store_true", help="don't open the page; wait for it to be opened")
     a = ap.parse_args()
@@ -323,24 +346,25 @@ def main():
     if a.segmenter:
         from bila.vision.learned_segmenter import LearnedSegmenter    # before any rendering (see learned_segmenter.py)
         segmenter = LearnedSegmenter(a.segmenter)
-    from bila.control.insert_book import DEFAULT_PANDA, GAP_MARGIN, Episode, make_episode, make_eyes, report
-    from bila.vision.call_numbers_seen import LearnedStickers, OracleStickers, ReadingEyes, catalogue
-    from bila.control.cart_demo import dewey
+    if a.label_weights:
+        from bila.vision import label_reader  # noqa: F401  (imports torch._dynamo, before any render)
+    from bila.control import cart_demo
+    from bila.control.insert_book import report
 
     live = Live()
-    real = not a.plain_books
-    model, data, row = make_episode(ShelfConfig(book_meshes=real, catalogue=real), a.scenario,
-                                    np.random.default_rng(a.seed), DEFAULT_PANDA, stickers=True)
+    model, data, row, tray, numbers, shelf_map = cart_demo.setup(a.scenario, a.seed, live.log)
     book = row.target_book
-    numbers, texts = catalogue(row)
-    reader = LearnedStickers(a.label_weights, texts) if a.label_weights else OracleStickers(model, numbers)
+    labels, reading_eyes = cart_demo.readers(model, row, tray, numbers, a.seed,
+                                             a.label_weights and os.path.expanduser(a.label_weights),
+                                             segmenter, a.camera_noise, not a.no_fiducials)
     live.update(scenario=a.scenario, seed=a.seed, segmenter="learned" if segmenter else "simulation",
-                book_mm=round(1000 * book.thickness, 1), book_number=dewey(numbers[book.name]))
-    screen = Screen(model, live)
-    screen.data = data
-    reading = ReadingEyes(make_eyes(model, row, a.seed, a.camera_noise, segmenter), reader, row,
-                          numbers[book.name], live.log)
-    eyes = WatchedEyes(reading, screen, live, (book.thickness, book.height))
+                book_mm=round(1000 * book.thickness, 1), book_number=cart_demo.dewey(numbers[book.name]))
+    screen = Screen(model, data, live)
+    def eyes_for(n):
+        reading = reading_eyes(n)
+        if reading.eyes.reference is not None:
+            reading.eyes.reference.log = live.log           # each image's correction, in the log
+        return WatchedEyes(reading, screen, live, (book.thickness, book.height))
     screen.render(data)
 
     url = f"http://localhost:{a.port}"
@@ -351,9 +375,8 @@ def main():
     live.opened.wait()
 
     live.update(status="running")
-    ep = Episode(model, data, row, screen, live.log, eyes)
     try:
-        res = ep.reshelve(GAP_MARGIN)
+        res = cart_demo.run(model, data, row, tray, shelf_map, labels, eyes_for, screen, live.log, a.seed, numbers)
         live.log(report(res))
         live.update(status="SUCCESS" if res["success"] else "FAIL")
     except RuntimeError as e:                     # no safe way to do it in this scene, or it jammed
@@ -366,7 +389,6 @@ def main():
         pass
     finally:
         server.shutdown()
-        eyes.close()
         screen.close()
 
 

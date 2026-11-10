@@ -1,4 +1,4 @@
-"""Record cart_demo from a scene camera, row_cam and the hand's wrist_cam, side by side, to an mp4 (mediapy, needs ffmpeg).
+"""Record cart_demo from a scene camera and the hand's wrist_cam, side by side, to an mp4 (mediapy, needs ffmpeg).
 
     uv run python -m bila.viz.record_cart notebooks/cart_scan_demo.mp4 --scenario tight --seed 0
 
@@ -43,19 +43,17 @@ def record(out, scenario="tight", seed=0):
             if self.n % 2:                           # Runner draws at 60 fps; keep 30
                 return
             self.r.update_scene(self.d, self.scene); a = self.r.render()
-            self.r.update_scene(self.d, "row_cam"); b = self.r.render()
-            self.r.update_scene(self.d, "panda/wrist_cam"); c = self.r.render()
-            img = Image.fromarray(np.concatenate([a, b, c], 1)); dr = ImageDraw.Draw(img)
+            self.r.update_scene(self.d, "panda/wrist_cam"); b = self.r.render()
+            img = Image.fromarray(np.concatenate([a, b], 1)); dr = ImageDraw.Draw(img)
             dr.text((10, 10), f"scene camera   t = {self.d.time:5.2f} s   {step[0]}", fill=(255, 255, 255))
-            dr.text((W + 10, 10), "row_cam (on the lift carriage)", fill=(255, 255, 255))
-            dr.text((2 * W + 10, 10), "wrist_cam (on the hand)", fill=(255, 255, 255))
+            dr.text((W + 10, 10), "wrist_cam (on the hand)", fill=(255, 255, 255))
             video.add_image(np.asarray(img))
 
     print_, launch, argv = builtins.print, mujoco.viewer.launch_passive, sys.argv
     builtins.print, mujoco.viewer.launch_passive = show, Recorder
     sys.argv = ["cart_demo", "--view", "--scenario", scenario, "--seed", str(seed)]
     try:
-        with mediapy.VideoWriter(out, (H, 3 * W), fps=FPS) as video, contextlib.suppress(SystemExit):
+        with mediapy.VideoWriter(out, (H, 2 * W), fps=FPS) as video, contextlib.suppress(SystemExit):
             cart_demo.main()
     finally:
         builtins.print, mujoco.viewer.launch_passive, sys.argv = print_, launch, argv

@@ -2603,18 +2603,26 @@ def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries
     raise RuntimeError(f"No stable {scenario} row in {max_tries} tries")
 
 
-def make_eyes(model, row, seed, noise="realistic", segmenter=None):
+def make_eyes(model, row, seed, noise="realistic", segmenter=None, fiducials=True):
     """The wrist camera's perception for --perception camera: with `noise`
     realistic, a D405's stereo errors and a calibration error drawn per
     episode; basic, only independent depth noise per pixel. A segmenter
     (e.g. a LearnedSegmenter) replaces the simulation's masks, with the
-    robust spine fit learned masks need."""
+    robust spine fit learned masks need. With `fiducials`, every image's
+    camera pose is corrected from the shelf's markers (vision/fiducials.py)."""
     from bila.vision.camera import CalibrationError, DepthNoise, WristCamera
     from bila.vision.rgbd_perception import RGBDPerception                       # it imports this module
     rng = np.random.default_rng(seed)
     cam = (WristCamera(model, noise=DepthNoise.d405(), rng=rng, calibration=CalibrationError())
            if noise == "realistic" else WristCamera(model, noise=DepthNoise(), rng=rng))
-    return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None)
+    reference = None
+    if fiducials:
+        from bila.control.inspection import slot_x
+        from bila.vision.fiducials import FiducialReference
+        from bila.sim.shelf_scene import fiducials as shelf_markers
+        # ponytail: the map is rebuilt from the default ShelfConfig's board thickness, as every scene uses today
+        reference = FiducialReference(shelf_markers(ShelfConfig(), row), ShelfFrame(row), slot_x(row))
+    return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None, reference=reference)
 
 
 def report_collisions(res: dict) -> str:

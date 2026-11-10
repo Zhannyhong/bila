@@ -16,11 +16,10 @@ eval_perception's, so start at 2000):
           back, at any height in the level). Half the shelf scenes are plain
           coloured boxes, the rest wear the repo's book covers (sampled sizes,
           the repo's own books, or books split into page sections).
-  cart    cart_demo's scene (the repo's books, with call-number stickers): the
-          row camera and the tray camera as cart_demo uses them, the wrist
-          camera's first look, and close-ups for reading stickers: two of the
-          row near the slot (10-25 cm from the spines) and one looking down
-          into the tray (15-30 cm above the spines).
+  cart    cart_demo's scene (the repo's books, with call-number stickers):
+          the wrist camera's first look, and close-ups for reading stickers:
+          two of the row near the slot (10-25 cm from the spines) and one
+          looking down into the tray (15-30 cm above the spines).
 CART_SHARE of the scenes are cart scenes. Every scene also gets its own
 lighting and bookcase colour, and the depth carries a D405's errors
 (DepthNoise.d405()). No calibration error: it changes only the pose the
@@ -109,7 +108,7 @@ def vary_look(model: mujoco.MjModel, rng) -> dict:
     else:
         wood = np.clip(np.array([0.55, 0.40, 0.25]) * rng.uniform(0.5, 1.5), 0, 1)
     for g in range(model.ngeom):
-        if model.geom_bodyid[g] == shelf and model.geom(g).name != "fiducial":
+        if model.geom_bodyid[g] == shelf and not model.geom(g).name.startswith("fiducial"):
             model.geom_rgba[g, :3] = wood
     floor = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, "floor")
     if floor >= 0:
@@ -262,18 +261,11 @@ def shelf_views(model, data, row, rng, write, cam):
 
 
 def cart_views(model, data, row, tray, rng, write, cams):
-    """row_cam and tray_cam as cart_demo uses them, the wrist camera's first
-    look, then close-ups of the stickers in the row and in the tray."""
-    from bila.control.cart_demo import SCAN_POSE
+    """The wrist camera's first look, then close-ups of the stickers in the
+    row and in the tray."""
     from bila.control.insert_book import ArmIK
     from bila.control.inspection import look_from, slot_x, solve_inspection, solve_view
     from bila.sim.shelf_scene import PANDA_HOME
-    home = np.array(PANDA_HOME[:7])
-    look_from(model, data, SCAN_POSE)                       # leaned out of row_cam's view, as cart_demo reads the row
-    write(cams["row_cam"], "row_cam")
-    look_from(model, data, home)
-    write(cams["tray_cam"], "tray_cam")
-
     ik = ArmIK(model, PANDA_HOME[:7])
     v = solve_inspection(model, data, row, 0.0, ik)
     if v is not None:
@@ -350,9 +342,7 @@ def make_scene(task) -> List[dict]:
     info.update(scenario=scenario, appearance=look, look=vary_look(model, rng), setup_s=round(time.time() - t0, 1))
     write = Writer(out, seed, model, data, where, texts)
     noise = DepthNoise.d405()
-    names = ["wrist"] + (["row_cam", "tray_cam"] if kind == "cart" else [])
-    cams = {n: WristCamera(model, name=n if n != "wrist" else "panda/wrist_cam", noise=noise,
-                           rng=np.random.default_rng([seed, i])) for i, n in enumerate(names)}
+    cams = {"wrist": WristCamera(model, name="panda/wrist_cam", noise=noise, rng=np.random.default_rng([seed, 0]))}
     try:
         if kind == "shelf":
             shelf_views(model, data, row, rng, write, cams["wrist"])

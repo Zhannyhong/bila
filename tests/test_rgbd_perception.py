@@ -176,3 +176,29 @@ def test_noisy_depth_stays_close(noisy):
             assert abs(b.lean - t.lean) < math.radians(1.5)
     h = row.target_book.height
     assert est.min_gap_width(h) == pytest.approx(truth.min_gap_width(h), abs=6 * MM)
+
+
+def test_fiducials_are_found_and_correct_the_camera_pose():
+    """Every marker the camera sees whole is found with its map id, and after
+    the correction the chosen marker lands where the map has it."""
+    from bila.control.insert_book import ArmIK, DEFAULT_PANDA, ShelfFrame, make_episode
+    from bila.control.inspection import look_from, slot_x, solve_inspection
+    from bila.sim.shelf_scene import PANDA_HOME, ShelfConfig, fiducials
+    from bila.vision.camera import CalibrationError, WristCamera
+    from bila.vision.fiducials import FiducialReference
+    cfg = ShelfConfig()
+    model, data, row = make_episode(cfg, "tight", np.random.default_rng(0), DEFAULT_PANDA)
+    look_from(model, data, solve_inspection(model, data, row, 0.0, ArmIK(model, PANDA_HOME[:7]))[0])
+    ref = FiducialReference(fiducials(cfg, row), ShelfFrame(row), slot_x(row))
+    with WristCamera(model, rng=np.random.default_rng(1), calibration=CalibrationError(translation=0.004)) as cam:
+        frame = cam.capture(data)
+    shown = {int(model.geom(g).name.split("_")[1]) for g in np.unique(frame.seg)
+             if g >= 0 and model.geom(g).name.startswith("fiducial_")}
+    found = ref.detect(frame.rgb)
+    assert len(found) >= 3 and set(found) <= shown
+    before = ref.shift(frame, ref.markers[min(found, key=lambda i: abs(ref.markers[i].centre[0] - slot_x(row)))],
+                       found[min(found, key=lambda i: abs(ref.markers[i].centre[0] - slot_x(row)))])
+    fixed = ref(frame)
+    i, _ = ref.last
+    after = ref.shift(fixed, ref.markers[i], found[i])
+    assert np.linalg.norm(before) > 0.002 and np.linalg.norm(after) < 0.0002
