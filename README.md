@@ -1098,6 +1098,15 @@ prepare the row and hand over the book, then gives PPO five bounded corrections 
 x, y, z, yaw and pitch. Stopping stays scripted. A tight row can still be widened or shoved during
 preparation, but those contacts produce no policy decisions or training rewards in this mode.
 
+In `slide` and `push` an action is the correction itself, not a change of it: 0 is the script's pose
+and ±1 the move's bounds on that side, approached at 3 mm and 0.4° per decision at most. The bounds
+are tight (`insert_book.SLIDE_LO`/`SLIDE_HI`, `PUSH_LO`/`PUSH_HI`): ±4 mm along the row, ±1.5° of yaw and
+pitch, no lifting the book during the slide, and no holding the hand back from the script's push. The
+first run with increments of the correction (±8, ±15, ±5 mm, ±3°) lost 12 of the 24 validation rows the
+script placed: the trained policy's mean actions were only 0.02 to 0.26, but added up every decision,
+they took the corrections to their bounds (the push held 15 mm back left the book proud; the slide 8 mm
+sideways and lifted jammed it at the entrance). Gap creation's contacts still take increments.
+
 There are two separate phase options:
 
 | Option | Meaning |
@@ -1147,6 +1156,57 @@ variants. Calibration error stays fixed within an episode, observation noise can
 and the grasp error is applied once when the book is taken. Existing pools keep their original
 `[geometry_seed, 1]` perception and `[geometry_seed, 2]` grasp streams.
 
+### Training on what the robot sees
+
+The noise models (`NoisyPerception`, `--perception noisy` and `noisy-learned`) fail the script about as
+often as the camera, but not in the same ways. `eval_reshelve.py` ran the script alone on clear and tight
+seeds 0-99 (200 rows) with each source:
+
+| Perception | Placed | Insertion misses (of inserted) | Gave up before inserting | How insertions failed |
+| --- | --- | --- | --- | --- |
+| Ground truth | 198 | 0 of 198 | 2 | |
+| Camera, Victor's learned masks | 163 | 22 of 185 | 15 | 15 left proud, 7 jammed |
+| `noisy-learned` (its imitation) | 158 | 21 of 179 | 21 | 12 jammed, 9 left proud |
+| Camera, the simulation's masks | 162 | 25 of 187 | 13 | 16 left proud, 8 jammed |
+| `noisy` | 164 | 19 of 183 | 17 | 12 jammed, 7 left proud |
+| `noisy`, `--noise-scale 1.5` | 138 | 41 of 179 | 21 | |
+| `noisy`, `--noise-scale 2` | 123 | 51 of 174 | 26 | |
+
+A policy trained on a noise model would mostly learn to free jams, where the camera mostly leaves the
+book proud, and the noise models also give up on rows ("the fingers can't reach a neighbour with room
+behind it") that the camera never does. Wider noise only adds failures the camera doesn't make. So the
+insertion residual trains on the rendered camera with the learned masks. The 16-layout debug pools above
+held almost no insertion misses: with this many rows, a fifth of tight insertions miss.
+
+```bash
+for scenario in clear tight
+do
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 100 --first-seed 10000 \
+    --perception camera --segmenter bila_weights/segmenter/segmenter.pt --name "${scenario}_camera" --workers 10
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 50 --first-seed 20000 \
+    --perception camera --segmenter bila_weights/segmenter/segmenter.pt --name "${scenario}_camera_val" --workers 10
+done
+
+uv run --group rl python train_residual.py --name insertion_camera --scenarios clear tight \
+  --train-suffix _camera --val-suffix _camera_val --control-phases slide push --no-learn-stop \
+  --perception camera --segmenter bila_weights/segmenter/segmenter.pt --workers 10
+```
+
+A pool records how its first runs saw the rows (`PoolEntry.perception`), and `GapEnv` refuses a pool that
+saw them differently from itself. The training baseline and validation use the same eyes. Seeds 30000 and
+up are left for a final test.
+
+Each worker loads the segmenter once (~350 MB, ~1.2 GB on Metal). `LearnedSegmenter` picks CUDA, then
+Apple's Metal, then the CPU. On an M-series Mac one process segments an image in 0.57 s on Metal and
+2.05 s on one CPU core, but ten workers saturate the one GPU: rows took the same time either way (clear
+50.7 s on Metal and 49.7 s on the CPU, tight 70.4 s and 63.9 s). Rendering itself costs little (43.2 s
+a row with the simulation's masks, 41.1 s with `noisy`). `--segmenter-device` overrides the choice in
+the trainer and `eval_reshelve.py`.
+
+The env runs the script in a thread, and a rendered camera's OpenGL context on macOS (CGL) is locked to
+the thread that made it. So the thread makes the episode and its eyes, and closes them as it ends
+(`gap_env.run_script`): a camera made in the main thread would wait for ever at its first image.
+
 ### Evaluation and diagnostics
 
 - `--eval-action-scale` is fixed across checkpoints, independently of the training action ramp.
@@ -1177,8 +1237,8 @@ An exact case can be replayed through `GapEnv.reset(options={"scenario": "tight"
 "variant": 0, "perception_seed": 123, "grasp_seed": 456})`. Supplying seeds overrides only those errors.
 Explicit cases raise `PreparationFailed` if preparation fails, rather than silently trying another row.
 
-After insertion works, expand `--control-phases` to include gap creation. Evaluate trained checkpoints
-with the actual RGB-D pipeline before integrating tray pickup and the cart. The cart and the standalone
+After insertion works, expand `--control-phases` to include gap creation. Checkpoints trained with
+`--perception camera` are already validated on the actual RGB-D pipeline. The cart and the standalone
 camera evaluator still need residual-checkpoint integration. This training mode does not add those connections.
 
 ## Settings (`ShelfConfig`)

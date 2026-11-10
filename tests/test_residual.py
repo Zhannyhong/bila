@@ -222,3 +222,44 @@ def test_no_deeper_holds_the_fingertips_to_the_moves_end(scene):
     assert held.min() >= end - 1e-9
     free, _ = tips(False)
     assert free.min() < end - 0.005                                     # (without it, the residual takes it deeper)
+
+
+# --- Target corrections (the insertion) --------------------------------------------------
+class Sequence:
+    """A residual that gives these corrections in turn (the last one after), and remembers the correction at each."""
+
+    def __init__(self, *outs):
+        self.outs, self.seen = [np.asarray(o, dtype=float) for o in outs], []
+
+    def decide(self, run, contact):
+        self.seen.append(run.offset.copy())
+        return self.outs[min(len(self.seen) - 1, len(self.outs) - 1)]
+
+
+def test_a_steady_target_holds_instead_of_adding_up(scene):
+    """The same small correction every decision: with increments it would add
+    up to the bounds; as a target it is reached and held."""
+    run = runner(scene, Constant([0.002, 0.0, 0.0, 0.0, 0.0]))
+    push(run, target=True, lo=(-0.004, -0.004, -0.004), hi=(0.004, 0.004, 0.004))
+    seen = np.array(run.residual.seen)
+    assert len(seen) > 10
+    np.testing.assert_allclose(seen[1:, 0], 0.002, atol=1e-12)                 # reached by the next decision, held
+    np.testing.assert_allclose(run.offset[0], 0.002, atol=1e-12)
+    assert not seen[:, 1:].any()
+
+
+def test_a_target_is_kept_in_bounds_and_approached_at_the_step_rate(scene):
+    run = runner(scene, Constant([0.05, -0.05, 0.05, 1.0, -1.0]))                # far outside every bound
+    push(run, target=True, lo=(-0.004, -0.008, -0.002, -0.02, -0.02), hi=(0.004, 0.0, 0.0, 0.02, 0.02))
+    seen = np.array(run.residual.seen)
+    assert seen[1, 0] == pytest.approx(RESIDUAL_STEP) and seen[1, 3] == pytest.approx(RESIDUAL_TURN_STEP)
+    np.testing.assert_allclose(seen[-1], [0.004, -0.008, 0.0, 0.02, -0.02], atol=1e-12)
+
+
+def test_a_zero_target_brings_the_hand_back_to_the_script(scene):
+    run = runner(scene, Sequence(*[[0.004, 0.0, 0.0, 0.0, 0.0]] * 4, [0.0] * 5))
+    push(run, target=True, lo=(-0.004,) * 3, hi=(0.004,) * 3)
+    seen = np.array(run.residual.seen)
+    assert seen[4, 0] == pytest.approx(0.004)                                    # held at the target ...
+    assert seen[5, 0] == pytest.approx(0.004 - RESIDUAL_STEP)                   # ... then back at the step rate
+    np.testing.assert_allclose(seen[6:], 0.0, atol=1e-12)

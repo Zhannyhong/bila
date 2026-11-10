@@ -110,16 +110,25 @@ def instance_map(output: Dict[str, torch.Tensor], shape, score: float = SCORE,
     return out
 
 
+def inference_device() -> str:
+    """CUDA if there is one, else Apple's Metal (mps: about 5x one CPU core
+    for this model on an M-series Mac), else the CPU."""
+    if torch.cuda.is_available():
+        return "cuda"
+    return "mps" if torch.backends.mps.is_available() else "cpu"
+
+
 class LearnedSegmenter:
     """Book masks from the colour image by a trained Mask R-CNN; the same
     interface as OracleSegmenter: segmenter(frame) -> [Segment]. Segments
     carry no label (it doesn't know which simulated book is which). Use it
     with RGBDPerception(robust_fit=True): its masks bleed a few pixels onto
-    the next book, which the default spine fit takes for the book's edge."""
+    the next book, which the default spine fit takes for the book's edge.
+    device None: the GPU if there is one (inference_device)."""
 
     def __init__(self, weights: str, device: Optional[str] = None, score: float = SCORE,
                  mask_threshold: float = MASK_THRESHOLD):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or inference_device()
         self.model = load_model(weights, self.device)
         self.score, self.mask_threshold = score, mask_threshold
 
