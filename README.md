@@ -21,6 +21,7 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 | `bila/vision/make_vision_dataset.py` | Training images for the learned perception: RGB-D, a mask per book, and every sticker's corners and text |
 | `bila/vision/learned_segmenter.py` | Book masks from the colour image (Mask R-CNN), in place of the simulation's object ids |
 | `bila/vision/label_reader.py` | Finds and reads call-number stickers in an image and matches them to the catalogue (`bila/control/cart_demo.py --labels learned`) |
+| `bila/control/eval_reshelve.py` | The controller alone on many rows with a chosen perception (truth, camera, learned masks, noise models), in parallel, and those side by side |
 | `notebooks/` | Beginner's guide to the simulator and the RL/POMDP setup with PBBM's book labels (`01_...`), and a breakdown of how the PBBM robot shelved books (`02_...`) |
 | `mujoco_menagerie/` | Git submodule with the Panda model |
 | `scenes/` | Generated scenes (git-ignored) |
@@ -251,8 +252,10 @@ uv run python -m bila.control.insert_book --scenario tight --seed 0 --trials 50 
 uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --view       # watch it (macOS)
 ```
 
-Options: `--strategy one-sided|split` (how a tight gap is widened, default `one-sided`), `--margin` (room left
-around the book in a tight gap, default 6 mm), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
+Options: `--margin` (room left around the book in a tight gap, default 6 mm), `--perception
+truth|camera|noisy|noisy-learned`, `--camera-noise realistic|basic` and `--segmenter WEIGHTS` (see
+[Perception](#perception-perceptionpy)), `--catalogue` (rows of the
+PBBM repo's real books), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
 (draw the converted book covers; see [Book covers](#book-covers-optional)), `--book-pages N` (split every
 book into `N` page sections hinged on the spine; see [Book pages](#book-pages-optional)).
 
@@ -328,6 +331,24 @@ In place means:
    second widening is a step of its own (the fingers come out and go in again), and wedged books slow down near
    the neighbour's face. The most-moved other book moves as much as before (tight 9.1 mm on average, leaning 3.3,
    packed 64).
+
+   The table's rows used Menagerie-length (5.4 cm) fingers. With the 12 cm ones (since `feat/3d-books`) and
+   joint moves checked as below: clear 200, tight 196, leaning 197, packed 185 (778), in place after 11.1, 26.3,
+   25.4 and 99.1 s on the rows each places. Against the 5.4 cm fingers on the same code they lose 8 rows (tight
+   12, 195; leaning 58, 133; packed 87, 92, 94, 178) and gain about as many, and packed books take 12 s longer
+   (95 against 84 s on seeds 0 to 49).
+
+   `Runner` reports the arm touching the shelf, the cart or the floor harder than 1 N (`collision_*` in the
+   score; `safe_success` is a success without any). Joint-space moves used to be checked at 24 points each, so
+   a big move could swing the fingertips several cm between two checks, and the planner allowed paths within
+   1 mm of a board while the arm strays a few mm off its path at speed. In 72 of the 800 rows a finger hit a
+   board that way, at up to 345 N (68 of them still placed the book; on packed seeds 0 to 49, 12 rows against 5
+   with the 5.4 cm fingers). `joint_route` now checks every 1 cm of the arm's motion (`JOINT_CHECK_STEP`) and
+   keeps 1 cm from the fixed structure away from a move's ends (`JOINT_CLEAR`): 3 rows still touch (leaning
+   58, 59, 108: the hand brushes the board above during the stand-up's lift, at most 16 N), and 776 of the 800
+   place the book without touching anything (711 before), 778 in all (779), at the same time per book. Packed
+   53 had placed only by way of a move that hit the board at 123 N, and the planner finds no other; in packed
+   68 the arm takes other routes, widens a third time and leaves the book 43 mm proud; packed 119 now goes in.
 
    What changed, besides the shared controller:
    - Retries come free: a leaner that fell back gets a second stand-up (leaning 142: 5.3° after the clamp); a
@@ -411,11 +432,14 @@ In place means:
      across their travel, 12 mm thick and 12 cm long (Menagerie's are 5.4 cm), with a pad strip along all of
      each finger from the palm to the tip. The long fingers let the hand grasp a book from above past taller
      neighbours (see `bila/control/cart_demo.py`). The real Franka Hand takes custom fingers, so these could be machined.
-   - The book is held right up against the palm (its spine 2 mm off it), so the whole pad strip grips it. Held
-     3 cm off the board for 3 s, books then turn 3.1° in the hand on average (5.1° for the 8 that weigh over
-     1.2 kg), against 4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. Insertion results are the same. A short
-     pad is worse: with a 19 mm one, the board's drag turned a book 6° in the grasp on one clear row (seed 9) and
-     it fell over.
+   - The pads hold the book's first 44 mm behind its spine, so its spine sits 68 mm off the palm
+     (`PALM_GAP`): the fingers can't follow the book in between its neighbours, so their tips must not reach
+     much further past its spine than that, or the slide stops with the book still off the board. With
+     Menagerie-length fingers this put the spine 2 mm off the palm, the grip measured here: held 3 cm off the
+     board for 3 s, books turned 3.1° in the hand on average (5.1° for the 8 that weigh over 1.2 kg), against
+     4.7° (7.8°) with the spine 8 mm out and a 35 mm pad. The 12 cm fingers grip the same 44 mm of the book. A
+     short pad is worse: with a 19 mm one, the board's drag turned a book 6° in the grasp on one clear row
+     (seed 9) and it fell over.
    - The fingers start 0.2 mm off the book when they close on it, inside its 0.5 mm contact margin. Right on
      the margin, one pad's contact could start a step late, and that finger ended up 9 mm inside the book (on
      leaning seed 5, which then flew off when let go).
@@ -429,8 +453,8 @@ In place means:
      both have), as far as the widening needs or that side's space allows. If the gap at the spines is then
      still short of the book plus 6 mm, the next widening pushes the other side, by what is missing. Then the
      book is handed over (not modelled) and inserted as above. Used when the fingers fit the gap and reach at least
-     1 cm past a neighbour's spine (the 63 mm palm stops 46 mm behind the fingertips, at the most protruding spine
-     nearby). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
+     1 cm past a neighbour's spine (the 63 mm palm stops 112 mm behind the fingertips, at the most protruding
+     spine nearby; 46 mm with Menagerie-length fingers, when these results were measured). There is no force limit: the arm pushes as hard as it can (joint 6 reaches its 12 N m at 55 to
      100 N, depending on the pose).
    - Skipped otherwise, or when the push leaves the gap at the spines narrower than the book: no insertion,
      counted as a failure. The fingers need 12 mm (1 mm clear each side) and the generator's tight gaps are at
@@ -646,6 +670,16 @@ In place means:
      shelf after changing the row: after each widening, lift and clamp, each book pushed back, each pinch of the
      shove and each pull of the walk-out, after letting go of the book and after each push of it. The arm really
      moves there and back, in joint space, and comes in from just in front of the next step in a straight line.
+     `--segmenter WEIGHTS` takes the book masks from the learned segmenter (`learned_segmenter.py`, the `rl`
+     group) instead of the simulation's object ids, with the robust spine fit learned masks need.
+   - `noisy` and `noisy-learned`: no rendering; each look gives the ground truth with the camera's measured errors
+     (`perception.NoisyEyes`, what `gap_env.py` trains the residual on), those of the camera with the
+     simulation's masks or of the learned masks' pipeline (`NoisyPerception.learned`). The arm still moves to
+     the views.
+   - `eval_reshelve.py` runs the controller alone on many rows with any of these, in parallel (resumable, and
+     in shards for a cluster), and `eval_reshelve.py compare` puts the sources side by side: placed per
+     scenario, how the rest ended, and row by row against the first. It is the check that a noise model fails
+     the controller as often, and in the same ways, as the pipeline it stands in for.
    - On a look again, a book past the slot's neighbours that hasn't moved (within 3 mm and 1.5°) keeps what the
      sweep saw of it, and one that has keeps the size it saw: from the middle view, books further out come out
      too thick, and summed along the row that took 20 to 30 mm off the free space.
@@ -1058,6 +1092,156 @@ x[obs.actor_layout["gap_narrowest"]]                            # any part by na
 
 Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 
+## Residual PPO: start with insertion
+
+Train the shelf manipulation before adding the cart. The first milestone lets the scripted controller
+prepare the row and hand over the book, then gives PPO five bounded corrections during `slide` and `push`:
+x, y, z, yaw and pitch. Stopping stays scripted. A tight row can still be widened or shoved during
+preparation, but those contacts produce no policy decisions or training rewards in this mode.
+
+In `slide` and `push` an action is the correction itself, not a change of it: 0 is the script's pose
+and ±1 the move's bounds on that side, approached at 3 mm and 0.4° per decision at most. The bounds
+are tight (`insert_book.SLIDE_LO`/`SLIDE_HI`, `PUSH_LO`/`PUSH_HI`): ±4 mm along the row, ±1.5° of yaw and
+pitch, no lifting the book during the slide, and no holding the hand back from the script's push. The
+first run with increments of the correction (±8, ±15, ±5 mm, ±3°) lost 12 of the 24 validation rows the
+script placed: the trained policy's mean actions were only 0.02 to 0.26, but added up every decision,
+they took the corrections to their bounds (the push held 15 mm back left the book proud; the slide 8 mm
+sideways and lifted jammed it at the entrance). Gap creation's contacts still take increments.
+
+There are two separate phase options:
+
+| Option | Meaning |
+| --- | --- |
+| `--phases widen` | Sample only scenes whose **first contact** is a widening. Omit it to use every scene family in the selected pools. |
+| `--control-phases slide push` | Let PPO correct only insertion and final seating. The other contacts use zero correction. |
+| `--no-learn-stop` | Use five continuous actions. The controller decides when to stop each contact. |
+
+The default still controls all six contact phases and learns the stop action. `--no-insert` still supports
+gap-creation-only training. Actor observations retain their layout across these modes, but five-action
+checkpoints and six-action checkpoints have different output layers.
+
+### A small, reproducible first experiment
+
+Build separate training and validation pools. Each `--seeds` value counts shelf layouts, and
+`--error-variants` gives the number of perception/grasp error combinations per layout. These commands
+start with one fixed error combination per layout so a learning failure is easier to reproduce:
+
+```bash
+for scenario in clear tight
+do
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 16 --first-seed 10000 \
+    --error-variants 1 --error-seed 123 --name "${scenario}_insert_debug" --workers 2
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 16 --first-seed 20000 \
+    --error-variants 1 --error-seed 456 --name "${scenario}_insert_debug_val" --workers 2
+done
+
+uv run --group rl python train_residual.py --name insertion_debug --scenarios clear tight \
+  --train-suffix _insert_debug --val-suffix _insert_debug_val --val-scenes 16 \
+  --control-phases slide push --no-learn-stop --workers 2 --decisions 100000 \
+  --eval-action-scale 1
+```
+
+The decision budget above is a diagnostic run, not an established convergence budget. Check that the
+policy can recover some failures within its correction bounds. Inspect the baseline and policy returns
+alongside actual placements before committing to a long run. The reward weights and discount have not
+been retuned for this milestone.
+
+Once that works, build new pools with, for example, `--error-variants 4`, more layouts, and new names such
+as `tight_insert_var` and `tight_insert_var_val`. Pass the corresponding suffixes to the trainer.
+Pool creation refuses to overwrite existing pools. Training samples the stored layout/error variants
+in random order. Each variant keeps its cached inspection views and first plan, which are reused only
+when their inputs match.
+
+Geometry, perception and grasp seeds are recorded separately. Geometry stays the same across a layout's
+variants. Calibration error stays fixed within an episode, observation noise can change between looks,
+and the grasp error is applied once when the book is taken. Existing pools keep their original
+`[geometry_seed, 1]` perception and `[geometry_seed, 2]` grasp streams.
+
+### Training on what the robot sees
+
+The noise models (`NoisyPerception`, `--perception noisy` and `noisy-learned`) fail the script about as
+often as the camera, but not in the same ways. `eval_reshelve.py` ran the script alone on clear and tight
+seeds 0-99 (200 rows) with each source:
+
+| Perception | Placed | Insertion misses (of inserted) | Gave up before inserting | How insertions failed |
+| --- | --- | --- | --- | --- |
+| Ground truth | 198 | 0 of 198 | 2 | |
+| Camera, Victor's learned masks | 163 | 22 of 185 | 15 | 15 left proud, 7 jammed |
+| `noisy-learned` (its imitation) | 158 | 21 of 179 | 21 | 12 jammed, 9 left proud |
+| Camera, the simulation's masks | 162 | 25 of 187 | 13 | 16 left proud, 8 jammed |
+| `noisy` | 164 | 19 of 183 | 17 | 12 jammed, 7 left proud |
+| `noisy`, `--noise-scale 1.5` | 138 | 41 of 179 | 21 | |
+| `noisy`, `--noise-scale 2` | 123 | 51 of 174 | 26 | |
+
+A policy trained on a noise model would mostly learn to free jams, where the camera mostly leaves the
+book proud, and the noise models also give up on rows ("the fingers can't reach a neighbour with room
+behind it") that the camera never does. Wider noise only adds failures the camera doesn't make. So the
+insertion residual trains on the rendered camera with the learned masks. The 16-layout debug pools above
+held almost no insertion misses: with this many rows, a fifth of tight insertions miss.
+
+```bash
+for scenario in clear tight
+do
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 100 --first-seed 10000 \
+    --perception camera --segmenter bila_weights/segmenter/segmenter.pt --name "${scenario}_camera" --workers 10
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 50 --first-seed 20000 \
+    --perception camera --segmenter bila_weights/segmenter/segmenter.pt --name "${scenario}_camera_val" --workers 10
+done
+
+uv run --group rl python train_residual.py --name insertion_camera --scenarios clear tight \
+  --train-suffix _camera --val-suffix _camera_val --control-phases slide push --no-learn-stop \
+  --perception camera --segmenter bila_weights/segmenter/segmenter.pt --workers 10
+```
+
+A pool records how its first runs saw the rows (`PoolEntry.perception`), and `GapEnv` refuses a pool that
+saw them differently from itself. The training baseline and validation use the same eyes. Seeds 30000 and
+up are left for a final test.
+
+Each worker loads the segmenter once (~350 MB, ~1.2 GB on Metal). `LearnedSegmenter` picks CUDA, then
+Apple's Metal, then the CPU. On an M-series Mac one process segments an image in 0.57 s on Metal and
+2.05 s on one CPU core, but ten workers saturate the one GPU: rows took the same time either way (clear
+50.7 s on Metal and 49.7 s on the CPU, tight 70.4 s and 63.9 s). Rendering itself costs little (43.2 s
+a row with the simulation's masks, 41.1 s with `noisy`). `--segmenter-device` overrides the choice in
+the trainer and `eval_reshelve.py`.
+
+The env runs the script in a thread, and a rendered camera's OpenGL context on macOS (CGL) is locked to
+the thread that made it. So the thread makes the episode and its eyes, and closes them as it ends
+(`gap_env.run_script`): a camera made in the main thread would wait for ever at its first image.
+
+### Evaluation and diagnostics
+
+- `--eval-action-scale` is fixed across checkpoints, independently of the training action ramp.
+- `--val-scenes` counts distinct layouts per scenario. `--val-variants 0` (the default) evaluates all stored
+  variants of those layouts. A positive value limits the variants per layout.
+- The script and policy use the same exact geometry, perception and grasp seeds. Cases are selected by
+  identity, not by a changing index into successful preparations. The baseline is regenerated when training
+  starts, including on resume, so an old baseline is not reused after code or configuration changes.
+- A validation case that fails before the first controlled contact is recorded as `preparation_failed`.
+  It stays in the overall success denominator. `success_given_control` reports the conditional result once
+  PPO can act. An explicit `--phases` filter restricts this evaluation population too.
+- Random training resets try other cases when preparation fails, without permanently removing a variant.
+  Those failed attempts are recorded. If no case in the selected scenario reaches a controlled contact,
+  reset raises an error instead of looping indefinitely.
+- `runs/<name>/baseline.json` and `val_*.json` contain per-case outcomes. `val_recovered`, `val_lost` and
+  `val_success_delta` compare each checkpoint with the script on identical cases.
+- `episodes.jsonl` records completed training episodes with their seeds, applied grasp error and reward
+  totals. `log.jsonl` and TensorBoard include each reward component and returns grouped by outcome.
+  Reward components are unnormalised: gap, tilt, lift, force, action, time, gap bonus, insertion progress,
+  disturbance and terminal reward. Their totals sum to the episode return.
+- Insertion progress rewards reducing the spine's distance to the scorer's accepted placement region.
+  For `flush`, this is the 1 cm tolerance band on either side of the neighbour's spine, so overshooting
+  the band incurs negative progress. For `inside`, the spine must be at least 1 cm behind the shelf's
+  front edge. Moving within an accepted region earns no extra depth reward. Uprightness and release
+  remain required for terminal success. The critic's `to_go` feature uses this same distance.
+
+An exact case can be replayed through `GapEnv.reset(options={"scenario": "tight", "geometry_seed": 10000,
+"variant": 0, "perception_seed": 123, "grasp_seed": 456})`. Supplying seeds overrides only those errors.
+Explicit cases raise `PreparationFailed` if preparation fails, rather than silently trying another row.
+
+After insertion works, expand `--control-phases` to include gap creation. Checkpoints trained with
+`--perception camera` are already validated on the actual RGB-D pipeline. The cart and the standalone
+camera evaluator still need residual-checkpoint integration. This training mode does not add those connections.
+
 ## Settings (`ShelfConfig`)
 
 | Setting | Default | Meaning |
@@ -1073,7 +1257,7 @@ Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 | `depth_clearance` | 30 mm | Every book is at least this much shallower than the shelf |
 | `book_meshes` | `False` | Draw the converted book covers (from `bila/sim/dae_to_obj.py`) on the boxes as non-colliding visuals |
 | `book_pages` | `0` | Split every book's pages into this many sections hinged on the spine (0 or 1 = one rigid box) |
-| `catalogue` | `False` | Fill the rows with PBBM's real books (`shelf_scene.CATALOGUE`, `--catalogue`): each copy keeps the book's size, mass and own cover, the Voynich and Lagemann books are hinged into their real page sections, and the same book can appear more than once. Positions, order, friction and scenario stay random. The sampled size, density and `book_pages` settings are then unused |
+| `catalogue` | `False` | Fill the rows with PBBM's real books (`shelf_scene.CATALOGUE`, `--catalogue`): each copy keeps the book's size, mass and own cover, the Voynich and Lagemann books are hinged into their real page sections, and the same book can appear more than once. Positions, order, friction and scenario stay random. The sampled size and density settings are then unused, `thickness` only bounds the inserted book, and `book_pages` (> 1) cuts every other real book into that many equal sections too, each drawn as a slice of the book's own cover (spine, fore edge, top and bottom cut to its share, the covers on the outer sections, plain paper on the cuts; written once to `generated_assets/books/slices/`). Closed, a cut book renders as the whole one |
 | `robot_xy`, `robot_z_offset` | (0, 0.80), −0.40 m | Robot base position; its height follows the target board |
 | `lean_angle_deg` | 12° to 35° | Lean for leaning and collapsed rows (raised when a book needs more to stay down) |
 

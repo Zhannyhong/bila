@@ -30,12 +30,13 @@ Code lives in the `bila` package, grouped by job; run scripts as modules from th
 
 - `bila/sim/`: the scene (`shelf_scene`) and the book-mesh converter (`dae_to_obj`).
 - `bila/vision/`: the camera and everything that turns images into a `ShelfEstimate` (`camera`, `perception`, `rgbd_perception`, `learned_segmenter`, `label_reader`, `call_numbers_seen`), plus the dataset maker and perception evaluation.
-- `bila/control/`: the scripted controllers (`insert_book`, `cart_demo`) and the inspection pose (`inspection`).
+- `bila/control/`: the scripted controllers (`insert_book`, `cart_demo`), the inspection pose (`inspection`) and the controller evaluation over many rows (`eval_reshelve`).
 - `bila/rl/`: the residual-PPO gap environment and training (`gap_env`, `observation`, `residual_ppo`, `train_residual`).
 - `bila/viz/`: viewers and figures (`visualize`, `view_scene`, `live_view`, `record_cart`).
 
 - **`bila/sim/shelf_scene.py`** is the core. `ShelfConfig` (randomization ranges) → `sample_row(cfg, scenario, rng)` → `Row` (levels, books, target slot, `nudges`) → `build_scene(cfg, row, panda_xml)` emits MJCF XML → compile → `settle()` applies the nudges and runs physics so leaning/collapsed poses are real resting poses. `make_episode` wraps this and resamples rows that don't settle. Scenarios: `SCENARIOS = ("clear", "tight", "leaning", "collapsed", "packed")`.
-- **`bila/control/insert_book.py`** (largest file) has its own `make_episode`/`build_model`, `ArmIK`, `Runner`, and an `Episode` class holding the staged scripted insertion and gap-widening strategies (`--strategy`, `--packed shove|stagger`). Its module docstring describes the stages in detail.
+- **`bila/control/insert_book.py`** (largest file) has its own `make_episode`/`build_model`, `ArmIK`, `Runner`, and an `Episode` class: one closed-loop controller (`Episode.reshelve`) that looks at the slot and takes the high-level step it needs (`stand_up`, `widen`, `shove`, `insert`), whatever the scenario. Its module docstring describes the steps in detail. `Runner` records any contact of the arm with the shelf, cart or floor over 1 N (`collision_*` in the score, `safe_success`).
+- **`bila/control/cart_demo.py`**: the Panda on a lift on a book-return cart. `CartEpisode` is `insert_book`'s `Episode` with `take_book` overridden to pick the book out of the tray, so `reshelve` runs unchanged.
 - **`bila/vision/perception.py`**: `ShelfEstimate` = only what a wrist RGB-D camera could see (spine faces, gap profile). `GroundTruthPerception` / `NoisyPerception`. Decision code should consume a `ShelfEstimate`, not `MjData`.
 - `PBBM-robot-librarian/` is an external (ROS) reference repo for book assets, not part of this codebase. Its `librarian_common/librarian_resources/books.csv` (`depth` there = our `thickness`) and `spines/id_N.png` are used as spine labels in `notebooks/01_mujoco_librarian_pomdp.ipynb`, which also holds the prototype POMDP env (`LibrarianEnv`); `notebooks/02_how_pbbm_shelves_books.ipynb` explains PBBM's pipeline.
 
@@ -49,3 +50,5 @@ Code lives in the `bila` package, grouped by job; run scripts as modules from th
 - `scenes/` is git-ignored (XML contains absolute paths). `bila/sim/shelf_scene.py` writes `panda_shelf.xml` into `mujoco_menagerie/franka_emika_panda/` so mesh paths resolve; the submodule ignores untracked files.
 - The camera pose is corrected per image from the ArUco markers on the boards' front edges (`shelf_scene.fiducials` is their map, `vision/fiducials.py` the correction; `make_eyes(..., fiducials=False)` turns it off). See docs/calibration-and-insertion.md.
 - Robot base height tracks the target board (board top − 0.40 m); don't lower `target_band` below 0.40 m without raising the base.
+- Joint-space moves are only collision-checked in `Episode.joint_route` (every `JOINT_CHECK_STEP` of arm motion, keeping `JOINT_CLEAR` from the fixed structure mid-move); any new joint move should go through `reposition`. The steps' Cartesian paths are planned with `ArmIK.follow`, which only counts penetration over 1 mm (no clearance).
+- Fingers are 12 cm long (`shelf_scene.FINGER_LEN`); the held book's spine sits `PALM_GAP` = 68 mm off the palm. Results in README measured before the merge of `feat/3d-books` used Menagerie-length 5.4 cm fingers.

@@ -18,6 +18,11 @@ Why this exists
       the six JPGs of the 27 books are 608 MB of pixels decoded, so they are
       re-encoded as downscaled PNGs. Books that share an image share the PNG.
 
+  One book was never finished in the repo: book-ai86.dae still names the
+  template cube's numbered placeholders (blender/cube/1.png ... 6.png), though
+  the book's six photos sit beside it. PHOTO_FIXES points it at them, turned as
+  the finished books' copies are (see there).
+
   The repo's articulated books are also made of unit cubes, one per page
   section, in a subdirectory of `meshes/` (`voynich/book-voynich-part1.dae`).
   They convert the same way, to `<book>-part<N>`, and `shelf_scene.py` draws one
@@ -53,6 +58,20 @@ from bila import ROOT as HERE
 OUT_DEFAULT = os.path.join(HERE, "generated_assets", "books")
 
 VECTOR = {"VERTEX": 3, "NORMAL": 3, "TEXCOORD": 2}
+
+# Books whose .dae names the template cube's placeholder images instead of the
+# book's photos: {book: {placeholder: (photo beside the .dae, turn in degrees)}}.
+# The template's face slots are in the finished books' order (back, cover, top,
+# bottom, spine, fore edge), and a finished book wears its back, bottom, spine
+# and fore-edge photos turned 180, 180, 270 and 90 degrees counter-clockwise
+# (bits-back-180.jpg ... bits-front-edge-90.jpg beside the untouched originals),
+# so these are turned the same way: book-ai86's photos are taken as the
+# originals are (portrait, the spine's title running top to bottom).
+PHOTO_FIXES = {
+    "book-ai86": {"1.png": ("ai86-back.jpg", 180), "2.png": ("ai86-cover.jpg", 0), "3.png": ("ai86-top.jpg", 0),
+                  "4.png": ("ai86-bottom.jpg", 180), "5.png": ("ai86-spine.jpg", 270),
+                  "6.png": ("ai86-front-edge.jpg", 90)},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +232,15 @@ class SharedFiles:
         self.dir = os.path.join(root, "tex")
         self.written = {}
 
-    def texture(self, root: str, path: str, max_size: int) -> str:
-        """The image at `path` as a PNG under `tex/`, or None if there is none."""
+    def texture(self, root: str, path: str, max_size: int, turn: int = 0) -> str:
+        """The image at `path` (turned `turn` degrees counter-clockwise) as a PNG
+        under `tex/`, or None if there is none."""
         if not path or not os.path.exists(path):
             return None
         with Image.open(path) as im:
             im = im.convert("RGB")
+            if turn:
+                im = im.rotate(turn, expand=True)
             if max_size and max(im.size) > max_size:
                 scale = max_size / max(im.size)
                 im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))),
@@ -226,7 +248,7 @@ class SharedFiles:
             buf = io.BytesIO()
             im.save(buf, format="PNG")
         data = buf.getvalue()
-        stem = _safe(os.path.splitext(os.path.basename(path))[0])
+        stem = _safe(os.path.splitext(os.path.basename(path))[0]) + (f"-{turn}" if turn else "")
         name = f"{hashlib.md5(data).hexdigest()[:8]}-{stem}.png"
         if name not in self.written:
             os.makedirs(self.dir, exist_ok=True)
@@ -246,12 +268,17 @@ def convert(dae: str, out: str, shared: SharedFiles, max_size: int) -> dict:
     material_image, groups = read_dae(dae)
     if not groups:
         raise ValueError(f"no triangles in {dae}")
+    fixes = PHOTO_FIXES.get(stem, {})
+    turns = {}
+    for material, image in material_image.items():
+        if image in fixes:
+            material_image[material], turns[material] = fixes[image]
 
     textures = {}
     for material in dict.fromkeys(m for m, _ in groups):
         image = material_image.get(material)
         source = image if image and os.path.isabs(image) else os.path.join(os.path.dirname(dae), image or "")
-        textures[material] = shared.texture(out, source, max_size)
+        textures[material] = shared.texture(out, source, max_size, turns.get(material, 0))
 
     faces = []
     for material, group in groups:
