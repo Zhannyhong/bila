@@ -19,7 +19,8 @@ What it builds
     urdf/articulated_*.xacro, so the fore edges can fan open.
   - Optional real books: ShelfConfig(catalogue=True) fills the rows with the
     repo's books (CATALOGUE), each with its own size, mass and cover, and the
-    Voynich and Lagemann books hinged into their own page sections.
+    Voynich and Lagemann books hinged into their own page sections. With
+    book_pages=N as well, every other real book is cut into N sections too.
 
 Frame convention (same as the Isaac Gym task)
   x = along the row, y = depth (back panel at -y, open front at +y), z = up.
@@ -93,7 +94,8 @@ class ShelfConfig:
     book_meshes: bool = False            # draw the repo's book covers (dae_to_obj.py) on the boxes
     book_pages: int = 0                  # split every book's pages into this many hinged sections (0 or 1 = one rigid box)
     catalogue: bool = False              # real books from the repo (CATALOGUE: size, mass, cover, pages) instead of
-                                         # sampled ones; thickness/book_depth/book_height/density/book_pages then unused
+                                         # sampled ones; book_depth/book_height/density then unused, thickness only
+                                         # bounds the target, and book_pages cuts the books without their own sections
 
     # Contact settings randomized per episode
     solref_timeconst: tuple = (0.005, 0.02)
@@ -247,7 +249,10 @@ def _catalogue_book(cfg, rng, name, max_h, max_d, target):
     """A copy of one of the repo's books (picked uniformly, so a row can hold
     the same book more than once) that fits under max_h and within max_d. The
     target book also keeps to cfg.thickness, the range the scenarios and the
-    fingers are tuned for. Friction and colour are still sampled."""
+    fingers are tuned for. Friction and colour are still sampled. The
+    articulated books keep their own page sections; with cfg.book_pages > 1
+    the rest are cut into that many equal sections too (drawn as slices of
+    their own cover, see add_page_visual_assets)."""
     books = [(m, t, d, h, kg, []) for m, t, d, h, kg in CATALOGUE] + \
             [(m, sum(t for t, _ in p), d, h, sum(kg for _, kg in p), p) for m, d, h, p in ARTICULATED]
     fits = [e for e in books if e[3] <= max_h and e[2] <= max_d
@@ -256,6 +261,8 @@ def _catalogue_book(cfg, rng, name, max_h, max_d, target):
     colour = tuple(float(c) for c in rng.uniform(0.15, 0.9, 3)) + (1.0,)
     b = Book(name, t, d, h, kg, _u(rng, cfg.book_friction), 0.0, colour, asset=mesh)
     b.parts = [PageSection(f"{name}_p{i + 1}", pt, pm) for i, (pt, pm) in enumerate(sections)]
+    if not b.parts and cfg.book_pages > 1:     # one section is just a rigid book
+        b.parts = _page_sections(name, t, kg, cfg.book_pages)
     return b
 
 
@@ -582,8 +589,9 @@ _book_assets = None
 def book_assets() -> List[dict]:
     """The meshes dae_to_obj.py wrote: [{name, faces: [{obj, texture}]}] with
     absolute paths, or [] if it has not been run. A face whose image the repo
-    does not ship (book-ai86, book-logic1) is dropped, and a book with none
-    left is left out, so it is drawn as a plain coloured box instead."""
+    does not ship is dropped, and a book with none left is left out, so it is
+    drawn as a plain coloured box instead (book-ai86 was, until dae_to_obj.py's
+    PHOTO_FIXES pointed it at its photos)."""
     global _book_assets
     if _book_assets is None:
         _book_assets = []
@@ -639,17 +647,108 @@ def _declare_faces(asset, declared: set, asset_name: str, faces, scale: str, mes
     under the names `<mesh_stem>_f<k>`, and return the material to use per
     face. Textures and materials belong to the converted mesh (`asset_name`),
     so books wearing the same mesh share them; meshes belong to the geom, which
-    holds its own scale, so every book (and every page section) gets its own."""
+    holds its own scale, so every book (and every page section) gets its own.
+    A face may name the converted mesh's face whose texture it wears (`key`,
+    for the slices of _sliced_faces), or wear none: the paper on a cut."""
+    materials = []
     for k, f in enumerate(faces):
-        tex = f"{asset_name}_f{k}_tex"
-        if tex not in declared:
-            ET.SubElement(asset, "texture", name=tex, type="2d", file=f["texture"])
-            ET.SubElement(asset, "material", name=f"{asset_name}_f{k}_mat", texture=tex)
-            declared.add(tex)
+        if f.get("texture"):
+            key = f.get("key", k)
+            tex, material = f"{asset_name}_f{key}_tex", f"{asset_name}_f{key}_mat"
+            if tex not in declared:
+                ET.SubElement(asset, "texture", name=tex, type="2d", file=f["texture"])
+                ET.SubElement(asset, "material", name=material, texture=tex)
+                declared.add(tex)
+        else:
+            material = PAGE_PAPER_MATERIAL
+            if asset.find(f"material[@name='{material}']") is None:
+                ET.SubElement(asset, "material", name=material, rgba=_f(*PAGE_PAPER_RGBA))
         # A face is flat (no volume), so MuJoCo needs inertia="shell".
         ET.SubElement(asset, "mesh", name=f"{mesh_stem}_f{k}", file=f["obj"],
                       inertia="shell", scale=scale)
-    return [f"{asset_name}_f{k}_mat" for k in range(len(faces))]
+        materials.append(material)
+    return materials
+
+
+# A real book (CATALOGUE) cut into page sections by book_pages has no converted
+# meshes per section, so each section wears a slice of the book's own: the
+# faces across its thickness (spine, fore edge, top, bottom) cut to the
+# section's share, their texture coordinates cut to match, the covers on the
+# outer sections only, and plain paper on the cuts (seen when the pages fan).
+# The slices are written once, under SLICE_DIR (gitignored with the rest).
+SLICE_DIR = os.path.join(BOOK_ASSET_DIR, "slices")
+PAGE_PAPER_MATERIAL = "book_page_paper"
+PAGE_PAPER_RGBA = (0.93, 0.91, 0.84, 1.0)
+_PAPER_QUADS = {-1: ((1, -1, -1), (1, -1, 1), (-1, -1, 1), (-1, -1, -1)),     # as the converted covers wind them
+                1: ((1, 1, -1), (-1, 1, -1), (-1, 1, 1), (1, 1, 1))}
+
+
+def _read_obj(path):
+    v, vt, vn, f = [], [], [], []
+    with open(path) as fh:
+        for line in fh:
+            p = line.split()
+            if p and p[0] == "v":
+                v.append([float(x) for x in p[1:4]])
+            elif p and p[0] == "vt":
+                vt.append([float(x) for x in p[1:3]])
+            elif p and p[0] == "vn":
+                vn.append(p[1:4])
+            elif p and p[0] == "f":
+                f.append(p[1:])
+    return v, vt, vn, f
+
+
+def _write_obj(path, v, vt, vn, f) -> None:
+    if os.path.exists(path):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as fh:
+        fh.writelines(f"v {_f(*p)}\n" for p in v)
+        fh.writelines(f"vt {_f(*t)}\n" for t in vt)
+        fh.writelines(f"vn {' '.join(n)}\n" for n in vn)
+        fh.writelines(f"f {' '.join(t)}\n" for t in f)
+    os.replace(tmp, path)      # (atomic: parallel workers may write the same slice)
+
+
+def _sliced_faces(whole: dict, y0: float, y1: float) -> List[dict]:
+    """The faces that draw the slice y0..y1 of a converted book (its unit cube
+    runs from the front cover, y = -1, to the back, +1; VISUAL_YAW turns that y
+    onto the box's x), as faces of the section's own unit cube: [{obj, texture,
+    key}], `key` being the book's face whose texture it wears, texture None for
+    paper on a cut."""
+    eps = 1e-4
+    folder = os.path.join(SLICE_DIR, whole["name"], f"{y0:+.5f}_{y1:+.5f}")
+    out = []
+    for k, face in enumerate(whole["faces"]):
+        v, vt, vn, f = _read_obj(face["obj"])
+        ys = [p[1] for p in v]
+        if max(ys) - min(ys) < 1e-3:              # a cover: on the outer section on its side only
+            if (ys[0] < 0 and y0 <= -1 + eps) or (ys[0] > 0 and y1 >= 1 - eps):
+                out.append({"obj": face["obj"], "texture": face["texture"], "key": k})
+            continue
+        # Across the thickness: each corner stays on the section's cube (y = -1
+        # or +1), and its texture coordinate moves to where y0 (or y1) cuts the
+        # edge between it and the corner across the thickness.
+        uv = {int(t.split("/")[0]) - 1: int(t.split("/")[1]) - 1 for t in f[0]}
+        cut = [list(t) for t in vt]
+        for i, p in enumerate(v):
+            j = next(j for j, q in enumerate(v)
+                     if j != i and abs(q[0] - p[0]) < 1e-3 and abs(q[2] - p[2]) < 1e-3)
+            front, back = (vt[uv[i]], vt[uv[j]]) if p[1] < 0 else (vt[uv[j]], vt[uv[i]])
+            s = ((y0 if p[1] < 0 else y1) + 1) / 2
+            cut[uv[i]] = [front[0] + (back[0] - front[0]) * s, front[1] + (back[1] - front[1]) * s]
+        path = os.path.join(folder, f"face{k}.obj")
+        _write_obj(path, v, cut, vn, f)
+        out.append({"obj": path, "texture": face["texture"], "key": k})
+    for side, cut_here in ((-1, y0 > -1 + eps), (1, y1 < 1 - eps)):
+        if cut_here:
+            path = os.path.join(SLICE_DIR, "paper_front.obj" if side < 0 else "paper_back.obj")
+            _write_obj(path, [list(c) for c in _PAPER_QUADS[side]], [[0, 0]] * 4, [["0", str(side), "0"]] * 4,
+                       [["1/1/1", "2/2/2", "3/3/3", "4/4/4"]])
+            out.append({"obj": path, "texture": None})
+    return out
 
 
 def add_book_visual_assets(asset, books) -> dict:
@@ -680,9 +779,11 @@ def add_book_visual_assets(asset, books) -> dict:
 def add_page_visual_assets(asset, books) -> dict:
     """Declare the meshes that draw the page sections of the articulated
     `books`, and return {section name: [material name per face]}. Each section
-    is scaled to its own thickness, so it needs its own meshes. Sections of a
-    book whose converted meshes have no page sections are left out and stay
-    plain coloured boxes (section names are unique, so [] would be an error)."""
+    is scaled to its own thickness, so it needs its own meshes. A real book
+    (CATALOGUE) cut into sections by book_pages wears slices of its own cover
+    (_sliced_faces). Sections of any other book whose converted meshes have no
+    page sections are left out and stay plain coloured boxes (section names
+    are unique, so [] would be an error)."""
     if not book_assets():
         return {}
     out, declared = {}, {t.get("name") for t in asset.findall("texture")}
@@ -690,10 +791,22 @@ def add_page_visual_assets(asset, books) -> dict:
         if not b.parts:
             continue
         name = b.asset or book_asset(b.name, sections=len(b.parts))["name"]
-        for part, section in zip(b.parts, page_section_assets(name)):
-            scale = _f(b.depth / 2, part.thickness / 2, b.height / 2)   # see VISUAL_YAW
-            out[part.name] = _declare_faces(asset, declared, section["name"], section["faces"],
-                                            scale, part.name)
+        sections = page_section_assets(name)
+        if sections or not b.asset:
+            for part, section in zip(b.parts, sections):
+                scale = _f(b.depth / 2, part.thickness / 2, b.height / 2)   # see VISUAL_YAW
+                out[part.name] = _declare_faces(asset, declared, section["name"], section["faces"],
+                                                scale, part.name)
+            continue
+        whole = next((x for x in book_assets() if x["name"] == name), None)
+        if whole is None:
+            continue
+        y, total = -1.0, sum(p.thickness for p in b.parts)
+        for part in b.parts:                    # front cover first, as y runs
+            y1 = y + 2 * part.thickness / total
+            scale = _f(b.depth / 2, part.thickness / 2, b.height / 2)       # see VISUAL_YAW
+            out[part.name] = _declare_faces(asset, declared, name, _sliced_faces(whole, y, y1), scale, part.name)
+            y = y1
     return out
 
 

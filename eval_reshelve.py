@@ -75,7 +75,7 @@ def parse_seeds(text: str) -> list:
     return list(range(lo, hi))
 
 
-def _init(perception, segmenter, camera_noise, noise_scale=1.0, segmenter_device=None):
+def _init(perception, segmenter, camera_noise, noise_scale=1.0, segmenter_device=None, scene=None):
     import cv2
     cv2.setNumThreads(1)                     # (its thread pool per worker overloads the machine)
     seg = None
@@ -85,8 +85,9 @@ def _init(perception, segmenter, camera_noise, noise_scale=1.0, segmenter_device
         torch.set_num_threads(1)
         seg = LearnedSegmenter(os.path.expanduser(segmenter), device=segmenter_device)
     _worker.update(perception=perception, segmenter=seg, camera_noise=camera_noise, noise_scale=noise_scale,
+                   scene=scene or {},
                    label={"perception": perception, "segmenter": segmenter or "", "camera_noise": camera_noise,
-                          "noise_scale": noise_scale})
+                          "noise_scale": noise_scale, **(scene or {})})
 
 
 def run_row(job) -> dict:
@@ -97,7 +98,8 @@ def run_row(job) -> dict:
     t0, eyes, ep = time.time(), None, None
     out = {"scenario": scenario, "seed": seed, **_worker["label"]}
     try:
-        model, data, row = make_episode(ShelfConfig(), scenario, np.random.default_rng(seed), DEFAULT_PANDA)
+        model, data, row = make_episode(ShelfConfig(**_worker["scene"]), scenario, np.random.default_rng(seed),
+                                        DEFAULT_PANDA)
         eyes = eyes_for(_worker["perception"], model, row, seed, _worker["camera_noise"], _worker["segmenter"],
                         _worker["noise_scale"])
         ep = Episode(model, data, row, None, lambda *_: None, eyes)
@@ -127,7 +129,10 @@ def run(a) -> None:
     print(f"{len(todo)} rows to run ({len(jobs) - len(todo)} already in {a.out}), {a.workers} workers", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     ctx = mp.get_context("spawn")
-    with ctx.Pool(a.workers, _init, (a.perception, a.segmenter, a.camera_noise, a.noise_scale, a.segmenter_device),
+    scene = {k: v for k, v in (("catalogue", a.catalogue), ("book_pages", a.book_pages),
+                               ("book_meshes", a.book_meshes)) if v}       # (the default scene: none, as before)
+    with ctx.Pool(a.workers, _init, (a.perception, a.segmenter, a.camera_noise, a.noise_scale, a.segmenter_device,
+                                     scene),
                   maxtasksperchild=50) as pool, \
             open(a.out, "a") as f:
         for k, r in enumerate(pool.imap_unordered(run_row, todo), 1):
@@ -145,7 +150,8 @@ def name_of(rows, path) -> str:
     r = rows[0] if rows else {}
     seg = f" + {os.path.basename(r['segmenter'])}" if r.get("segmenter") else ""
     scale = f" x{r['noise_scale']:g}" if r.get("noise_scale", 1.0) != 1.0 else ""
-    return f"{r.get('perception', '?')}{scale}{seg} ({os.path.basename(path)})"
+    books = (" real books" if r.get("catalogue") else "") + (f" {r['book_pages']} pages" if r.get("book_pages") else "")
+    return f"{r.get('perception', '?')}{scale}{seg}{books} ({os.path.basename(path)})"
 
 
 def compare(a) -> None:
@@ -187,6 +193,11 @@ def main():
     r.add_argument("--camera-noise", choices=("realistic", "basic"), default="realistic")
     r.add_argument("--noise-scale", type=float, default=1.0,
                    help="noisy, noisy-learned: the errors' spread (gap_env's noise_scale)")
+    r.add_argument("--catalogue", action="store_true", help="the repo's real books (ShelfConfig.catalogue)")
+    r.add_argument("--book-pages", type=int, default=0, metavar="N",
+                   help="cut every book into N page sections hinged on the spine (with --catalogue: every real "
+                        "book without its own sections)")
+    r.add_argument("--book-meshes", action="store_true", help="draw the books' covers (what the camera sees)")
     r.add_argument("--scenarios", nargs="+", choices=SCENARIOS, default=list(SCENARIOS))
     r.add_argument("--seeds", default="0:200", help="lo:hi, per scenario")
     r.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))

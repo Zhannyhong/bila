@@ -218,6 +218,13 @@ WEDGE_SPEED = 0.04          # then slowly,
 WEDGE_STOP_FORCE = 60.0     # stopping only above this (more, and it slips back in the fingers),
 WEDGE_PUSH_FORCE = 100.0    # and once let go, pushed home until the wrist feels this
 SIDE_GAP = 0.003            # a book going into a wide gap after a stand-up stands this far off a neighbour
+SLIDE_RETRIES = ()          # m along the row: if the book jams at the slot's entrance, back it out to where the
+                            # slide began and slide it in again this far to the side of where it first went, each
+                            # in turn (none: give up at the first jam); toward the middle between the neighbours'
+                            # spines as last seen (the straight way in can be off it) if RETRY_TOWARD_SPINES, else
+                            # in the signs given
+RETRY_TOWARD_SPINES = False
+RETRY_BACK_SPEED = 0.02     # m/s backing the jammed book out
 
 # Step: widen (the fingers fit in the gap)
 GAP_MARGIN = 0.006          # widen the gap to the book's thickness plus this
@@ -1614,8 +1621,13 @@ class Episode:
         run = self.run
         obs = self.obstacles()
         target = self.seat_target()[0]
-        spine_ahead = y_from + self.depth / 2 - self.tip_y(self.hand_for_book([x_slot, y_from, self.z_rest]))
-        y_hold = max(target, self.hold_limit(x_slot, obs) + spine_ahead) - self.depth / 2
+
+        def hold_y(x):
+            """Book centre y the slide goes to along x: as deep as the hand may go."""
+            spine_ahead = y_from + self.depth / 2 - self.tip_y(self.hand_for_book([x, y_from, self.z_rest]))
+            return max(target, self.hold_limit(x, obs) + spine_ahead) - self.depth / 2
+
+        y_hold = hold_y(x_slot)
         if y_hold > self.D / 2 - CLEAR:                             # its centre must be over the board
             raise RuntimeError("Hand can't get the book far enough onto the board to let go")
         # A two-finger pinch can't stop a heavy book from pitching nose-down (its
@@ -1624,27 +1636,52 @@ class Episode:
         # The residual may correct the slide (turning about the pads, a target correction inside
         # SLIDE_LO..SLIDE_HI: never lifting the book), never taking the fingertips deeper than the
         # script sends them, and end it once the book is far enough over the board.
-        slid = False
         over_board = lambda: self.held_y() < self.D / 2 - CLEAR - END_OVER_BOARD
-        with run.contact("slide", lo=SLIDE_LO, hi=SLIDE_HI, pivot=PAD_Z, no_deeper=True, may_end=over_board,
-                         target=True):
-            run.move("rest it on the board", *self.hand_for_book([x_slot, y_from, self.z_rest]), speed=0.01)
-            # If the book runs into a neighbour (in a tight row, the pushed
-            # neighbours' backs still narrow the gap), stop rather than force it:
-            # forced, it twists in the fingers and jams. The fingertip push below,
-            # low and central on the spine, carries on from there.
-            if wedge_from is not None:
-                # (If it meets something sooner than the turned face, the slow part carries on from there.)
-                if y_hold < wedge_from < y_from:
-                    run.move("slide it in along the board", *self.hand_for_book([x_slot, wedge_from, self.z_rest]),
-                             speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
-                slid = run.move("wedge it in", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
-                                speed=WEDGE_SPEED, stop_force=WEDGE_STOP_FORCE)
-            else:
-                slid = run.move("slide it in along the board", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
+
+        def slide(x_slot, y_hold):
+            with run.contact("slide", lo=SLIDE_LO, hi=SLIDE_HI, pivot=PAD_Z, no_deeper=True, may_end=over_board,
+                             target=True):
+                run.move("rest it on the board", *self.hand_for_book([x_slot, y_from, self.z_rest]), speed=0.01)
+                # If the book runs into a neighbour (in a tight row, the pushed
+                # neighbours' backs still narrow the gap), stop rather than force it:
+                # forced, it twists in the fingers and jams. The fingertip push below,
+                # low and central on the spine, carries on from there.
+                if wedge_from is not None:
+                    # (If it meets something sooner than the turned face, the slow part carries on from there.)
+                    if y_hold < wedge_from < y_from:
+                        run.move("slide it in along the board", *self.hand_for_book([x_slot, wedge_from, self.z_rest]),
+                                 speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
+                    return run.move("wedge it in", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
+                                    speed=WEDGE_SPEED, stop_force=WEDGE_STOP_FORCE)
+                return run.move("slide it in along the board", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
                                 speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
-        if not slid and self.held_y() > self.D / 2 - CLEAR:         # centre not over the board: can't let go
+
+        jammed = lambda slid: not slid and self.held_y() > self.D / 2 - CLEAR   # centre not over the board
+        if SLIDE_RETRIES and RETRY_TOWARD_SPINES:
+            xl, xr, _, _ = self.slot()
+            toward = 1.0 if (xl + xr) / 2 >= x_slot else -1.0      # where the middle between the spines is
+        slid, x_first = slide(x_slot, y_hold), x_slot
+        # Jammed: the book caught a neighbour, most likely because the slot isn't quite where the camera saw
+        # it. Back it out to where the slide began (the book clear of the spines) and try again to one side.
+        for shift in SLIDE_RETRIES:
+            if not jammed(slid):
+                break
+            x_try = x_first + (toward * abs(shift) if RETRY_TOWARD_SPINES else shift)
+            y_try = hold_y(x_try)
+            if y_try > self.D / 2 - CLEAR:
+                continue
+            self.info["slide_retries"] = self.info.get("slide_retries", 0) + 1
+            run.move("back the book out (it jammed)", *self.hand_for_book([x_slot, y_from, self.z_rest]),
+                     speed=RETRY_BACK_SPEED)
+            run.move(f"move it {1000 * abs(x_try - x_first):.0f} mm toward {'-' if x_try < x_first else '+'}x "
+                     f"to try again",
+                     *self.hand_for_book([x_try, y_from, self.z_rest]), speed=0.01)
+            x_slot, y_hold = x_try, y_try
+            slid = slide(x_slot, y_hold)
+        if jammed(slid):
             raise RuntimeError("the book jammed at the slot's entrance")
+        if self.info.get("slide_retries"):
+            self.info["retry_shift_m"] = x_slot - x_first
         run.wait("open the gripper", 0.4, grip=GRIP_OPEN)
         t_release = run.t
         push_force = PUSH_STOP_FORCE if wedge_from is None else WEDGE_PUSH_FORCE
