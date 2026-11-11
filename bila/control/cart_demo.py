@@ -72,9 +72,6 @@ OPEN_SPARE = 0.008          # the fingers open this much wider than the book, ea
 LIFT_SPEED = 0.10           # m/s, peak, of the lift's moves
 CARRY_JOINT_SPEED = 0.3     # rad/s, peak, of the arm's joint moves while it carries a book
 CARRY_CHECK = 0.01          # rad: ... checked for collisions this often along the way (~4 mm at the book's far end)
-CART_CLEAR = 0.01           # the arm's planner keeps the arm this far from the cart's frame (KEEP_OUT parts)
-KEEP_OUT = ("deck", "lift_rail", "lip_back", "lip_front", "lip_in", "lip_out",
-            "tray_leg0", "tray_leg1", "tray_leg2", "tray_leg3")
 PAD_TORSION = 0.05          # torsional friction of the finger pads (m): resists a held book twisting
 CARRY_OUT = (0.12, 0.09, 0.06, 0.04, 0.02)   # the book comes down on the lift this far in front of its pre-insertion pose
 APPROACH_ABOVE = 0.012      # ... and comes in over the board this much higher (if the level has room), then down
@@ -315,22 +312,7 @@ def build(cfg, row, tray, numbers):
 
     add_stickers(root, row.books + tray_books + [b for fl in row.filler_levels for b in fl.books], numbers)
 
-    # A copy of each part of the cart's frame, CART_CLEAR bigger, for the arm's planner only (CartEpisode
-    # turns them on for its collision checks; the simulation never sees them: they are compiled solid,
-    # so MuJoCo puts them in the bodies' collision trees, then turned off). The planner lets the arm
-    # 1 mm into anything, for the books it pushes; against the cart that let it graze the tray's lip and
-    # the posts, and the arm, a little behind its commands under load, pressed on them with hundreds of N.
-    for parent in (cart, lift):
-        for g in list(parent.findall("geom")):
-            if g.get("name") not in KEEP_OUT:
-                continue
-            size = [float(v) for v in g.get("size").split()]
-            size = [v + CART_CLEAR for v in size] if g.get("type") == "box" else [size[0] + CART_CLEAR] + size[1:]
-            ET.SubElement(parent, "geom", {**g.attrib, "name": g.get("name") + "_keepout", "size": _f(*size),
-                                           "group": "5", "rgba": "0 0 0 0", "mass": "0"})
     model = compile_robot_scene(ET.tostring(root, encoding="unicode"))
-    keepout = [g for g in range(model.ngeom) if model.geom(g).name.endswith("_keepout")]
-    model.geom_contype[keepout] = model.geom_conaffinity[keepout] = 0
     # Rubber pads resist a book twisting in the grip: give the fingers torsional friction (MuJoCo's
     # default point contacts have none) and stiffer contacts. Carrying a book from the tray, held at
     # its spine end, it twisted 50 mm without; about 10 mm with.
@@ -543,9 +525,6 @@ class CartEpisode(Episode):
         self.lift_row = float(data.qpos[self.lift_q])     # where the lift stands for the target row
         self.carrying = False                             # a book swings with the hand (joint_route checks closer)
         self.next_grip_check = 0.0                        # sim time of check_grip's next look
-        self.keepout = [g for g in range(model.ngeom) if model.geom(g).name.endswith("_keepout")]
-        arm_collides = self.ik.collides
-        self.ik.collides = lambda q, allowed=(): self.with_keepouts(arm_collides, q, allowed)
         self.ik.robot -= {g for g in self.ik.robot if model.body(model.geom_bodyid[g]).name == "panda/link0"}
         self.tray_bodies = [(i, model.body_geomadr[i]) for i in range(model.nbody)   # (body, its box) of the tray books
                             if model.body(i).name.startswith("return_") or i == self.book_body]
@@ -689,15 +668,6 @@ class CartEpisode(Episode):
             run.move("lower it to just above the board", *self.hand_for_book(centre, yaw), speed=0.02)
         self.measure_in_hand()
 
-    def with_keepouts(self, check, *args):
-        """check(*args) with the planner's copies of the cart's frame (build: KEEP_OUT) solid."""
-        m = self.m
-        m.geom_contype[self.keepout] = m.geom_conaffinity[self.keepout] = 1
-        try:
-            return check(*args)
-        finally:
-            m.geom_contype[self.keepout] = m.geom_conaffinity[self.keepout] = 0
-
     def joint_route(self, q0, q):
         """Episode.joint_route, checked every CARRY_CHECK rad while the arm
         carries a book: its 25 checks along a joint move leave gaps of
@@ -748,12 +718,10 @@ class CartEpisode(Episode):
         self.in_hand_p = R_h.T @ (d.xpos[self.book_body] - d.xpos[ik.hand])
         self.in_hand_R = R_h.T @ d.xmat[self.book_body].reshape(3, 3)
 
-    def collides_carrying(self, q, allowed=()):
+    def collides_carrying(self, q, allowed=(), clearance=0.0):
         """ArmIK.collides, with the held book moved along with the hand and
-        counted as part of the arm (its contacts with the fingers aside)."""
-        return self.with_keepouts(self._collides_carrying, q)
-
-    def _collides_carrying(self, q):
+        counted as part of the arm (its contacts with the fingers aside),
+        clearance included."""
         m, ik = self.m, self.ik
         ik.d.qpos[ik.qadr] = q
         mujoco.mj_kinematics(m, ik.d)
@@ -761,13 +729,14 @@ class CartEpisode(Episode):
         qa = m.jnt_qposadr[self.book_joint]
         ik.d.qpos[qa:qa + 3] = ik.d.xpos[ik.hand] + R_h @ self.in_hand_p
         ik.d.qpos[qa + 3:qa + 7] = insert_book.mat2quat(R_h @ self.in_hand_R)
-        mujoco.mj_fwdPosition(m, ik.d)
-        held = ik.robot | {self.book_geom} | {g for g, b in ik.book_of.items() if b == self.book_geom}
-        keepout = set(self.keepout)
+        book = {self.book_geom} | {g for g, b in ik.book_of.items() if b == self.book_geom}
+        ik.forward(clearance, also=book)
+        held = ik.robot | book
         for c in ik.d.contact[:ik.d.ncon]:
-            if (c.geom1 in keepout or c.geom2 in keepout) and not (c.geom1 in ik.robot or c.geom2 in ik.robot):
-                continue                                     # the book may pass closer to the cart than the arm
-            if (c.geom1 in held) != (c.geom2 in held) and c.dist < -0.001:
+            if (c.geom1 in held) == (c.geom2 in held):
+                continue
+            other = c.geom2 if c.geom1 in held else c.geom1
+            if c.dist < -0.001 or (c.dist < clearance and other in ik.structure):
                 return True
         return False
 
@@ -870,7 +839,7 @@ def main():
             mujoco.mjv_defaultFreeCamera(model, viewer.cam)
     try:
         print(report(run(model, data, row, tray, shelf_map, labels, eyes_for, viewer, seed=a.seed, numbers=numbers)))
-    except RuntimeError as e:
+    except RuntimeError as e:                        # no safe way to do it in this scene, or it jammed
         print(f"  FAIL: {e}")
     if viewer is not None:
         print("Close the viewer window to exit.")

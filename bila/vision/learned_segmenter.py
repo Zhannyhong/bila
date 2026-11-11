@@ -120,7 +120,8 @@ class LearnedSegmenter:
     interface as OracleSegmenter: segmenter(frame) -> [Segment]. Segments
     carry no label (it doesn't know which simulated book is which). Use it
     with RGBDPerception(robust_fit=True): its masks bleed a few pixels onto
-    the next book, which the default spine fit takes for the book's edge."""
+    the next book, which the default spine fit takes for the book's edge.
+    device None: the GPU if there is one (default_device)."""
 
     def __init__(self, weights: str, device: Optional[str] = None, score: float = SCORE,
                  mask_threshold: float = MASK_THRESHOLD):

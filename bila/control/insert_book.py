@@ -46,9 +46,11 @@ High-level steps
                   aside, as hard as the arm can, until the gap at the spines is
                   the book plus margin: the side with room for all of it first,
                   re-pushing by whatever the arm's give left short. The fingers
-                  only reach ~4 cm past the spines, so the neighbour swivels
-                  rather than slides: the gap widens at the spines but less at
-                  the back, and the book itself widens the rest as it slides in.
+                  reach up to 11 cm past the spines (the palm stops at the most
+                  protruding one nearby), so short of a deep neighbour's back:
+                  it swivels as well as slides, the gap widens less at the back
+                  than at the spines, and the book itself widens the rest as it
+                  slides in.
                   Books the palm would sweep past that stand well proud of the
                   neighbour (it went back for a shove) go back level with it
                   first, or the fingertips would get none of its face.
@@ -67,9 +69,11 @@ High-level steps
                   first walk it out of the row (walk_out): pinch the little
                   that sticks out, pull 10 mm, pinch deeper.
   insert()        Take the book at the pre-insertion pose (the hand-over is
-                  not modelled): lined up with the gap, its back 1 cm over the
-                  board's front edge and 3 mm above it, pinched 11.5 cm above
-                  its bottom with its spine 2 mm off the palm. Rest its back on
+                  not modelled here; cart_demo's take_book picks it out of a
+                  tray): lined up with the gap, its back 1 cm over the board's
+                  front edge and 3 mm above it, pinched 11.5 cm above its
+                  bottom, its first 44 mm between the pads (its spine PALM_GAP,
+                  68 mm, off the palm). Rest its back on
                   the board and slide it in, holding it, until the hand would
                   come within 5 mm of another book's spine (the fingers can't
                   follow it in). If it runs into a neighbour first (a swivelled
@@ -88,13 +92,21 @@ High-level steps
   shove_stage (one pinch), lift_up / clamp_up, fingertip_push(side, d).
 
 Residual (Episode.residual, None by default): a learned correction of the hand
-position during the gap-creation contact moves only (widen's pushes, the lift
-and the clamp's swing, the shove), as gap_env.py trains it. Every
-RESIDUAL_EVERY steps it adds up to RESIDUAL_STEP per shelf axis, ramped in,
-RESIDUAL_MAX in all, inside each move's bounds (never past the row's room);
-after the move it fades out over the next one. The rules, the plans and every
-other move stay the script's. Without one the controller runs exactly as
-without the hook.
+during the contact moves (Runner.contact), as gap_env.py trains it: making
+room (widen's pushes, the lift and the clamp's swing, the shove) and the
+insertion (resting the book on the board and sliding it in, then pushing it
+home). Every RESIDUAL_EVERY steps it adds up to RESIDUAL_STEP per shelf axis
+and RESIDUAL_TURN_STEP of yaw and pitch (turning about where the hand
+touches), ramped in, RESIDUAL_MAX and RESIDUAL_TURN_MAX in all, inside each
+move's bounds (never past the row's room, nor deeper into the shelf than the
+insertion's moves go); after the move it fades out over the next one. In the
+insertion it gives the correction itself instead, inside tighter bounds
+(SLIDE_LO..., PUSH_LO...), and the hand moves toward it at the same rate: a
+steady small correction stays small. It may
+also end the move where the hand is (the slide only once the book is over the
+board): the script carries on as after the move. The rules, the plans and
+every other move stay the script's. Without one the controller runs exactly
+as without the hook.
 
 Score: upright within 5 deg, in place, and released, plus how far the other
 books moved. The slide and the pushes stop when the wrist force sensor feels
@@ -141,7 +153,7 @@ import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import mujoco
@@ -192,6 +204,9 @@ IK_SEEDS = 20               # random starts per round when choosing the arm conf
 IK_ROUNDS = 3               # rounds tried before giving up (most scenes need only the first)
 IK_EXTRA_ROUNDS = 3         # ... and more if none of them found any configuration at all
 WAYPOINT_TRIES = 40         # random waypoints tried for a joint move that can't go direct or by way of home
+JOINT_CHECK_STEP = 0.01     # m: a joint move is checked for collisions often enough that no part of the arm
+                            # moves further than this between two checks (see joint_route),
+JOINT_CLEAR = 0.010         # ... and keeps this far from the shelf's structure away from its ends
 MIN_MARGIN = 0.05           # rad: the chosen path must keep every joint this far from its limits
 CLOSE_SPEED = 0.05          # m/s per finger when closing on a book from a few mm away
 
@@ -203,6 +218,13 @@ WEDGE_SPEED = 0.04          # then slowly,
 WEDGE_STOP_FORCE = 60.0     # stopping only above this (more, and it slips back in the fingers),
 WEDGE_PUSH_FORCE = 100.0    # and once let go, pushed home until the wrist feels this
 SIDE_GAP = 0.003            # a book going into a wide gap after a stand-up stands this far off a neighbour
+SLIDE_RETRIES = ()          # m along the row: if the book jams at the slot's entrance, back it out to where the
+                            # slide began and slide it in again this far to the side of where it first went, each
+                            # in turn (none: give up at the first jam); toward the middle between the neighbours'
+                            # spines as last seen (the straight way in can be off it) if RETRY_TOWARD_SPINES, else
+                            # in the signs given
+RETRY_TOWARD_SPINES = False
+RETRY_BACK_SPEED = 0.02     # m/s backing the jammed book out
 
 # Step: widen (the fingers fit in the gap)
 GAP_MARGIN = 0.006          # widen the gap to the book's thickness plus this
@@ -251,12 +273,26 @@ HOLD_STILL = 0.2            # s the arm holds still at a view before the image i
 STILL = (0.003, math.radians(1.5))   # a book seen again within this (m, rad) of before hasn't moved
 
 # Residual correction (Runner.contact): a learned policy may nudge the hand during the
-# gap-creation contact moves. Without one (the default) the script runs exactly as it is.
+# contact moves (making room, inserting). Without one (the default) the script runs exactly as it is.
 RESIDUAL_EVERY = 20         # physics steps per decision (25 Hz at the 2 ms step)
 RESIDUAL_STEP = 0.003       # m per shelf axis per decision, at most, ramped in over the steps to the next
 RESIDUAL_MAX = 0.025        # m per shelf axis in all
+RESIDUAL_TURN_STEP = math.radians(0.4)   # rad of yaw (about the shelf's z) and of pitch (its x) per decision, at most
+RESIDUAL_TURN_MAX = math.radians(3.0)    # rad of each in all
+RESIDUAL_END = 0.5          # an end action above this ends the contact move where the hand is
 RESIDUAL_FADE = 0.3         # s: once a contact move ends, the correction fades out over the next move's first this
 RESIDUAL_FLOOR = 0.002      # m: the correction keeps the hand this much of its clearance (board, books pushed back)
+# The insertion's corrections are targets (Contact.target), inside these bounds: x along the row, y in
+# (-) or out (+) of the shelf, z up or down (m), then yaw and pitch (rad). The slide never lifts the book
+# off the board it rests on (lifted, it pitches in the fingers and can drop off at release), and the push
+# never holds the hand back from where the script pushes to (that leaves the book proud).
+INSERT_TURN = math.radians(1.5)
+SLIDE_LO = (-0.004, -0.008, -0.002, -INSERT_TURN, -INSERT_TURN)
+SLIDE_HI = (0.004, 0.002, 0.0, INSERT_TURN, INSERT_TURN)
+PUSH_LO = (-0.004, -0.008, -0.0025, -INSERT_TURN, -INSERT_TURN)
+PUSH_HI = (0.004, 0.0, 0.0025, INSERT_TURN, INSERT_TURN)
+END_OVER_BOARD = 0.005      # m: the slide may be ended once the book's centre is this much further over the board
+#                             than where it can be let go of (CLEAR inside the edge)
 
 # Scoring
 ALIGN_TOL = 0.010          # in place: spine within this of the more protruding neighbour's spine, or
@@ -416,6 +452,24 @@ class ArmIK:
         self.ignore = set()                 # geoms the arm may touch anywhere (the book it handles)
         self.belief = []                    # (qpos address, pose): books to plan around where they are thought to be
         self.book_of = {}                   # page-section geom -> its book's geom: see book_children
+        # What joint moves keep a clearance from (joint_route): the fixed structure (the shelf, the
+        # robot's mount or cart, the floor), from the parts of the arm that move (all but its base).
+        self.structure = {g for g in range(model.ngeom) if body(g) in ("world", "shelf", "robot_mount", "lift")}
+        self.moving = {g for g in self.robot if body(g) != "panda/link0"}
+        # How far any part of the arm can be from each joint's axis, in any configuration: the
+        # offsets between its bodies added up along the chain, plus each geom's bounding radius,
+        # plus a finger's full opening. A joint move by dq moves no point of the arm further than
+        # lever @ |dq|.
+        self.lever = np.zeros(7)
+        for i, j in enumerate(jids):
+            top = model.jnt_bodyid[j]
+            for g in self.robot:
+                b, reach = model.geom_bodyid[g], np.linalg.norm(model.geom_pos[g]) + model.geom_rbound[g]
+                while b not in (top, 0):
+                    reach += np.linalg.norm(model.body_pos[b])
+                    b = model.body_parentid[b]
+                if b == top:
+                    self.lever[i] = max(self.lever[i], reach + np.linalg.norm(model.jnt_pos[j]) + 0.04)
 
     def sync(self, data, finger=None):
         """Copy the scene (books, fingers) from the simulation, for collision
@@ -427,19 +481,40 @@ class ArmIK:
         if finger is not None:
             self.d.qpos[self.finger_qadr] = finger
 
-    def collides(self, q, allowed=()):
+    def collides(self, q, allowed=(), clearance=0.0):
         """Whether the arm at q is more than 1 mm into anything, other than
-        the geoms in `allowed`, which its fingers may press on."""
+        the geoms in `allowed`, which its fingers may press on, or (with
+        `clearance`) nearer than that to the fixed structure."""
         self.d.qpos[self.qadr] = q
-        mujoco.mj_fwdPosition(self.m, self.d)
+        self.forward(clearance)
         for c in self.d.contact[:self.d.ncon]:
-            if (c.geom1 in self.robot) == (c.geom2 in self.robot) or c.dist > -0.001:
+            if (c.geom1 in self.robot) == (c.geom2 in self.robot):
                 continue
             arm, other = (c.geom1, c.geom2) if c.geom1 in self.robot else (c.geom2, c.geom1)
+            if c.dist < clearance and other in self.structure and arm in self.moving:
+                return True
+            if c.dist > -0.001:
+                continue
             other = self.book_of.get(other, other)      # a page section counts as its book
             if other not in self.ignore and not (arm in self.fingers and other in allowed):
                 return True
         return False
+
+    def forward(self, clearance=0.0, also=()):
+        """mj_fwdPosition on the planner's data, with the moving parts of the
+        arm (and the geoms in `also`) reporting contacts out to `clearance`:
+        their margins are set for it and put back at once, as the model is
+        the simulation's."""
+        if clearance <= 0:
+            mujoco.mj_fwdPosition(self.m, self.d)
+            return
+        geoms = np.array(sorted(self.moving | set(also)), dtype=int)
+        margin = self.m.geom_margin[geoms].copy()
+        self.m.geom_margin[geoms] = np.maximum(margin, clearance)
+        try:
+            mujoco.mj_fwdPosition(self.m, self.d)
+        finally:
+            self.m.geom_margin[geoms] = margin
 
     def fk(self, q):
         self.d.qpos[self.qadr] = q
@@ -511,26 +586,55 @@ class ArmIK:
 
 @dataclass
 class Contact:
-    """A gap-creation contact move the residual may correct (Runner.contact).
-    lo, hi: bounds on the correction (shelf frame, m), inside +-RESIDUAL_MAX.
+    """A contact move the residual may correct (Runner.contact).
+    lo, hi: bounds on the correction (x, y, z in m, shelf frame; then yaw
+    and pitch in rad), inside RESIDUAL_MAX and RESIDUAL_TURN_MAX.
     x_limit: (side, x): the correction never takes the hand (its origin, shelf
-    frame) past x toward side: the row's room, as the script knows it."""
-    phase: str                                  # "widen", "lift", "clamp" or "shove"
+    frame) past x toward side: the row's room, as the script knows it.
+    pivot: hand z of the point the correction turns about (where the hand
+    touches: the fingertips, or the pads holding a book), so a turn doesn't
+    move that point. no_deeper: the fingertips never go further into the
+    shelf than the script's move is going (the insertion: the hand can't
+    follow the book in past where the script stops it). may_end: whether the
+    residual may end the move now (None: always). target: the residual says
+    where the correction should be (inside lo, hi), not how far it should
+    change; it gets there at RESIDUAL_STEPS a decision at most. A residual
+    that gives the same small correction every decision then holds it there,
+    where increments of it would add up to the bounds."""
+    phase: str                                  # "widen", "lift", "clamp", "shove", "slide" or "push"
     lo: np.ndarray
     hi: np.ndarray
     x_limit: Optional[Tuple[int, float]] = None
+    pivot: float = FINGERTIP_Z
+    no_deeper: bool = False
+    may_end: Optional[Callable[[], bool]] = None
+    target: bool = False
     steps: int = 0                              # physics steps of hand moves taken in it so far
+    goal_tip: Optional[float] = None            # shelf y of the fingertips where the move running ends
+    ended: bool = False                         # the residual ended it
+
+
+class ContactEnded(BaseException):
+    """The residual ended a contact move: Runner.contact's block is left at
+    once. (BaseException, so no `except` in the script catches it.)"""
+
+
+RESIDUAL_STEPS = np.array([RESIDUAL_STEP] * 3 + [RESIDUAL_TURN_STEP] * 2)   # per decision, at most
+RESIDUAL_LIMITS = np.array([RESIDUAL_MAX] * 3 + [RESIDUAL_TURN_MAX] * 2)    # in all
 
 
 class Runner:
     """Steps the simulation while moving the commanded hand pose along
     min-jerk paths. Each step re-solves IK from the last command.
 
-    A residual (any object with decide(runner, contact) -> 3 m, shelf frame)
-    may correct the hand's position during the moves marked with contact():
-    IK then aims at the script's pose plus `offset`. self.pos stays the
-    script's pose throughout, so the script's next move starts from where it
-    planned. With residual=None nothing changes."""
+    A residual (any object with decide(runner, contact) -> up to 6 numbers:
+    the increments of x, y, z (m, shelf frame), yaw and pitch (rad), or in a
+    contact.target move the correction itself, then the end action; left
+    out, they are 0) may correct the hand during the moves
+    marked with contact(): IK then aims at the script's pose with `offset` on
+    it (corrected()). self.pos and self.rot stay the script's pose
+    throughout, so the script's next move starts from where it planned. With
+    residual=None nothing changes."""
 
     def __init__(self, model, data, ik: ArmIK, q_cmd, grip, viewer=None, log=print, residual=None, shelf=None):
         self.m, self.d, self.ik = model, data, ik
@@ -538,10 +642,12 @@ class Runner:
         self.pos, self.rot = ik.fk(self.q_cmd)
         self.viewer, self.log = viewer, log
         self.residual, self.shelf = residual, shelf  # shelf: a ShelfFrame, needed with a residual
-        self.offset = np.zeros(3)                   # the residual's correction of the hand position, shelf frame
-        self.rate = np.zeros(3)                     # ... added to it each step until the next decision
+        self.offset = np.zeros(5)                   # the residual's correction: x, y, z (m, shelf frame), yaw, pitch
+        self.rate = np.zeros(5)                     # ... added to it each step until the next decision
+        self.pivot = FINGERTIP_Z                    # hand z the correction turns about (the last contact's)
         self.touching = None                        # the Contact being made, if any
         self.fade = None                            # (correction as the contact ended, steps left to fade it)
+        self.ended = []                             # phases of the contact moves the residual ended
         self.fade_steps = int(round(RESIDUAL_FADE / model.opt.timestep))
         self.t0 = data.time
         self.wall0, self.next_frame = time.perf_counter(), 0.0
@@ -565,35 +671,72 @@ class Runner:
     def halt(self):
         """Hold the hand where it actually is, so the arm stops pressing on
         whatever it ran into. With a correction on, the script's pose is
-        where the hand is less the correction, which stays (and stops
-        growing)."""
+        where the hand is with the correction taken off (uncorrected), and
+        the correction stays (and stops growing)."""
         self.q_cmd = self.d.qpos[self.ik.qadr].copy()
         self.pos, self.rot = self.ik.fk(self.q_cmd)
         if self.offset.any():
-            self.pos = self.pos - self.shelf.R @ self.offset
+            self.pos, self.rot = self.uncorrected(self.pos, self.rot)
         self.rate[:] = 0.0
 
     # --- The residual's correction -----------------------------------------
     @contextmanager
-    def contact(self, phase, lo=(-RESIDUAL_MAX,) * 3, hi=(RESIDUAL_MAX,) * 3, x_limit=None):
-        """Mark the hand moves inside as the gap-creation contact move `phase`
-        (see Contact for the bounds): the residual, if any, corrects them. Its
-        correction outlives the block and fades out over the next move (the
-        hand may still hold what it moved: a clamped book)."""
+    def contact(self, phase, lo=(-RESIDUAL_MAX,) * 3, hi=(RESIDUAL_MAX,) * 3, x_limit=None, pivot=FINGERTIP_Z,
+                no_deeper=False, may_end=None, target=False):
+        """Mark the hand moves inside as the contact move `phase` (see Contact
+        for the bounds and target; lo and hi may leave out the turns: +-RESIDUAL_TURN_MAX):
+        the residual, if any, corrects them, and may end them (ContactEnded:
+        the block is left where the hand is, and the script carries on after
+        it). Its correction outlives the block and fades out over the next
+        move (the hand may still hold what it moved: a clamped book)."""
         if self.residual is None:
             yield None
             return
-        lo = np.maximum(np.asarray(lo, dtype=float), -RESIDUAL_MAX)
-        hi = np.minimum(np.asarray(hi, dtype=float), RESIDUAL_MAX)
-        self.touching, self.fade = Contact(phase, lo, hi, x_limit), None
+        full = lambda b, sign: np.concatenate([np.asarray(b, dtype=float), sign * RESIDUAL_LIMITS[len(b):]])
+        lo, hi = np.maximum(full(lo, -1), -RESIDUAL_LIMITS), np.minimum(full(hi, 1), RESIDUAL_LIMITS)
+        if pivot != self.pivot and self.offset[3:].any():
+            # A turn left over from the last contact, about its pivot: the same correction about this one.
+            T = self.turn()
+            self.offset[:3] += self.shelf.R.T @ (np.eye(3) - T) @ self.rot @ [0.0, 0.0, self.pivot - pivot]
+        self.pivot = pivot
+        self.touching, self.fade = Contact(phase, lo, hi, x_limit, pivot, no_deeper, may_end, target=target), None
         self.rate[:] = 0.0
         try:
             yield self.touching
+        except ContactEnded:
+            pass
         finally:
             self.touching = None
             self.rate[:] = 0.0
             if self.offset.any():
                 self.fade = (self.offset.copy(), self.fade_steps)
+
+    def turn(self):
+        """The correction's rotation (world frame): pitch about the shelf's x, then yaw about its z."""
+        R = self.shelf.R
+        return axis_rot(R[:, 2], self.offset[3]) @ axis_rot(R[:, 0], self.offset[4])
+
+    def corrected(self, pos, rot):
+        """A hand pose (the script's) with the correction on it: turned about
+        the pivot, then moved by the correction's x, y, z."""
+        shift = self.shelf.R @ self.offset[:3]
+        if not self.offset[3:].any():
+            return pos + shift, rot
+        T, pivot = self.turn(), pos + rot @ [0.0, 0.0, self.pivot]
+        return pivot + T @ (pos - pivot) + shift, T @ rot
+
+    def uncorrected(self, pos, rot):
+        """The script's pose that corrected() turns into (pos, rot)."""
+        shift = self.shelf.R @ self.offset[:3]
+        if not self.offset[3:].any():
+            return pos - shift, rot
+        script_rot = self.turn().T @ rot
+        pivot = pos + rot @ [0.0, 0.0, self.pivot] - shift
+        return pivot - script_rot @ [0.0, 0.0, self.pivot], script_rot
+
+    def tip_y(self, pos, rot):
+        """Shelf y of the fingertips of a hand pose."""
+        return self.shelf.to_shelf(pos + rot @ [0.0, 0.0, FINGERTIP_Z])[1]
 
     def bounded(self, offset, c: Contact):
         """The correction kept inside the contact's bounds. The room limit only
@@ -609,12 +752,25 @@ class Runner:
     def correct(self):
         """Advance the correction by one physics step of a hand move: in a
         contact, every RESIDUAL_EVERY steps ask the residual for an increment
-        (at most RESIDUAL_STEP per axis) and ramp it in over the steps to the
-        next decision; after one, fade it out (min-jerk) over fade_steps."""
+        (at most RESIDUAL_STEPS), or in a target contact for the correction
+        (moved toward by at most RESIDUAL_STEPS), and ramp the change in over
+        the steps to the next decision, or end the move if it asks to and
+        may; after a contact, fade the correction out (min-jerk) over
+        fade_steps."""
         c = self.touching
         if c is not None:
             if c.steps % RESIDUAL_EVERY == 0:
-                inc = np.clip(np.asarray(self.residual.decide(self, c), dtype=float), -RESIDUAL_STEP, RESIDUAL_STEP)
+                a = np.zeros(6)
+                out = np.asarray(self.residual.decide(self, c), dtype=float).ravel()
+                a[:len(out)] = out
+                if a[5] > RESIDUAL_END and (c.may_end is None or c.may_end()):
+                    c.ended = True
+                    self.ended.append(c.phase)
+                    self.halt()
+                    self.log(f"  {self.t:5.2f} s    stopped: the residual ended it")
+                    raise ContactEnded
+                change = (self.bounded(a[:5].copy(), c) - self.offset) if c.target else a[:5]
+                inc = np.clip(change, -RESIDUAL_STEPS, RESIDUAL_STEPS)
                 self.rate = (self.bounded(self.offset + inc, c) - self.offset) / RESIDUAL_EVERY
             c.steps += 1
             self.offset = self.bounded(self.offset + self.rate, c)
@@ -625,11 +781,20 @@ class Runner:
             self.fade = (start, left - 1) if left > 1 else None
 
     def hand_target(self):
-        """Where IK aims the hand this step: the script's position plus the correction."""
+        """Where IK aims the hand this step: the script's pose with the
+        correction on it, held back to the move's end in a no_deeper contact."""
         if self.residual is None:
-            return self.pos
+            return self.pos, self.rot
         self.correct()
-        return self.pos + self.shelf.R @ self.offset if self.offset.any() else self.pos
+        if not self.offset.any():
+            return self.pos, self.rot
+        pos, rot = self.corrected(self.pos, self.rot)
+        c = self.touching
+        if c is not None and c.no_deeper and c.goal_tip is not None:
+            deeper = c.goal_tip - self.tip_y(pos, rot)
+            if deeper > 0:
+                pos = pos + self.shelf.R[:, 1] * deeper
+        return pos, rot
 
     @property
     def t(self):
@@ -687,6 +852,8 @@ class Runner:
         if grip is not None:
             self.grip = grip
         rot = self.rot if rot is None else rot
+        if self.touching is not None:
+            self.touching.goal_tip = self.tip_y(pos, rot)
         p0, R0 = self.pos.copy(), self.rot.copy()
         dist, ang = np.linalg.norm(pos - p0), np.linalg.norm(rotation_between(R0, rot))
         T = max(0.3, 1.875 * max(dist / speed, ang / TURN_SPEED))   # min-jerk peak = 1.875 x mean
@@ -696,7 +863,7 @@ class Runner:
         for k in range(1, n + 1):
             u = k / n
             self.pos, self.rot = interpolate(p0, R0, pos, rot, u ** 3 * (10 - 15 * u + 6 * u * u))
-            self.q_cmd = self.ik.solve(self.q_cmd, self.hand_target(), self.rot)
+            self.q_cmd = self.ik.solve(self.q_cmd, *self.hand_target())
             self.step()
             smooth += blend * (self.wrist_force()[2] - smooth)
             if stop_force is not None and abs(smooth - f0) > stop_force:
@@ -714,6 +881,8 @@ class Runner:
         move along the whole path (straight lines and slerps between them)."""
         self.doing = name
         self.log(f"  {self.t:5.2f} s  {name}")
+        if self.touching is not None:
+            self.touching.goal_tip = self.tip_y(*poses[-1])
         pts = [(self.pos.copy(), self.rot.copy())] + list(poses)
         seg = [max(np.linalg.norm(b[0] - a[0]), np.linalg.norm(rotation_between(a[1], b[1])) * speed / TURN_SPEED)
                for a, b in zip(pts, pts[1:])]
@@ -725,7 +894,7 @@ class Runner:
             i = min(int(np.searchsorted(cum, s, side="right")) - 1, len(seg) - 1)
             f = 0.0 if seg[i] <= 0 else (s - cum[i]) / seg[i]
             self.pos, self.rot = interpolate(*pts[i], *pts[i + 1], min(max(f, 0.0), 1.0))
-            self.q_cmd = self.ik.solve(self.q_cmd, self.hand_target(), self.rot)
+            self.q_cmd = self.ik.solve(self.q_cmd, *self.hand_target())
             self.step()
 
     def move_joints(self, name, q_goal, speed=JOINT_SPEED):
@@ -742,7 +911,7 @@ class Runner:
             self.q_cmd = q0 + (q_goal - q0) * (u ** 3 * (10 - 15 * u + 6 * u * u))
             self.step()
         self.pos, self.rot = self.ik.fk(self.q_cmd)
-        self.offset, self.fade = np.zeros(3), None                  # (a joint move takes up any correction left)
+        self.offset, self.fade = np.zeros(5), None                  # (a joint move takes up any correction left)
 
     def wait(self, name, duration, grip=None):
         self.doing = name
@@ -965,6 +1134,22 @@ class Episode:
         if self.spine_seated <= flush:
             return flush, "flush"
         return max(self.spine_seated, self.D / 2 - EDGE_IN - EDGE_AIM), "inside"
+
+    def placement(self, spine: float) -> Tuple[float, float, str]:
+        """(signed score offset, distance to acceptable placement, rule), in
+        shelf metres using ground truth. Shared by scoring and RL shaping.
+        Flush accepts ALIGN_TOL on either side of the neighbour's spine.
+        Inside accepts EDGE_IN behind the front edge, without requiring the
+        controller's extra EDGE_AIM. Zero distance means in place only, not
+        necessarily upright or released."""
+        target, rule = self.seat_target(truth=True)
+        if rule == "flush":
+            offset = float(spine - target)
+            distance = abs(offset) - ALIGN_TOL
+        else:
+            offset = float(self.D / 2 - spine)
+            distance = EDGE_IN - offset
+        return offset, max(distance, 0.0), rule
 
     def book_pre(self, x_slot):
         """Book centre at the pre-insertion pose."""
@@ -1371,7 +1556,21 @@ class Episode:
         ik, home, ignore = self.ik, np.array(PANDA_HOME[:7]), self.ik.ignore
 
         def clear(a, b):
-            return not any(ik.collides(a + s * (b - a)) for s in np.linspace(0, 1, 25)[1:])
+            # Checked every JOINT_CHECK_STEP of the arm's motion, so it can't pass through a board
+            # between two checks: 24 checks spread evenly let a big move swing the fingertips several
+            # cm between them, and the fingers hit the board above or below at up to 345 N. The 24
+            # come first, as they reject most moves that run into something. Away from its ends the
+            # move also keeps JOINT_CLEAR from the shelf: a corner cut between two checks, or the arm
+            # straying a few mm off its path at speed, then still misses. Its ends may be nearer
+            # (a push starts with the fingers 1 cm over the board), so the clearance tapers to them.
+            n = max(24, int(np.ceil(ik.lever @ np.abs(b - a) / JOINT_CHECK_STEP)))
+            k = np.arange(n)
+            first = k[n // 24 - 1::n // 24]
+            for i in np.concatenate([first, np.setdiff1d(k, first)]):
+                s = (i + 1) / n
+                if ik.collides(a + s * (b - a), clearance=JOINT_CLEAR * min(1.0, 4 * s * (1 - s))):
+                    return False
+            return True
 
         if self.placed is not None:
             ik.ignore = ignore - {self.book_geom}
@@ -1426,32 +1625,67 @@ class Episode:
         run = self.run
         obs = self.obstacles()
         target = self.seat_target()[0]
-        spine_ahead = y_from + self.depth / 2 - self.tip_y(self.hand_for_book([x_slot, y_from, self.z_rest]))
-        y_hold = max(target, self.hold_limit(x_slot, obs) + spine_ahead) - self.depth / 2
+
+        def hold_y(x):
+            """Book centre y the slide goes to along x: as deep as the hand may go."""
+            spine_ahead = y_from + self.depth / 2 - self.tip_y(self.hand_for_book([x, y_from, self.z_rest]))
+            return max(target, self.hold_limit(x, obs) + spine_ahead) - self.depth / 2
+
+        y_hold = hold_y(x_slot)
         if y_hold > self.D / 2 - CLEAR:                             # its centre must be over the board
             raise RuntimeError("Hand can't get the book far enough onto the board to let go")
         # A two-finger pinch can't stop a heavy book from pitching nose-down (its
         # weight acts several cm behind the pads). Resting its back on the board
         # first lets the board carry that, as a person would do it.
-        run.move("rest it on the board", *self.hand_for_book([x_slot, y_from, self.z_rest]), speed=0.01)
-        # If the book runs into a neighbour (in a tight row, the pushed
-        # neighbours' backs still narrow the gap), stop rather than force it:
-        # forced, it twists in the fingers and jams. The fingertip push below,
-        # low and central on the spine, carries on from there.
-        if wedge_from is not None:
-            # (If it meets something sooner than the turned face, the slow part carries on from there.)
-            if y_hold < wedge_from < y_from:
-                run.move("slide it in along the board", *self.hand_for_book([x_slot, wedge_from, self.z_rest]),
-                         speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
-            slid = run.move("wedge it in", *self.hand_for_book([x_slot, y_hold, self.z_rest]), speed=WEDGE_SPEED,
-                            stop_force=WEDGE_STOP_FORCE)
-        else:
-            slid = run.move("slide it in along the board", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
-                            speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
-        if not slid:
-            c = self.shelf.box(self.m, self.d, self.book_geom) if self.eyes is None else self.held_box()
-            if c[:, 1].mean() > self.D / 2 - CLEAR:                 # centre not over the board: can't let go
-                raise RuntimeError("the book jammed at the slot's entrance")
+        # The residual may correct the slide (turning about the pads, a target correction inside
+        # SLIDE_LO..SLIDE_HI: never lifting the book), never taking the fingertips deeper than the
+        # script sends them, and end it once the book is far enough over the board.
+        over_board = lambda: self.held_y() < self.D / 2 - CLEAR - END_OVER_BOARD
+
+        def slide(x_slot, y_hold):
+            with run.contact("slide", lo=SLIDE_LO, hi=SLIDE_HI, pivot=PAD_Z, no_deeper=True, may_end=over_board,
+                             target=True):
+                run.move("rest it on the board", *self.hand_for_book([x_slot, y_from, self.z_rest]), speed=0.01)
+                # If the book runs into a neighbour (in a tight row, the pushed
+                # neighbours' backs still narrow the gap), stop rather than force it:
+                # forced, it twists in the fingers and jams. The fingertip push below,
+                # low and central on the spine, carries on from there.
+                if wedge_from is not None:
+                    # (If it meets something sooner than the turned face, the slow part carries on from there.)
+                    if y_hold < wedge_from < y_from:
+                        run.move("slide it in along the board", *self.hand_for_book([x_slot, wedge_from, self.z_rest]),
+                                 speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
+                    return run.move("wedge it in", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
+                                    speed=WEDGE_SPEED, stop_force=WEDGE_STOP_FORCE)
+                return run.move("slide it in along the board", *self.hand_for_book([x_slot, y_hold, self.z_rest]),
+                                speed=INSERT_SPEED, stop_force=SLIDE_STOP_FORCE)
+
+        jammed = lambda slid: not slid and self.held_y() > self.D / 2 - CLEAR   # centre not over the board
+        if SLIDE_RETRIES and RETRY_TOWARD_SPINES:
+            xl, xr, _, _ = self.slot()
+            toward = 1.0 if (xl + xr) / 2 >= x_slot else -1.0      # where the middle between the spines is
+        slid, x_first = slide(x_slot, y_hold), x_slot
+        # Jammed: the book caught a neighbour, most likely because the slot isn't quite where the camera saw
+        # it. Back it out to where the slide began (the book clear of the spines) and try again to one side.
+        for shift in SLIDE_RETRIES:
+            if not jammed(slid):
+                break
+            x_try = x_first + (toward * abs(shift) if RETRY_TOWARD_SPINES else shift)
+            y_try = hold_y(x_try)
+            if y_try > self.D / 2 - CLEAR:
+                continue
+            self.info["slide_retries"] = self.info.get("slide_retries", 0) + 1
+            run.move("back the book out (it jammed)", *self.hand_for_book([x_slot, y_from, self.z_rest]),
+                     speed=RETRY_BACK_SPEED)
+            run.move(f"move it {1000 * abs(x_try - x_first):.0f} mm toward {'-' if x_try < x_first else '+'}x "
+                     f"to try again",
+                     *self.hand_for_book([x_try, y_from, self.z_rest]), speed=0.01)
+            x_slot, y_hold = x_try, y_try
+            slid = slide(x_slot, y_hold)
+        if jammed(slid):
+            raise RuntimeError("the book jammed at the slot's entrance")
+        if self.info.get("slide_retries"):
+            self.info["retry_shift_m"] = x_slot - x_first
         run.wait("open the gripper", 0.4, grip=GRIP_OPEN)
         t_release = run.t
         push_force = PUSH_STOP_FORCE if wedge_from is None else WEDGE_PUSH_FORCE
@@ -1490,20 +1724,23 @@ class Episode:
                                 [self.push_pose(s, x_book, y) for y in np.linspace(tip_back, tip_goal, 30)], s)
                                for s in (1, -1)])
         run.move("reach the spine", *self.push_pose(sign, x_book, spine + 0.005))
-        pushed = run.move("push it into place" if not blocked else
-                          f"push it in (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
-                          *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=push_force)
+        pushed = False
+        with self.push_contact() as c:
+            pushed = run.move("push it into place" if not blocked else
+                              f"push it in (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
+                              *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=push_force)
         # The push drags them back too: push on to where they are now, unless
-        # the book is stuck or the hand can't go any deeper.
+        # the book is stuck or the hand can't go any deeper (or the residual ended the push).
         for _ in range(3):
             target = self.seat_target()[0]
             spine = self.shelf.box(self.m, self.d, self.book_geom)[:, 1].max()
             goal = max(target, self.push_limit(x_book, self.obstacles()))
-            if not pushed or spine <= target + 0.002 or goal >= tip_goal - 0.001:
+            if (c is not None and c.ended) or not pushed or spine <= target + 0.002 or goal >= tip_goal - 0.001:
                 break
             tip_goal, blocked = goal, goal > target
-            pushed = run.move("push it further (the neighbours went back with it)",
-                              *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=push_force)
+            with self.push_contact() as c:
+                pushed = run.move("push it further (the neighbours went back with it)",
+                                  *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=push_force)
         t_done = run.t
         run.move("back out", *self.push_pose(sign, x_book, max(self.D / 2, tip_goal) + 0.05))
         run.wait("let it settle", 1.0)
@@ -1541,13 +1778,33 @@ class Episode:
                                for s in (push_sign, -push_sign)])
             run.move("reach the spine", *self.push_pose(sign, x_book, spine + 0.005))
             what = "push it into place" if k == 0 else "push it further (the neighbours went back with it)"
-            pushed = run.move(what if not blocked else
-                              f"{what} (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
-                              *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=push_force)
+            pushed = False
+            with self.push_contact() as c:
+                pushed = run.move(what if not blocked else
+                                  f"{what} (nearby spines stop the hand {1000 * (tip_goal - target):.0f} mm short)",
+                                  *self.push_pose(sign, x_book, tip_goal), speed=PUSH_SPEED, stop_force=push_force)
             t_done = run.t
             run.move("back out", *self.push_pose(sign, x_book, max(self.D / 2, tip_goal) + 0.05))
+            if c is not None and c.ended:                            # the residual has pushed it as far as it will
+                break
         run.wait("let it settle", 1.0)
         return t_done, blocked
+
+    def push_contact(self):
+        """The push home as a contact move (Runner.contact): the residual may
+        correct it (a target correction inside PUSH_LO..PUSH_HI: never holding
+        the hand back from the script's push), turning about the fingertips,
+        never deeper into the shelf than the script pushes, nor lower than
+        keeps the hand above the board, and may end it (no more pushes then)."""
+        lo = list(PUSH_LO)
+        lo[2] = max(lo[2], -(PUSH_LIFT - RESIDUAL_FLOOR))
+        return self.run.contact("push", lo=lo, hi=PUSH_HI, no_deeper=True, target=True)
+
+    def held_y(self):
+        """Shelf y of the held book's centre, as the robot knows it: with eyes,
+        from how it took the book and where the hand is (held_box)."""
+        c = self.shelf.box(self.m, self.d, self.book_geom) if self.eyes is None else self.held_box()
+        return c[:, 1].mean()
 
     def score(self, t_release, t_done, blocked, **info) -> dict:
         m, d = self.m, self.d
@@ -1555,13 +1812,7 @@ class Episode:
         tilt = book_tilt_deg(d.xquat[self.book_body])
         back_gap = c[:, 1].min() + self.D / 2
         spine = c[:, 1].max()                                        # frontmost point of the book
-        target, rule = self.seat_target(truth=True)                  # from where the neighbours ended up
-        if rule == "flush":
-            offset = spine - target                                  # > 0: sticks out past the neighbour
-            in_place = abs(offset) <= ALIGN_TOL
-        else:
-            offset = self.D / 2 - spine                              # how far inside the front edge
-            in_place = offset >= EDGE_IN
+        offset, distance, rule = self.placement(spine)               # from where the neighbours ended up
         robot, book_of = self.ik.robot, self.ik.book_of
         touching = any((book_of.get(con.geom1, con.geom1) == self.book_geom and con.geom2 in robot) or
                        (book_of.get(con.geom2, con.geom2) == self.book_geom and con.geom1 in robot)
@@ -1570,7 +1821,7 @@ class Episode:
         shifts = np.linalg.norm(d.xpos[self.row_bodies] - self.start_pos, axis=1)[others]
         dtilt = np.abs(np.array([book_tilt_deg(d.xquat[i]) for i in self.row_bodies]) - self.start_tilt)[others]
         res = {
-            "upright": tilt <= UPRIGHT_DEG, "in_place": in_place, "released": not touching,
+            "upright": tilt <= UPRIGHT_DEG, "in_place": distance == 0.0, "released": not touching,
             "rule": rule, "offset_m": offset, "tilt_deg": tilt, "back_gap_m": back_gap, "blocked": blocked,
             "neighbour_shift_m": float(shifts.max()), "total_shift_m": float(shifts.sum()),
             "neighbour_tilt_change_deg": float(dtilt.max()),
@@ -1671,10 +1922,10 @@ class Episode:
         side allows: a side not pushed yet that has room for all of it, else
         the one with more room. The arm configuration is chosen so it can carry
         on through the insertion, or, pushing a side again (the arm gave way
-        the first time), for force. The fingers only reach ~4 cm past the
-        spines, so the neighbour swivels rather than slides: the gap widens at
-        the spines but less at the back. Returns whether it pushed (else why
-        not is in self.info["why"])."""
+        the first time), for force. The fingers reach up to 11 cm past the
+        spines, short of a deep neighbour's back, so it swivels as well as
+        slides: the gap widens less at the back than at the spines. Returns
+        whether it pushed (else why not is in self.info["why"])."""
         need = self.t + margin - self.widen_gap()
         gl, gr = self.finger_gap()
         if gr - gl < 2 * (FINGER_HALF_W + FIT_CLEAR):
@@ -2001,7 +2252,7 @@ class Episode:
             run.wait("open the gripper to the book's thickness", 0.3, grip=GRIP_OPEN * opening / 0.04)
             run.move("put the fingers around the leaning book", *pose(0.0))
             self.close_on(opening, "clamp it")
-            with run.contact("clamp"):
+            with run.contact("clamp", pivot=PAD_Z):                  # (it turns about where the pads hold it)
                 run.follow(f"swing it up about its bottom edge, held {1000 * r:.0f} mm up",
                            [pose(swing * s) for s in np.linspace(0, 1, 25)[1:]], speed=LIFT_SPEED)
             run.wait("let go", 0.4, grip=GRIP_OPEN * opening / 0.04)
@@ -2396,7 +2647,7 @@ class Episode:
         cands = [(at(sign, -away), [at(sign, s) for s in np.linspace(-away, dist, 20)[1:]]
                   + [at(sign, s) for s in np.linspace(dist, -away, 10)[1:]], sign) for sign in (1, -1)]
         # The book goes back ahead of the fingers, but not in the planner's scene: there a
-        # push longer than the fingers (46 mm) would run the hand into it.
+        # push longer than the fingers reach past the palm (FINGERTIP_Z - PALM_Z) would run the hand into it.
         ignore = self.ik.ignore
         self.ik.ignore = ignore | {self.row_geoms[i]}
         try:
@@ -2625,6 +2876,26 @@ def make_eyes(model, row, seed, noise="realistic", segmenter=None, fiducials=Tru
     return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None, reference=reference)
 
 
+def make_noisy_eyes(model, row, seed, learned=False, scale=1.0):
+    """--perception noisy / noisy-learned: no rendering, the ground truth with
+    the camera's measured errors (perception.NoisyEyes), as gap_env trains on;
+    learned: imitating the learned masks' pipeline instead. Drawn from the
+    seed as gap_env draws a scene's (default_rng([seed, 1])). scale: the
+    errors' spread, as gap_env's noise_scale."""
+    from bila.vision.perception import NoisyEyes                                 # it imports this module
+    return NoisyEyes(model, row, np.random.default_rng([seed, 1]), scale, learned=learned)
+
+
+def eyes_for(perception, model, row, seed, camera_noise="realistic", segmenter=None, noise_scale=1.0):
+    """An Episode's eyes for a --perception choice (None: the simulation's
+    truth). noise_scale: the noisy choices' spread (make_noisy_eyes)."""
+    if perception == "camera":
+        return make_eyes(model, row, seed, camera_noise, segmenter)
+    if perception in ("noisy", "noisy-learned"):
+        return make_noisy_eyes(model, row, seed, learned=perception == "noisy-learned", scale=noise_scale)
+    return None
+
+
 def report_collisions(res: dict) -> str:
     if not res.get("collision_s"):
         return ""
@@ -2655,11 +2926,16 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--trials", type=int, default=1, help="run seeds seed .. seed+trials-1 and summarise")
     ap.add_argument("--margin", type=float, default=GAP_MARGIN, help="room to make around the book, m")
-    ap.add_argument("--perception", choices=("truth", "camera"), default="truth",
-                    help="where the controller's knowledge of the row comes from: the simulation, or the wrist camera")
+    ap.add_argument("--perception", choices=("truth", "camera", "noisy", "noisy-learned"), default="truth",
+                    help="where the controller's knowledge of the row comes from: the simulation, the wrist "
+                         "camera, or the truth with the camera's measured errors (no rendering; noisy-learned: "
+                         "those of the learned masks' pipeline)")
     ap.add_argument("--camera-noise", choices=("realistic", "basic"), default="realistic",
                     help="camera: a D405's stereo errors and a calibration error (camera.py: DepthNoise.d405, "
                          "CalibrationError), or only independent depth noise per pixel")
+    ap.add_argument("--segmenter", metavar="WEIGHTS",
+                    help="camera: book masks from this learned segmenter (learned_segmenter.py; needs the rl "
+                         "group) instead of the simulation's object ids")
     ap.add_argument("--panda", default=DEFAULT_PANDA, help="Menagerie panda.xml")
     ap.add_argument("--book-meshes", action="store_true",
                     help="draw the converted repo book covers (run dae_to_obj.py first)")
@@ -2669,6 +2945,12 @@ def main():
                     help="fill the rows with the repo's real books (size, mass, cover, pages) instead of sampled ones")
     ap.add_argument("--view", action="store_true", help="watch in the MuJoCo viewer (run with mjpython on macOS)")
     a = ap.parse_args()
+    if a.segmenter and a.perception != "camera":
+        ap.error("--segmenter goes with --perception camera")
+    segmenter = None
+    if a.segmenter:
+        from bila.vision.learned_segmenter import LearnedSegmenter                # (torch, torchvision: the rl group)
+        segmenter = LearnedSegmenter(os.path.expanduser(a.segmenter))
 
     results = []
     cfg = ShelfConfig(book_meshes=a.book_meshes, book_pages=a.book_pages, catalogue=a.catalogue)
@@ -2679,7 +2961,7 @@ def main():
               f"gap {1000 * (row.gap_right - row.gap_left):.0f} mm for a {1000 * b.thickness:.0f} mm book "
               f"({1000 * b.depth:.0f} mm deep, {b.mass:.2f} kg)")
         log = print if a.trials == 1 else (lambda *_: None)
-        eyes = make_eyes(model, row, seed, a.camera_noise) if a.perception == "camera" else None
+        eyes = eyes_for(a.perception, model, row, seed, a.camera_noise, segmenter)
         if a.view:
             import mujoco.viewer
             with mujoco.viewer.launch_passive(model, data) as viewer:

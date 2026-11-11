@@ -18,9 +18,9 @@ PANDA = "mujoco_menagerie/franka_emika_panda/panda.xml"
 MM = 0.001
 
 
-def camera_and_truth(scenario, seed, noise=None):
+def camera_and_truth(scenario, seed, noise=None, cfg=None):
     """(camera estimate, ground truth, ground-truth book for each camera book, row)."""
-    model, data, row, _ = make_episode(ShelfConfig(), scenario, np.random.default_rng(seed), panda_xml=PANDA)
+    model, data, row, _ = make_episode(cfg or ShelfConfig(), scenario, np.random.default_rng(seed), panda_xml=PANDA)
     look_from(model, data, solve_inspection(model, data, row)[0])
     try:
         cam = WristCamera(model, noise=noise, rng=np.random.default_rng(seed))
@@ -106,6 +106,18 @@ def test_neighbours_match_the_truth(perfect):
         assert abs(b.thickness - t.thickness) < (3 if abs(t.slot_offset) == 1 else 5) * MM
         assert b.depth == t.depth                            # the same prior, not a measurement
     assert est.book(-1).visible == est.book(+1).visible == 1.0
+
+
+def test_page_sections_are_one_book():
+    """Books cut into hinged page sections (ShelfConfig(book_pages=4)) are
+    still one book each to the camera, named by its box: one segment per
+    section made it see 65 thin books in a row of 17."""
+    est, truth, named, _ = camera_and_truth("tight", 0, cfg=ShelfConfig(book_pages=4))
+    assert all(t is not None for t in named), "a segment that isn't one of the row's books"
+    assert len(est.books) == len(truth.books)
+    assert [b.slot_offset for b in est.books] == [t.slot_offset for t in named]
+    for s in (-1, 1):
+        assert abs(est.book(s).thickness - truth.book(s).thickness) < 3 * MM
 
 
 def test_gap_matches_the_truth(perfect):
