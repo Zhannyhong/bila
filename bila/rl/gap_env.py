@@ -464,7 +464,11 @@ class GapEpisode(Episode):
             self.ik.sync(self.d, finger)    # leave the planner's scene as planning would
             return q.copy(), copy.deepcopy(label)
         q, label = super().choose_arm(candidates, allowed, finger, reach_from)
-        self.entry.first_plan = (key, q.copy(), copy.deepcopy(label))
+        try:                                # (clamp_up's label holds a closure: a pool can't pickle it, so plan again)
+            pickle.dumps(label)
+            self.entry.first_plan = (key, q.copy(), copy.deepcopy(label))
+        except (AttributeError, pickle.PicklingError, TypeError):
+            pass
         return q, label
 
 
