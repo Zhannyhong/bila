@@ -338,6 +338,7 @@ def main():
     ap.add_argument("--camera-noise", choices=("realistic", "basic"), default="realistic")
     ap.add_argument("--no-fiducials", action="store_true",
                     help="don't correct the camera pose from the shelf's markers (see the calibration error's effect)")
+    ap.add_argument("--policy", help="a fitted high-level policy (high_level.py fit's q.npz) instead of the rules")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-browser", action="store_true", help="don't open the page; wait for it to be opened")
     a = ap.parse_args()
@@ -376,7 +377,8 @@ def main():
 
     live.update(status="running")
     try:
-        res = cart_demo.run(model, data, row, tray, shelf_map, labels, eyes_for, screen, live.log, a.seed, numbers)
+        res = cart_demo.run(model, data, row, tray, shelf_map, labels, eyes_for, screen, live.log, a.seed, numbers,
+                            a.policy)
         live.log(report(res))
         live.update(status="SUCCESS" if res["success"] else "FAIL")
     except RuntimeError as e:                     # no safe way to do it in this scene, or it jammed

@@ -8,6 +8,7 @@ on its spine.
     uv run mjpython -m bila.control.cart_demo --scenario tight --view    # watch it (macOS needs mjpython)
     uv run python -m bila.control.cart_demo --scenario leaning --seed 3  # clear, tight, leaning or packed
     uv run python -m bila.control.cart_demo --scenario tight --segmenter ~/bila_data/segmenter/segmenter.pt   # learned book masks
+    uv run python -m bila.control.cart_demo --scenario tight --policy runs/hl/q.npz   # learned high-level steps (high_level.py)
 
 What the robot does, as a librarian would, with one camera, on its wrist:
   1. Read the call numbers in the tray: a wrist view down onto the whole
@@ -764,7 +765,8 @@ def setup(scenario, seed, log=print):
     return model, data, row, tray, numbers, shelf_map
 
 
-def run(model, data, row, tray, shelf_map, labels, eyes_for, viewer=None, log=print, seed=0, numbers=None):
+def run(model, data, row, tray, shelf_map, labels, eyes_for, viewer=None, log=print, seed=0, numbers=None,
+        policy=None):
     """Steps 1-5 with the wrist camera: read the tray (`labels`: OracleLabels
     or LearnedLabels), find the row, lift to it, and reshelve the book with
     eyes_for(its call number) as the episode's eyes. Returns the episode's
@@ -802,7 +804,11 @@ def run(model, data, row, tray, shelf_map, labels, eyes_for, viewer=None, log=pr
     # 4-5. Make room there and insert the book, picked out of the tray.
     eyes = eyes_for(n)
     try:
-        return CartEpisode(model, data, row, viewer, log, eyes).reshelve(GAP_MARGIN)
+        ep = CartEpisode(model, data, row, viewer, log, eyes)
+        if policy is None:                                   # insert_book's rules choose the steps
+            return ep.reshelve(GAP_MARGIN)
+        from bila.control import high_level                  # a learned high-level policy does (high_level.py)
+        return high_level.run(ep, high_level.QPolicy(os.path.expanduser(policy)))
     finally:
         eyes.close()
 
@@ -815,6 +821,7 @@ def main():
     ap.add_argument("--labels", choices=("oracle", "learned"), default="oracle",
                     help="read call numbers from the simulation (oracle) or the camera images (learned; label_reader.py)")
     ap.add_argument("--label-weights", default="~/bila_data/labels", help="folder with label_reader's finder.pt and reader.pt")
+    ap.add_argument("--policy", help="a fitted high-level policy (high_level.py fit's q.npz) instead of the rules")
     ap.add_argument("--segmenter", help="learned segmenter weights (segmenter.pt) for the book masks; "
                                         "default: the simulation's (notebooks/04_train_segmenter.ipynb trains one)")
     a = ap.parse_args()
@@ -838,7 +845,8 @@ def main():
         with viewer.lock():
             mujoco.mjv_defaultFreeCamera(model, viewer.cam)
     try:
-        print(report(run(model, data, row, tray, shelf_map, labels, eyes_for, viewer, seed=a.seed, numbers=numbers)))
+        print(report(run(model, data, row, tray, shelf_map, labels, eyes_for, viewer, seed=a.seed, numbers=numbers,
+                         policy=a.policy)))
     except RuntimeError as e:                        # no safe way to do it in this scene, or it jammed
         print(f"  FAIL: {e}")
     if viewer is not None:
