@@ -10,11 +10,11 @@ import mujoco
 import numpy as np
 import pytest
 
-from insert_book import GAP_MARGIN
-from observation import (BOOK_OFFSETS, GAP_CAP, ObservationBuilder, book_names_by_offset, robot_state)
-from perception import (FREE_SPACE_CAP, GroundTruthPerception, NoisyPerception, ShelfEstimate, book_from_spine,
+from bila.control.insert_book import GAP_MARGIN
+from bila.rl.observation import (BOOK_OFFSETS, GAP_CAP, ObservationBuilder, book_names_by_offset, robot_state)
+from bila.vision.perception import (FREE_SPACE_CAP, GroundTruthPerception, NoisyPerception, ShelfEstimate, book_from_spine,
                         free_space)
-from shelf_scene import ShelfConfig, make_episode
+from bila.sim.shelf_scene import ShelfConfig, make_episode
 
 PANDA = "mujoco_menagerie/franka_emika_panda/panda.xml"
 

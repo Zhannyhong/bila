@@ -8,9 +8,10 @@ import math
 import numpy as np
 import pytest
 
-from perception import (CAMERA_ERRORS, DEPTH_PRIOR, VIEW_REACH, GroundTruthPerception, NoisyPerception,
-                        book_from_spine, gap_profile, perturb_spine, slice_x)
-from shelf_scene import ShelfConfig, make_episode
+from bila.vision.perception import (CAMERA_ERRORS, DEPTH_PRIOR, SYSTEMATIC_PARAMS, VIEW_REACH, GroundTruthPerception,
+                        NoisyPerception, apply_shift, book_from_spine, fit_rigid, gap_profile, matrix_from_rotvec,
+                        perturb_spine, rigid_shift, rotvec_from_matrix, slice_x, slot_pivot)
+from bila.sim.shelf_scene import ShelfConfig, make_episode
 
 MM = 0.001
 
@@ -177,3 +178,120 @@ def test_noisy_perception_without_spread_keeps_only_the_camera_biases(leaning_sc
     for offset in (-1, +1):
         assert est.book(offset).thickness == pytest.approx(exact.book(offset).thickness + bias["thickness"][0])
         assert est.book(offset).height == pytest.approx(exact.book(offset).height + bias["height"][0])
+
+
+# ---------------------------------------------------------------------------
+# The systematic error: one rigid motion of the whole row per episode
+# ---------------------------------------------------------------------------
+NO_BOOK_ERRORS = {band: {k: (0.0, 0.0) for k in by_param} for band, by_param in CAMERA_ERRORS.items()}
+SHIFTS = {"x": (0.0, 0.003), "y": (0.0, 0.003), "z": (0.0, 0.003),
+          "rx": (0.0, 0.01), "ry": (0.0, 0.01), "rz": (0.0, 0.01)}
+
+
+def test_rotvec_round_trip():
+    w = np.array([0.01, -0.02, 0.005])
+    R = matrix_from_rotvec(w)
+    np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-12)
+    np.testing.assert_allclose(rotvec_from_matrix(R), w, atol=1e-12)
+    np.testing.assert_allclose(rotvec_from_matrix(np.eye(3)), 0.0)
+
+
+def test_fit_rigid_recovers_a_known_motion():
+    rng = np.random.default_rng(0)
+    pts = rng.uniform(-0.3, 0.3, (40, 3))
+    pivot = np.array([0.1, 0.15, 0.8])
+    R, t = matrix_from_rotvec([0.004, -0.01, 0.007]), np.array([0.002, -0.001, 0.003])
+    R_fit, t_fit = fit_rigid(pts, apply_shift(pts, R, t, pivot), pivot)
+    np.testing.assert_allclose(R_fit, R, atol=1e-10)
+    np.testing.assert_allclose(t_fit, t, atol=1e-10)
+
+
+def test_noisy_perception_shifts_the_whole_row_once_per_episode(leaning_scene):
+    """With no error of each book's own, every corner is the true one moved by
+    the one rigid motion drawn for the episode, the same in every estimate."""
+    model, data, row = leaning_scene
+    gt = GroundTruthPerception(model, row)
+    exact = gt.estimate(data)
+    noisy = NoisyPerception(gt, np.random.default_rng(3), errors=NO_BOOK_ERRORS, reach=10.0, systematic=SHIFTS)
+    first, again = noisy.estimate(data), noisy.estimate(data)
+    for a, b in zip(first.books, again.books):
+        np.testing.assert_array_equal(a.spine_corners, b.spine_corners)
+    R, t = rigid_shift(noisy.shift)
+    src = np.concatenate([b.spine_corners for b in exact.books])
+    dst = np.concatenate([b.spine_corners for b in first.books])
+    np.testing.assert_allclose(dst, apply_shift(src, R, t, slot_pivot(exact)), atol=1e-12)
+    R_fit, t_fit = fit_rigid(src, dst, slot_pivot(exact))
+    np.testing.assert_allclose(t_fit, t, atol=1e-9)
+    assert np.abs(t).max() > 0.5 * MM                                       # it did move them
+    other = NoisyPerception(gt, np.random.default_rng(4), errors=NO_BOOK_ERRORS, systematic=SHIFTS)
+    assert other.shift != noisy.shift                                        # a new episode, a new camera
+
+
+def test_noisy_perception_draws_the_books_noise_the_same_with_or_without_the_shift(leaning_scene):
+    """The shift comes from its own random stream: taking it out leaves each
+    book's error, for a seed, as it was."""
+    model, data, row = leaning_scene
+    gt = GroundTruthPerception(model, row)
+    with_shift = NoisyPerception(gt, np.random.default_rng(5), systematic=SHIFTS)
+    a = with_shift.estimate(data)
+    b = NoisyPerception(gt, np.random.default_rng(5), systematic=None).estimate(data)
+    R, t = rigid_shift(with_shift.shift)
+    for x, y in zip(a.books, b.books):
+        np.testing.assert_allclose(x.spine_corners, apply_shift(y.spine_corners, R, t, with_shift.pivot), atol=1e-12)
+
+
+def test_calibration_takes_the_shift_back_out(leaning_scene):
+    """eval_perception fits each scene's rigid motion and takes it out: on an
+    estimate that is the truth shifted, what is left is the truth."""
+    from bila.vision.eval_perception import SceneRecord, systematic_params, systematic_stats, without_systematic
+    model, data, row = leaning_scene
+    gt = GroundTruthPerception(model, row)
+    truth = gt.estimate(data)
+    noisy = NoisyPerception(gt, np.random.default_rng(6), errors=NO_BOOK_ERRORS, reach=10.0, systematic=SHIFTS)
+    shifted = noisy.estimate(data)
+    index = {b.slot_offset: i for i, b in enumerate(truth.books)}
+    rec = SceneRecord("leaning", 0, 0.5, (0.03, 0.25), truth, {"realistic": shifted},
+                      {"realistic": [index[b.slot_offset] for b in shifted.books]})
+    stats, n = systematic_stats([rec])
+    assert n == 1
+    for p in SYSTEMATIC_PARAMS:
+        assert stats[p][0] == pytest.approx(noisy.shift[p], abs=1e-9)
+    assert systematic_params(*rigid_shift(noisy.shift)) == pytest.approx(noisy.shift)
+    back = without_systematic([rec])[0].camera["realistic"]
+    for b in back.books:
+        np.testing.assert_allclose(b.spine_corners, truth.books[index[b.slot_offset]].spine_corners, atol=1e-9)
+
+
+def test_learned_calibration_is_opt_in(leaning_scene):
+    """NoisyPerception's defaults stay the camera's (gap_env trains on them);
+    NoisyPerception.learned uses the learned pipeline's calibration."""
+    from bila.vision.perception import CAMERA_SYSTEMATIC, LEARNED_CALIBRATION, LEARNED_CAMERA_ERRORS
+    model, data, row = leaning_scene
+    gt = GroundTruthPerception(model, row)
+    default = NoisyPerception(gt, np.random.default_rng(7))
+    assert default.errors is CAMERA_ERRORS and default.reach == VIEW_REACH
+    learned = NoisyPerception.learned(gt, np.random.default_rng(7))
+    assert learned.errors is LEARNED_CAMERA_ERRORS
+    same = NoisyPerception(gt, np.random.default_rng(7), **LEARNED_CALIBRATION)
+    assert learned.shift == same.shift
+    for a, b in zip(learned.estimate(data).books, same.estimate(data).books):
+        np.testing.assert_array_equal(a.spine_corners, b.spine_corners)
+    assert set(CAMERA_SYSTEMATIC) == set(LEARNED_CALIBRATION["systematic"])
+
+
+def test_failures_counts_missed_and_misnamed_books(leaning_scene):
+    """eval_perception.failures: of the true books within reach, the share the
+    camera missed and the share it named a place off."""
+    from dataclasses import replace
+    from bila.vision.eval_perception import SceneRecord, failures
+    model, data, row = leaning_scene
+    truth = GroundTruthPerception(model, row).estimate(data)
+    near = [i for i, t in enumerate(truth.books) if abs(t.slot_offset) == 1]
+    gone, renamed = near[0], near[1]
+    books = [replace(t, slot_offset=t.slot_offset + 1) if i == renamed else t
+             for i, t in enumerate(truth.books) if i != gone]
+    index = [i for i in range(len(truth.books)) if i != gone]
+    rec = SceneRecord("leaning", 0, 0.5, (0.03, 0.25), truth, {"learned": replace(truth, books=books)},
+                      {"learned": index})
+    n, missed, misnamed = failures([rec], "learned", reach=10.0)[(1, 1)]
+    assert n == len(near) and missed == pytest.approx(1 / n) and misnamed == pytest.approx(1 / n)

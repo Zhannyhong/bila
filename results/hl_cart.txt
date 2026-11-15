@@ -1,0 +1,24 @@
+clear 0 rules |   SUCCESS [insert]: tilt 0.0 deg, spine +9.2 mm from the neighbour's, released
+clear 0 policy |   SUCCESS [insert]: tilt 0.0 deg, spine +9.2 mm from the neighbour's, released
+clear 1 rules |   SUCCESS [insert]: tilt 0.0 deg, spine +0.8 mm from the neighbour's, released
+clear 1 policy |   SUCCESS [insert]: tilt 0.0 deg, spine +0.8 mm from the neighbour's, released
+clear 2 rules |   SUCCESS [insert]: tilt 0.0 deg, spine -3.4 mm from the neighbour's, released
+clear 2 policy |   SUCCESS [insert]: tilt 0.0 deg, spine -3.4 mm from the neighbour's, released
+tight 0 rules |   SUCCESS [widen, widen, widen, insert]: tilt 0.0 deg, spine +7.3 mm from the neighbour's, released
+tight 0 policy |   SUCCESS [widen_more, insert]: tilt 0.0 deg, spine +7.7 mm from the neighbour's, released
+tight 1 rules |   SUCCESS [widen, insert]: tilt 0.0 deg, spine +1.1 mm from the neighbour's, released
+tight 1 policy |   SUCCESS [widen_more, insert]: tilt 0.0 deg, spine +3.0 mm from the neighbour's, released
+tight 2 rules |   SUCCESS [widen, widen, insert]: tilt 0.0 deg, spine +1.2 mm from the neighbour's, released
+tight 2 policy |   SUCCESS [widen_more, insert]: tilt 0.0 deg, spine -1.6 mm from the neighbour's, released
+leaning 0 rules |   SUCCESS [stand_up, insert]: tilt 0.0 deg, spine +4.7 mm from the neighbour's, released
+leaning 0 policy |   SUCCESS [stand_up_left, insert]: tilt 0.0 deg, spine +4.7 mm from the neighbour's, released
+leaning 1 rules |   SUCCESS [stand_up, insert]: tilt 0.0 deg, spine +5.3 mm from the neighbour's, released
+leaning 1 policy |   SUCCESS [widen_more, widen_more, insert]: tilt 0.0 deg, spine +5.8 mm from the neighbour's, released
+leaning 2 rules |   SUCCESS [stand_up, insert]: tilt 0.0 deg, spine -3.3 mm from the neighbour's, released
+leaning 2 policy |   SUCCESS [stand_up_right, widen_more, insert]: tilt 0.0 deg, spine -3.3 mm from the neighbour's, released
+packed 0 rules |   FAIL: No collision-free joint move to the next arm configuration
+packed 0 policy |   FAIL: No collision-free joint move to the next arm configuration
+packed 1 rules |   FAIL: No collision-free joint move to the next arm configuration
+packed 1 policy |   FAIL: No collision-free joint move to the next arm configuration
+packed 2 rules |   SUCCESS [shove, insert]: tilt 0.0 deg, spine -0.9 mm from the neighbour's, released
+packed 2 policy |   SUCCESS [shove, widen_more, widen_more, insert]: tilt 0.0 deg, spine -3.0 mm from the neighbour's, released

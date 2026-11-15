@@ -9,9 +9,9 @@ import mujoco
 import numpy as np
 import pytest
 
-from camera import DepthNoise, WristCamera, intrinsics, pixels, points, project, robot_mask
-from inspection import look_from, solve_inspection
-from shelf_scene import ShelfConfig, make_episode
+from bila.vision.camera import DepthNoise, WristCamera, intrinsics, pixels, points, project, robot_mask
+from bila.control.inspection import look_from, solve_inspection
+from bila.sim.shelf_scene import ShelfConfig, make_episode
 
 PANDA = "mujoco_menagerie/franka_emika_panda/panda.xml"
 
@@ -151,7 +151,7 @@ def test_fattening_and_the_stereo_shadow():
 
 
 def test_calibration_error_moves_the_reported_pose_not_the_image(shot):
-    from camera import CalibrationError
+    from bila.vision.camera import CalibrationError
     model, data, _, frame = shot
     cam = WristCamera(model, calibration=CalibrationError(), rng=np.random.default_rng(3))
     with cam:
@@ -166,7 +166,7 @@ def test_calibration_error_moves_the_reported_pose_not_the_image(shot):
 def test_each_error_has_its_own_stream(shot):
     """A seed gives the same calibration error and depth offset whichever other
     errors are on, and the same per-image noise as the basic camera."""
-    from camera import CalibrationError
+    from bila.vision.camera import CalibrationError
     model, data, _, _ = shot
     make = lambda noise, calibration: WristCamera(model, noise=noise, rng=np.random.default_rng(7),
                                                   calibration=calibration)
@@ -181,8 +181,8 @@ def test_each_error_has_its_own_stream(shot):
 def test_plot_frame_saves_a_picture(shot, tmp_path):
     import matplotlib
     matplotlib.use("Agg")
-    from perception import GroundTruthPerception
-    from visualize import plot_frame
+    from bila.vision.perception import GroundTruthPerception
+    from bila.viz.visualize import plot_frame
     model, data, row, frame = shot
     path = tmp_path / "camera.png"
     plot_frame(frame, GroundTruthPerception(model, row).estimate(data), model, str(path))

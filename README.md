@@ -1,6 +1,6 @@
 # Library robot: making room on the shelf
 
-`shelf_scene.py` builds the bookshelf scene for the gap-creation project in MuJoCo.
+`bila/sim/shelf_scene.py` builds the bookshelf scene for the gap-creation project in MuJoCo.
 It starts from the shelf in ContactExplorer's singulation task
 (`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full,
 randomized bookcase standing on the floor. It also adds a Franka Panda with thin
@@ -12,23 +12,27 @@ book into page sections hinged on the spine (see [Book pages](#book-pages-option
 
 | File | What it does |
 | --- | --- |
-| `shelf_scene.py` | Builds a randomized bookcase and target row for one of five scenarios, adds the Panda, settles the row with physics; can split every book into page sections hinged on the spine |
-| `dae_to_obj.py` | Converts the PBBM repo's Collada book covers (and, for the shaped books, their page sections) to the OBJ/PNG assets `shelf_scene.py` draws (run once, optional) |
-| `view_scene.py` | Opens a settled scenario in the MuJoCo viewer |
-| `cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, a row camera on the lift carriage, call-number labels on every spine. Reads the tray, looks the book's row up in the shelf map, scans the row for its slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython cart_demo.py --scenario tight --view`) |
-| `insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
-| `perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
+| `bila/sim/shelf_scene.py` | Builds a randomized bookcase and target row for one of five scenarios, adds the Panda, settles the row with physics; can split every book into page sections hinged on the spine |
+| `bila/sim/dae_to_obj.py` | Converts the PBBM repo's Collada book covers (and, for the shaped books, their page sections) to the OBJ/PNG assets `bila/sim/shelf_scene.py` draws (run once, optional) |
+| `bila/viz/view_scene.py` | Opens a settled scenario in the MuJoCo viewer |
+| `bila/control/cart_demo.py` | Book-return cart: the Panda on a lift, a tray of real books standing spine-up, call-number labels on every spine; its only camera is the wrist camera. Reads the tray from above, looks the book's row up in the shelf map, lifts to it, reads the row's stickers on its first look to find the slot, makes the gap (`insert_book`'s skills), picks the book from the tray and inserts it (`uv run mjpython -m bila.control.cart_demo --scenario tight --view`) |
+| `bila/control/insert_book.py` | Scripted baseline for the **clear**, **tight**, **leaning** and **packed** rows: makes room (widens a tight gap, stands a leaning neighbour up, shoves a packed row aside), then slides the book in |
+| `bila/vision/perception.py` | What a wrist camera could report about the target row (`ShelfEstimate`), from ground truth or with noise |
+| `bila/vision/make_vision_dataset.py` | Training images for the learned perception: RGB-D, a mask per book, and every sticker's corners and text |
+| `bila/vision/learned_segmenter.py` | Book masks from the colour image (Mask R-CNN), in place of the simulation's object ids |
+| `bila/vision/label_reader.py` | Finds and reads call-number stickers in an image and matches them to the catalogue (`bila/control/cart_demo.py --labels learned`) |
+| `bila/control/eval_reshelve.py` | The controller alone on many rows with a chosen perception (truth, camera, learned masks, noise models), in parallel, and those side by side |
 | `notebooks/` | Beginner's guide to the simulator and the RL/POMDP setup with PBBM's book labels (`01_...`), and a breakdown of how the PBBM robot shelved books (`02_...`) |
 | `mujoco_menagerie/` | Git submodule with the Panda model |
 | `scenes/` | Generated scenes (git-ignored) |
-| `generated_assets/books/` | Converted book covers and textures (git-ignored, written by `dae_to_obj.py`) |
+| `generated_assets/books/` | Converted book covers and textures (git-ignored, written by `bila/sim/dae_to_obj.py`) |
 
 | Scenario | Target row | Scripted baseline |
 | --- | --- | --- |
-| clear | Slot already wide enough | `insert_book.py --scenario clear` |
-| tight | Slot narrower than the book | `insert_book.py --scenario tight` |
-| leaning | A neighbour leans into the slot | `insert_book.py --scenario leaning` |
-| packed | No gap: the slot's neighbours touch | `insert_book.py --scenario packed` |
+| clear | Slot already wide enough | `bila/control/insert_book.py --scenario clear` |
+| tight | Slot narrower than the book | `bila/control/insert_book.py --scenario tight` |
+| leaning | A neighbour leans into the slot | `bila/control/insert_book.py --scenario leaning` |
+| packed | No gap: the slot's neighbours touch | `bila/control/insert_book.py --scenario packed` |
 | collapsed | A run of 3 to 6 books has toppled over | none yet |
 
 ## Quick start
@@ -39,13 +43,13 @@ git submodule update --init                     # fetches mujoco_menagerie
 uv sync                                         # installs mujoco and numpy from pyproject.toml
 
 # Generate and look at scenes
-uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
-uv run python view_scene.py --scenario leaning --seed 0          # add --no-robot for the bookcase only
+uv run python -m bila.sim.shelf_scene --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
+uv run python -m bila.viz.view_scene --scenario leaning --seed 0          # add --no-robot for the bookcase only
 
 # Run the scripted baselines
-uv run python insert_book.py --scenario clear --seed 0
-uv run python insert_book.py --scenario tight --seed 0 --trials 50
-uv run python insert_book.py --scenario leaning --seed 0
+uv run python -m bila.control.insert_book --scenario clear --seed 0
+uv run python -m bila.control.insert_book --scenario tight --seed 0 --trials 50
+uv run python -m bila.control.insert_book --scenario leaning --seed 0
 ```
 
 Optional, once, to draw the real book covers and their page sections (see
@@ -55,11 +59,11 @@ Optional, once, to draw the real book covers and their page sections (see
 git clone --depth 1 --filter=blob:none --sparse \
     https://github.com/TAMS-Group/PBBM-robot-librarian /tmp/pbbm
 git -C /tmp/pbbm sparse-checkout set librarian_common/tams_books_world
-uv run python dae_to_obj.py --src /tmp/pbbm/librarian_common/tams_books_world/meshes
+uv run python -m bila.sim.dae_to_obj --src /tmp/pbbm/librarian_common/tams_books_world/meshes
 ```
 
 On macOS, anything with `--view` must run under `mjpython` instead of `python`
-(for example `uv run mjpython insert_book.py --scenario leaning --seed 0 --view`), because the passive viewer needs it.
+(for example `uv run mjpython -m bila.control.insert_book --scenario leaning --seed 0 --view`), because the passive viewer needs it.
 With a uv-installed Python, `mjpython` can fail with `Library not loaded: @rpath/libpython3.12.dylib`. Link the
 library into the venv once (again after recreating `.venv`):
 
@@ -71,7 +75,7 @@ ln -sf "$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("LI
 
 ### The bookcase
 
-`shelf_scene.py` starts from the shelf in ContactExplorer's singulation task
+`bila/sim/shelf_scene.py` starts from the shelf in ContactExplorer's singulation task
 (`src/tasks/allegro_singulation.py`, Isaac Gym Preview 4) and turns it into a full, randomized bookcase
 standing on the floor, with a Franka Panda that has a wrist camera and a force/torque sensor.
 
@@ -121,48 +125,48 @@ physics, not a hand-set angle that might overlap other books.
 ### Generating and viewing scenes
 
 ```bash
-uv run python shelf_scene.py --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
-uv run python shelf_scene.py --scenario leaning --seed 3 --out scenes      # one scenario only
+uv run python -m bila.sim.shelf_scene --seed 0 --panda mujoco_menagerie/franka_emika_panda/panda.xml --out scenes
+uv run python -m bila.sim.shelf_scene --scenario leaning --seed 3 --out scenes      # one scenario only
 ```
 
 This writes one `.xml` (the MuJoCo scene) and one `.json` (levels, book sizes, target slot, gap edges) per
 scenario, then settles each scene and prints whether it is stable. `scenes/` is git-ignored: the XML holds absolute paths.
 
 ```bash
-uv run python view_scene.py --scenario leaning --seed 0       # add --no-robot for the bookcase only
+uv run python -m bila.viz.view_scene --scenario leaning --seed 0       # add --no-robot for the bookcase only
 ```
 
-`view_scene.py` settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
+`bila/viz/view_scene.py` settles the row first, so leaning and collapsed books show slanted, then opens the viewer.
 (Opening an XML directly with `python -m mujoco.viewer --mjcf ...` shows the start state, with every book upright.)
 Either way the camera starts on the gap, from the front and to one side, so the robot isn't in the way.
 The scene sets this as MuJoCo's default free camera (`<statistic>` and `<visual><global>`), so you can still
 orbit, and the viewer's Align button brings you back to it. MuJoCo's viewer only applies it by itself when it
-opens a file, so `view_scene.py` and `insert_book.py --view` apply it themselves. In the viewer,
+opens a file, so `bila/viz/view_scene.py` and `bila/control/insert_book.py --view` apply it themselves. In the viewer,
 Rendering > Camera > `scene_cam` shows the whole target row.
 
 ### Book covers (optional)
 
-By default every book is a plain box. `dae_to_obj.py` brings over the real covers from the
+By default every book is a plain box. `bila/sim/dae_to_obj.py` brings over the real covers from the
 [PBBM robot librarian](https://github.com/TAMS-Group/PBBM-robot-librarian) repo
 (`librarian_common/tams_books_world`), which models each book as a unit cube whose six faces carry
 a texture: front and back cover, top and bottom edges, spine and fore edge.
 
 ```bash
-uv run python dae_to_obj.py --src /tmp/pbbm/librarian_common/tams_books_world/meshes
-uv run python shelf_scene.py --scenario leaning --seed 3 --book-meshes --out scenes
-uv run python insert_book.py --scenario clear --seed 0 --book-meshes
-uv run mjpython insert_book.py --scenario tight --seed 0 --view --book-meshes   # watch it
+uv run python -m bila.sim.dae_to_obj --src /tmp/pbbm/librarian_common/tams_books_world/meshes
+uv run python -m bila.sim.shelf_scene --scenario leaning --seed 3 --book-meshes --out scenes
+uv run python -m bila.control.insert_book --scenario clear --seed 0 --book-meshes
+uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --view --book-meshes   # watch it
 ```
 
 It writes `generated_assets/books/` (git-ignored: 512 px PNGs plus six one-face OBJs per book, and the
 same again for each page section of the shaped books; see [Book pages](#book-pages-optional)).
 MuJoCo cannot load Collada, so each cube is converted to OBJ; the six faces are split because MuJoCo
 allows one material per mesh. Turn the covers on with `ShelfConfig(book_meshes=True)`, or `--book-meshes`
-on `shelf_scene.py` and `insert_book.py` (the other entry points build with covers off).
+on `bila/sim/shelf_scene.py` and `bila/control/insert_book.py` (the other entry points build with covers off).
 
 - **Physics is untouched.** The covers are extra `mass="0"`, non-colliding geoms (`contype=0`,
   `conaffinity=0`) sitting on the book's box, which keeps all of the controller's logic
-  (`insert_book.py` reconstructs the book's corners from `geom_size`, the box half-extents). Models
+  (`bila/control/insert_book.py` reconstructs the book's corners from `geom_size`, the box half-extents). Models
   built with and without covers have identical masses, inertias, `nq` and keyframe `qpos`.
 - **No z-fighting.** When a book has covers its box moves to render group 3, which the default
   `geomgroup` does not draw; the covers are drawn instead, in group 2.
@@ -176,13 +180,13 @@ on `shelf_scene.py` and `insert_book.py` (the other entry points build with cove
 The repo also models some books (the Voynich facsimile, the Caterpillar, the Lagemann book) as a stack of
 page sections hinged on the spine, so their fore edges can fan open (`urdf/book_part.xacro`, loaded by
 `urdf/articulated_*.xacro`). `ShelfConfig(book_pages=N)` ports that design: every book's pages are cut into
-`N` sections that hinge on the spine, and `dae_to_obj.py` converts each section's own mesh alongside the
+`N` sections that hinge on the spine, and `bila/sim/dae_to_obj.py` converts each section's own mesh alongside the
 book's covers.
 
 ```bash
-uv run python shelf_scene.py --scenario leaning --seed 3 --book-pages 4 --out scenes
-uv run python insert_book.py --scenario tight --seed 0 --book-pages 4
-uv run mjpython insert_book.py --scenario tight --seed 0 --view --book-pages 4   # watch them fan
+uv run python -m bila.sim.shelf_scene --scenario leaning --seed 3 --book-pages 4 --out scenes
+uv run python -m bila.control.insert_book --scenario tight --seed 0 --book-pages 4
+uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --view --book-pages 4   # watch them fan
 ```
 
 - **How it is built.** The back section is welded to the book; the `N - 1` in front of it each hang on a
@@ -190,7 +194,7 @@ uv run mjpython insert_book.py --scenario tight --seed 0 --view --book-pages 4  
   in the repo. Each section carries its share of the book's mass, so the row still weighs what it did.
 - **The box stays.** As with the covers, `<book>_geom` remains the flat box with the same name and
   `geom_size`, but non-colliding: the page sections carry all of the collision and the mass. So
-  `insert_book.py` and `perception.py`, which reconstruct a book from its box, are
+  `bila/control/insert_book.py` and `bila/vision/perception.py`, which reconstruct a book from its box, are
   unaffected — the code that reads contacts only has to count a page section as part of its book
   (`shelf_scene.book_children` does that).
 - **Closed to start.** The keyframe starts every hinge at 0, so an articulated book stands as the box it
@@ -216,7 +220,7 @@ reset is too slow.
 
 `qpos` layout: 9 robot values (7 arm + 2 fingers), then 7 per target-row book (position + quaternion),
 then 7 per filler book only if `static_other_levels=False`. With `book_pages=N`, each articulated book
-adds `N - 1` hinge angles right after its own 7 values (`insert_book.py` keys the parked target book the
+adds `N - 1` hinge angles right after its own 7 values (`bila/control/insert_book.py` keys the parked target book the
 same way).
 
 To change the scene before compiling (as `insert_book.build_model` does to add the held book and gravity
@@ -236,20 +240,21 @@ compensation), build the XML with `sample_row` + `build_scene`, edit it (`xml.et
 | Two fixed cameras, 640×480, 58° | `scene_cam` (fixed, off to the side, aimed at the target row) + `wrist_cam` on the Panda hand | Robot blocked the front view; wrist camera sees the gap up close |
 | xArm6 + Allegro hand | Franka Panda from MuJoCo Menagerie, with thin 10 mm fingers, + F/T sensor at the flange | Your chosen robot; Menagerie's 21 mm fingers don't fit the narrower tight gaps |
 
-`python shelf_scene.py --repo-defaults` rebuilds the original single cubby (board top at 0.51 m) and box size, for comparison.
+`python -m bila.sim.shelf_scene --repo-defaults` rebuilds the original single cubby (board top at 0.51 m) and box size, for comparison.
 
 ## Scripted baselines
 
-### Clear and tight rows: `insert_book.py`
+### Clear and tight rows: `bila/control/insert_book.py`
 
 ```bash
-uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
-uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
-uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (macOS)
+uv run python -m bila.control.insert_book --scenario clear --seed 0                # one episode: prints each step and the score
+uv run python -m bila.control.insert_book --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
+uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --view       # watch it (macOS)
 ```
 
-Options: `--margin` (room left around the book in a tight gap, default 6 mm), `--perception truth|camera` and
-`--camera-noise realistic|basic` (see [Perception](#perception-perceptionpy)), `--catalogue` (rows of the
+Options: `--margin` (room left around the book in a tight gap, default 6 mm), `--perception
+truth|camera|noisy|noisy-learned`, `--camera-noise realistic|basic` and `--segmenter WEIGHTS` (see
+[Perception](#perception-perceptionpy)), `--catalogue` (rows of the
 PBBM repo's real books), `--panda` (path to Menagerie's `panda.xml`), `--book-meshes`
 (draw the converted book covers; see [Book covers](#book-covers-optional)), `--book-pages N` (split every
 book into `N` page sections hinged on the spine; see [Book pages](#book-pages-optional)).
@@ -286,14 +291,14 @@ In place means:
 
 6. **Scripted insertion (clear, tight, leaning and packed scenarios)**
    ```bash
-   uv run python insert_book.py --scenario clear --seed 0                # one episode: prints each step and the score
-   uv run python insert_book.py --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
-   uv run mjpython insert_book.py --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
-   uv run mjpython insert_book.py --scenario leaning --seed 12 --view    # a leaner it has to clamp
-   uv run mjpython insert_book.py --scenario packed --seed 7 --view      # a packed row it manages
-   uv run python insert_book.py --scenario tight --seed 0 --perception camera   # decide from the wrist camera
-   uv run python insert_book.py --scenario tight --seed 0 --perception camera --camera-noise basic   # cleaner camera
-   uv run mjpython insert_book.py --scenario tight --seed 1 --perception camera --view   # watch it, and what it saw
+   uv run python -m bila.control.insert_book --scenario clear --seed 0                # one episode: prints each step and the score
+   uv run python -m bila.control.insert_book --scenario tight --seed 0 --trials 50    # success rate over seeds 0 to 49
+   uv run mjpython -m bila.control.insert_book --scenario tight --seed 0 --view       # watch it (the macOS viewer needs mjpython)
+   uv run mjpython -m bila.control.insert_book --scenario leaning --seed 12 --view    # a leaner it has to clamp
+   uv run mjpython -m bila.control.insert_book --scenario packed --seed 7 --view      # a packed row it manages
+   uv run python -m bila.control.insert_book --scenario tight --seed 0 --perception camera   # decide from the wrist camera
+   uv run python -m bila.control.insert_book --scenario tight --seed 0 --perception camera --camera-noise basic   # cleaner camera
+   uv run mjpython -m bila.control.insert_book --scenario tight --seed 1 --perception camera --view   # watch it, and what it saw
    ```
    One controller for every scenario (`Episode.reshelve`): it looks at the slot, takes the high-level step the
    slot needs next, and looks again. The scenario only picks the row.
@@ -423,10 +428,10 @@ In place means:
      squeezes a book with 1 to 2 N). It only changes its own copy of the model.
    - The fingers pinch the book 11.5 cm above its bottom. Higher up, board friction tips the book over the pads
      while it slides.
-   - The fingers are thin bars in place of Menagerie's (`shelf_scene.py`, `make_panda_with_sensors`): 10 mm wide
+   - The fingers are thin bars in place of Menagerie's (`bila/sim/shelf_scene.py`, `make_panda_with_sensors`): 10 mm wide
      across their travel, 12 mm thick and 12 cm long (Menagerie's are 5.4 cm), with a pad strip along all of
      each finger from the palm to the tip. The long fingers let the hand grasp a book from above past taller
-     neighbours (see `cart_demo.py`). The real Franka Hand takes custom fingers, so these could be machined.
+     neighbours (see `bila/control/cart_demo.py`). The real Franka Hand takes custom fingers, so these could be machined.
    - The pads hold the book's first 44 mm behind its spine, so its spine sits 68 mm off the palm
      (`PALM_GAP`): the fingers can't follow the book in between its neighbours, so their tips must not reach
      much further past its spine than that, or the slide stops with the book still off the board. With
@@ -657,7 +662,7 @@ In place means:
 
    **Perception** (`--perception truth` or `camera`): where the script's knowledge of the row comes from.
    - `truth` (default): the simulation, read whenever it is needed. All results above are with it.
-   - `camera`: the wrist camera's RGB-D images (`rgbd_perception.py`). `--camera-noise realistic` (the default)
+   - `camera`: the wrist camera's RGB-D images (`bila/vision/rgbd_perception.py`). `--camera-noise realistic` (the default)
      gives the camera a D405's stereo errors and a calibration error drawn per episode (see the camera section
      below); `--camera-noise basic` only independent depth noise per pixel. Before
      touching the row the arm sweeps along it, looking from 30 cm left of the slot, in front of it and 30 cm right
@@ -665,6 +670,16 @@ In place means:
      shelf after changing the row: after each widening, lift and clamp, each book pushed back, each pinch of the
      shove and each pull of the walk-out, after letting go of the book and after each push of it. The arm really
      moves there and back, in joint space, and comes in from just in front of the next step in a straight line.
+     `--segmenter WEIGHTS` takes the book masks from the learned segmenter (`learned_segmenter.py`, the `rl`
+     group) instead of the simulation's object ids, with the robust spine fit learned masks need.
+   - `noisy` and `noisy-learned`: no rendering; each look gives the ground truth with the camera's measured errors
+     (`perception.NoisyEyes`, what `gap_env.py` trains the residual on), those of the camera with the
+     simulation's masks or of the learned masks' pipeline (`NoisyPerception.learned`). The arm still moves to
+     the views.
+   - `eval_reshelve.py` runs the controller alone on many rows with any of these, in parallel (resumable, and
+     in shards for a cluster), and `eval_reshelve.py compare` puts the sources side by side: placed per
+     scenario, how the rest ended, and row by row against the first. It is the check that a noise model fails
+     the controller as often, and in the same ways, as the pipeline it stands in for.
    - On a look again, a book past the slot's neighbours that hasn't moved (within 3 mm and 1.5°) keeps what the
      sweep saw of it, and one that has keeps the size it saw: from the middle view, books further out come out
      too thick, and summed along the row that took 20 to 30 mm off the free space.
@@ -677,7 +692,7 @@ In place means:
      once let go of, the inserted book is in the way of its joint moves too. Known without looking: the shelf map
      (bookcase, side panels, where the slot is and how many books stand left of it), and the book being inserted
      (its size, and how it is held). The other books' depth is a prior.
-   - With `--view`, after each look the viewer draws what the camera saw over the real books, as `view_scene.py
+   - With `--view`, after each look the viewer draws what the camera saw over the real books, as `bila/viz/view_scene.py
      --show-estimate` does: see-through boxes (the slot's neighbours orange), spine corners as dots, and the gap's
      width at each height (green where the book fits). It stays until the next look, so while the arm works you
      see what it is acting on. Books the camera didn't see aren't drawn.
@@ -760,14 +775,14 @@ In place means:
 
 7. **Next pieces to build on top** (from the design doc)
    - Swap the Panda's position actuators for torque (`motor`) actuators and write the impedance controller.
-   - Spawn the target book in the gripper for other code too (`insert_book.py` does it for its own runs;
+   - Spawn the target book in the gripper for other code too (`bila/control/insert_book.py` does it for its own runs;
      `build_scene` still leaves `row.target_book` out).
-   - Add the gap-creation moves and insertion on top of that controller (`insert_book.py` scripts them with
+   - Add the gap-creation moves and insertion on top of that controller (`bila/control/insert_book.py` scripts them with
      position control, as a baseline).
    - Replace the black fiducial plate with an AprilTag texture, and add spine textures for perception.
    - For GPU training, load the same XML in MJX or MuJoCo Warp and check it still settles the same way.
 
-## Perception (`perception.py`)
+## Perception (`bila/vision/perception.py`)
 
 What the robot knows about the target row, limited to what a wrist RGB-D camera could report. Code that decides
 what to do (the RL policy, and ideally the scripted sequences) should read a `ShelfEstimate` rather than `data`,
@@ -789,17 +804,17 @@ est.min_gap_width(0.25)                                      # narrowest free wi
   Mass, friction, contact forces and velocities are left out; they are for the reward and critic only.
 - `NoisyPerception` makes the ground truth look like the wrist camera's estimate, without rendering (use it to
   train): each book's position, size, lean and swivel get the camera's measured error for its distance from the
-  slot (`CAMERA_ERRORS`, from `eval_perception.py`), and books beyond the camera's view along the row
+  slot (`CAMERA_ERRORS`, from `bila/vision/eval_perception.py`), and books beyond the camera's view along the row
   (`VIEW_REACH`, 53 cm from the slot) are left out. `scale=1.5` trains on worse estimates than the camera's.
 - Note: `row.gap_right - row.gap_left` is up to 3 mm short of the actual face-to-face gap, because `gap_left`
-  is set after the left neighbour's spacing. Measure the gap from the books, as `perception.py` does.
+  is set after the left neighbour's spacing. Measure the gap from the books, as `bila/vision/perception.py` does.
 
-**Seeing what the robot knows** (`visualize.py`): both pictures read only a `ShelfEstimate`, so they work the
+**Seeing what the robot knows** (`bila/viz/visualize.py`): both pictures read only a `ShelfEstimate`, so they work the
 same for every perception source.
 
 ```bash
-uv run python visualize.py --scenario leaning --seed 0 --noisy                  # front + top view -> scenes/*.png
-uv run mjpython view_scene.py --scenario leaning --seed 0 --show-estimate       # the estimate over the 3D scene
+uv run python -m bila.viz.visualize --scenario leaning --seed 0 --noisy                  # front + top view -> scenes/*.png
+uv run mjpython -m bila.viz.view_scene --scenario leaning --seed 0 --show-estimate       # the estimate over the 3D scene
 ```
 
 - Front view: spines (the slot's neighbours orange, labelled by place relative to the slot and lean), and the
@@ -809,7 +824,7 @@ uv run mjpython view_scene.py --scenario leaning --seed 0 --show-estimate       
 - In the viewer: see-through boxes, spine corners as dots, and the gap bars, over the real books.
   `draw_in_viewer` also works on `mujoco.Renderer`'s scene, for off-screen pictures.
 
-**Where the robot looks from** (`inspection.py`): before touching the row, the wrist camera looks straight in
+**Where the robot looks from** (`bila/control/inspection.py`): before touching the row, the wrist camera looks straight in
 from 15 cm above the target board, as far back as the arm allows: about 50 cm from the spines, else 45 or 40 cm.
 
 ```python
@@ -838,7 +853,7 @@ solve_inspection(model, data, row, dx=0.2)         # a look 20 cm further along 
   the image is taken, not from the target.
 - Rendering off-screen in WSL: `MUJOCO_GL=egl`.
 
-**The wrist camera** (`camera.py`): RGB-D images in the conventions a real camera pipeline (OpenCV,
+**The wrist camera** (`bila/vision/camera.py`): RGB-D images in the conventions a real camera pipeline (OpenCV,
 RealSense) uses, so code written against them carries over to real images.
 
 ```python
@@ -885,10 +900,10 @@ u, v, z = project(frame, xyz)             # world points back to pixels
     error moves everything sideways, 11 mm at 95%.
 - Checked: every book pixel turned into a 3D point lies on that book's box (99% within 2 mm). A capture takes
   about 0.25 s; points for a whole image about 0.15 s.
-- `uv run python visualize.py --scenario leaning --seed 0 --camera` saves the wrist camera's image from the
+- `uv run python -m bila.viz.visualize --scenario leaning --seed 0 --camera` saves the wrist camera's image from the
   inspection pose with the estimate's spines outlined over it, and the depth image.
 
-**What the robot knows from the camera** (`rgbd_perception.py`): a `ShelfEstimate` built from one wrist-camera
+**What the robot knows from the camera** (`bila/vision/rgbd_perception.py`): a `ShelfEstimate` built from one wrist-camera
 image, the same kind of estimate as the ground truth's, so anything that reads estimates can use it.
 
 ```python
@@ -924,13 +939,13 @@ with RGBDPerception(model, row) as perception:
 - After the robot has put a book into the slot, `placed_x=` (where it let go) names the book seen there
   slot offset 0, and the others around it; offset 0 counts on neither side of the gap.
 
-**How well it works** (`eval_perception.py`, 48 scenes, 12 of each scenario, 722 books matched to the truth):
+**How well it works** (`bila/vision/eval_perception.py`, 48 scenes, 12 of each scenario, 722 books matched to the truth):
 
 ```bash
-MUJOCO_GL=egl uv run python eval_perception.py collect   # ~20 min: stores the estimates in scenes/
-uv run python eval_perception.py report                  # error tables
-uv run python eval_perception.py calibrate               # CAMERA_ERRORS and VIEW_REACH for NoisyPerception
-uv run python eval_perception.py validate                # NoisyPerception's errors next to the camera's
+MUJOCO_GL=egl uv run python -m bila.vision.eval_perception collect   # ~20 min: stores the estimates in scenes/
+uv run python -m bila.vision.eval_perception report                  # error tables
+uv run python -m bila.vision.eval_perception calibrate               # CAMERA_ERRORS and VIEW_REACH for NoisyPerception
+uv run python -m bila.vision.eval_perception validate                # NoisyPerception's errors next to the camera's
 ```
 
 - All 722 books named as in the truth. Each side of the slot: at least 3 books seen, median 7, the whole side in 93%.
@@ -942,10 +957,115 @@ uv run python eval_perception.py validate                # NoisyPerception's err
 - `NoisyPerception` matches the camera's error, per quantity and distance from the slot, within a few tenths of a
   mm or degree. Its narrowest gap is noisier than the camera's (95% within 3.3 mm): it errs each book's centre
   and thickness separately, where the camera's errors at a spine's two edges partly cancel.
-- `uv run python visualize.py --scenario leaning --seed 0 --camera [--noisy]` saves the camera image with the
+- `uv run python -m bila.viz.visualize --scenario leaning --seed 0 --camera [--noisy]` saves the camera image with the
   estimate outlined, and the estimate's front and top view with the ground truth dashed.
 
-**What the policy sees** (`observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
+**Learned book masks** (`bila/vision/learned_segmenter.py`): the camera estimate's one cheat is step 1, reading book masks
+off the simulation's object ids (`OracleSegmenter`, still the default). `LearnedSegmenter` finds them in the
+colour image instead, with Mask R-CNN (torchvision, fine-tuned from COCO, one class "book"):
+
+```bash
+uv sync --group rl                                                      # torch, torchvision
+# training data (WSL; ~1.8 h on 5 workers, 3.3 GB): shelf and cart scenes, seeds from 2000
+MUJOCO_GL=egl uv run python -m bila.vision.make_vision_dataset --out ~/bila_data/train --first-seed 2000 --scenes 670 --workers 5
+MUJOCO_GL=egl uv run python -m bila.vision.make_vision_dataset --out ~/bila_data/val --first-seed 9000 --scenes 70 --workers 5
+uv run python -m bila.vision.learned_segmenter train --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/segmenter
+uv run python -m bila.vision.learned_segmenter eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
+MUJOCO_GL=egl uv run python -m bila.vision.eval_perception collect --workers 3 --segmenter ~/bila_data/segmenter/segmenter.pt \
+    --path ~/bila_data/perception_eval_learned.pkl                     # adds "robust" and "learned" kinds
+```
+
+```python
+from learned_segmenter import LearnedSegmenter
+with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robust_fit=True) as perception: ...
+```
+
+- Data (`bila/vision/make_vision_dataset.py`): 2938 training and 309 validation images, 1280 x 720, from real arm poses (the
+  sweep views, random views, row and tray cameras, sticker close-ups) in all five scenarios. Half the shelves are
+  plain boxes, half have covers (sampled, the PBBM books, or page sections); lighting and colours vary; D405 depth
+  noise. Each image has an instance mask (one id per book, sticker included) and the stickers' corners and text.
+- Training: 8 epochs, 2.1 h on an RTX 3050 Ti (4 GB; mixed precision, 2 images a batch). Inference 0.24 s an image.
+- Against the oracle's masks on the validation images (a book is found if a mask overlaps it with IoU >= 0.5):
+  93% of target-row books showing 2000+ pixels, mean IoU 0.93; in the sweep views 93% found and 97% of masks are a
+  book. Small far books do worse (tray camera 53%).
+- `robust_fit=True` is needed with learned masks. The spine fit takes the smallest rectangle around a mask's spine
+  pixels; a learned mask bleeds a few pixels onto the next spine, in about the same plane, and on a tilted book
+  that stretched the rectangle by 10 to 50 mm. The robust fit drops strips across the spine that hold few points
+  (a real spine fills each from bottom to top) and fits again. It is off by default, so the oracle pipeline (and
+  everything calibrated on it) is unchanged; it would help the oracle's masks a little too (narrowest gap in
+  leaning rows, 95%: 4.1 mm against 6.3).
+- Whole estimate, `bila/vision/eval_perception.py` (80 scenes; the realistic camera's own images, with the robust fit for
+  both, so only the masks differ): 1144 of 1151 books found, 2 estimates that are no book, 1125 of 1144 named
+  right (oracle masks: 1150 of 1152). Narrowest gap up to the book's height, 95% within 4.4 mm (oracle masks 3.8):
+  per scenario 3.8 (3.8) clear, 2.7 (2.7) tight, 1.5 (1.5) packed, and 8.8 (4.1) leaning, where masks of books
+  leaning on each other are still the weak point. Neighbours' thickness, 95% within 4.3 mm (3.6).
+- Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
+  the evaluations can match books.
+- To see what the models see in one scene (~1.5 min each; weights in `~/bila_data`, `--weights` otherwise):
+
+  ```bash
+  MUJOCO_GL=egl uv run python -m bila.viz.visualize --scenario leaning --seed 3 --learned          # scenes/learned_*.png
+  MUJOCO_GL=egl uv run python -m bila.viz.visualize --scenario tight --seed 1 --learned --cart     # scenes/stickers_*.png
+  ```
+
+  `--learned`: the first look's three views with the learned masks in colour, books missed outlined red, masks
+  that are no book magenta, each target-row book's mask IoU, and the fitted spines; plus
+  `estimate_learned_*.png`, its estimate with the one from the simulation's masks dotted and the truth dashed.
+  `--learned --cart`: the first look's middle view, a wrist close-up at the slot and a wrist view of the tray, every sticker
+  found labelled with what was read and how sure (green right, red wrong, grey unreadable), missed ones dashed.
+- `NoisyPerception.learned(source, rng)` imitates this pipeline instead of the camera with the simulation's masks
+  (`perception.LEARNED_CALIBRATION`, from `bila/vision/eval_perception.py calibrate --kind learned` on those 80 scenes;
+  `validate --kind learned` checks it). The default `NoisyPerception`, which `bila/rl/gap_env.py` trains on, is unchanged.
+  Against it: each book's own error spreads more (position x, z about 1.3x; lean about 2x, from masks of books
+  leaning on each other), the whole-row shift a little more along the row and up (std 3.2 and 3.4 mm, against 2.6
+  and 2.5), and thickness is less biased (+2.1 to +2.5 mm, against +2.5 to +4.0: the robust fit). Not imitated:
+  the learned pipeline misses about 0.6% of the books within the camera's reach and names 2.7% of those four or
+  more from the slot a place off (the camera with the simulation's masks: none, 0.3%).
+
+**Reading call-number stickers** (`bila/vision/label_reader.py`): `bila/control/cart_demo.py` reads the stickers' numbers off the
+simulation by default; `--labels learned` reads them from the camera images.
+
+```bash
+uv run python -m bila.vision.label_reader train-finder --data ~/bila_data/train --out ~/bila_data/labels   # ~17 min
+uv run python -m bila.vision.label_reader train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels --epochs 10
+uv run python -m bila.vision.label_reader eval --data ~/bila_data/val --weights ~/bila_data/labels
+MUJOCO_GL=egl uv run python -m bila.control.cart_demo --scenario tight --labels learned    # weights from ~/bila_data/labels
+```
+
+- Find: a small segmentation network (LR-ASPP MobileNetV3, from COCO) marks the middle 60% of each sticker, so
+  that stickers on neighbouring books come out apart; each piece's outline, grown back, gives its corners. A colour
+  rule doesn't do: white covers and printed labels merge with the stickers.
+- Read: the sticker is straightened from its corners and its two lines (class, author mark) cut out where the
+  label prints them; a small CRNN reads each, in all four orientations (tilted books, the tray from above). It is
+  trained on crops at the true corners, jittered, and at the finder's own corners.
+- Match: every catalogue entry (each sticker's text, as the library knows it) is scored by the network's
+  probability of reading it; the confidence is the best entry's share. Under 0.99 it says "unreadable": a misread
+  puts a book in the wrong place, an unreadable sticker only costs another look.
+- On the validation images (146 with stickers, 0.23 s an image), of the stickers in view:
+
+  | camera | distance | found | read right | read wrong | unreadable |
+  | --- | --- | --- | --- | --- | --- |
+  | wrist close-up of the row | < 25 cm | 99% | 79% | 0% | 20% |
+  | wrist close-up of the tray | < 25 cm | 100% | 85% | 0% | 15% |
+  | wrist close-up of the tray | 25-50 cm | 100% | 76% | 0% | 24% |
+  | wrist, inspection sweep | 25-50 cm | 94% | 63% | 0.7% | 30% |
+  | row_cam | 50-100 cm | 55% | 12% | 0.1% | 43% |
+  | tray_cam | 50-100 cm | 46% | 19% | 0% | 28% |
+
+  0.15% of the stickers found are read wrong (0.8% at confidence 0.9). Most close-ups left unreadable are thin
+  books: the label shrinks its text to the sticker's width. tray_cam gets no depth on half the stickers, and finds
+  few of those.
+- The cart now has only the wrist camera (the row_cam and tray_cam rows above, and the 12-scene result below,
+  are from when it also had a camera on the lift carriage and one over the tray). In the tray: a wrist view of
+  the whole tray from ~30 cm, then a close-up of any sticker still unread. In the row: the episode's first look
+  (the three sweep views) reads the stickers (`bila/vision/call_numbers_seen.py`), and the slot is between the
+  two whose numbers bracket the book's. With the simulation's reading (the default), clear, tight and leaning
+  seed 0 succeed; packed seed 0 skips, as `insert_book --perception camera` does on it.
+- Earlier, with the fixed cameras, in 12 cart scenes (clear, tight, leaning, packed; seeds 0-2): all 5 tray books
+  read in every one, no number misread, and the right slot found in 10. In the other two the one book between the
+  bracketing pair stayed unreadable (a thin book), and the demo stopped rather than guess.
+
+**What the policy sees** (`bila/rl/observation.py`): fixed-size vectors from a `ShelfEstimate` and the robot's readings.
 
 ```python
 from observation import ObservationBuilder, robot_state, book_names_by_offset
@@ -972,6 +1092,156 @@ x[obs.actor_layout["gap_narrowest"]]                            # any part by na
 
 Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 
+## Residual PPO: start with insertion
+
+Train the shelf manipulation before adding the cart. The first milestone lets the scripted controller
+prepare the row and hand over the book, then gives PPO five bounded corrections during `slide` and `push`:
+x, y, z, yaw and pitch. Stopping stays scripted. A tight row can still be widened or shoved during
+preparation, but those contacts produce no policy decisions or training rewards in this mode.
+
+In `slide` and `push` an action is the correction itself, not a change of it: 0 is the script's pose
+and ±1 the move's bounds on that side, approached at 3 mm and 0.4° per decision at most. The bounds
+are tight (`insert_book.SLIDE_LO`/`SLIDE_HI`, `PUSH_LO`/`PUSH_HI`): ±4 mm along the row, ±1.5° of yaw and
+pitch, no lifting the book during the slide, and no holding the hand back from the script's push. The
+first run with increments of the correction (±8, ±15, ±5 mm, ±3°) lost 12 of the 24 validation rows the
+script placed: the trained policy's mean actions were only 0.02 to 0.26, but added up every decision,
+they took the corrections to their bounds (the push held 15 mm back left the book proud; the slide 8 mm
+sideways and lifted jammed it at the entrance). Gap creation's contacts still take increments.
+
+There are two separate phase options:
+
+| Option | Meaning |
+| --- | --- |
+| `--phases widen` | Sample only scenes whose **first contact** is a widening. Omit it to use every scene family in the selected pools. |
+| `--control-phases slide push` | Let PPO correct only insertion and final seating. The other contacts use zero correction. |
+| `--no-learn-stop` | Use five continuous actions. The controller decides when to stop each contact. |
+
+The default still controls all six contact phases and learns the stop action. `--no-insert` still supports
+gap-creation-only training. Actor observations retain their layout across these modes, but five-action
+checkpoints and six-action checkpoints have different output layers.
+
+### A small, reproducible first experiment
+
+Build separate training and validation pools. Each `--seeds` value counts shelf layouts, and
+`--error-variants` gives the number of perception/grasp error combinations per layout. These commands
+start with one fixed error combination per layout so a learning failure is easier to reproduce:
+
+```bash
+for scenario in clear tight
+do
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 16 --first-seed 10000 \
+    --error-variants 1 --error-seed 123 --name "${scenario}_insert_debug" --workers 2
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 16 --first-seed 20000 \
+    --error-variants 1 --error-seed 456 --name "${scenario}_insert_debug_val" --workers 2
+done
+
+uv run --group rl python train_residual.py --name insertion_debug --scenarios clear tight \
+  --train-suffix _insert_debug --val-suffix _insert_debug_val --val-scenes 16 \
+  --control-phases slide push --no-learn-stop --workers 2 --decisions 100000 \
+  --eval-action-scale 1
+```
+
+The decision budget above is a diagnostic run, not an established convergence budget. Check that the
+policy can recover some failures within its correction bounds. Inspect the baseline and policy returns
+alongside actual placements before committing to a long run. The reward weights and discount have not
+been retuned for this milestone.
+
+Once that works, build new pools with, for example, `--error-variants 4`, more layouts, and new names such
+as `tight_insert_var` and `tight_insert_var_val`. Pass the corresponding suffixes to the trainer.
+Pool creation refuses to overwrite existing pools. Training samples the stored layout/error variants
+in random order. Each variant keeps its cached inspection views and first plan, which are reused only
+when their inputs match.
+
+Geometry, perception and grasp seeds are recorded separately. Geometry stays the same across a layout's
+variants. Calibration error stays fixed within an episode, observation noise can change between looks,
+and the grasp error is applied once when the book is taken. Existing pools keep their original
+`[geometry_seed, 1]` perception and `[geometry_seed, 2]` grasp streams.
+
+### Training on what the robot sees
+
+The noise models (`NoisyPerception`, `--perception noisy` and `noisy-learned`) fail the script about as
+often as the camera, but not in the same ways. `eval_reshelve.py` ran the script alone on clear and tight
+seeds 0-99 (200 rows) with each source:
+
+| Perception | Placed | Insertion misses (of inserted) | Gave up before inserting | How insertions failed |
+| --- | --- | --- | --- | --- |
+| Ground truth | 198 | 0 of 198 | 2 | |
+| Camera, Victor's learned masks | 163 | 22 of 185 | 15 | 15 left proud, 7 jammed |
+| `noisy-learned` (its imitation) | 158 | 21 of 179 | 21 | 12 jammed, 9 left proud |
+| Camera, the simulation's masks | 162 | 25 of 187 | 13 | 16 left proud, 8 jammed |
+| `noisy` | 164 | 19 of 183 | 17 | 12 jammed, 7 left proud |
+| `noisy`, `--noise-scale 1.5` | 138 | 41 of 179 | 21 | |
+| `noisy`, `--noise-scale 2` | 123 | 51 of 174 | 26 | |
+
+A policy trained on a noise model would mostly learn to free jams, where the camera mostly leaves the
+book proud, and the noise models also give up on rows ("the fingers can't reach a neighbour with room
+behind it") that the camera never does. Wider noise only adds failures the camera doesn't make. So the
+insertion residual trains on the rendered camera with the learned masks. The 16-layout debug pools above
+held almost no insertion misses: with this many rows, a fifth of tight insertions miss.
+
+```bash
+for scenario in clear tight
+do
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 100 --first-seed 10000 \
+    --perception camera --segmenter bila_weights/segmenter/segmenter.pt --name "${scenario}_camera" --workers 10
+  uv run --group rl python gap_env.py pool --scenario "$scenario" --seeds 50 --first-seed 20000 \
+    --perception camera --segmenter bila_weights/segmenter/segmenter.pt --name "${scenario}_camera_val" --workers 10
+done
+
+uv run --group rl python train_residual.py --name insertion_camera --scenarios clear tight \
+  --train-suffix _camera --val-suffix _camera_val --control-phases slide push --no-learn-stop \
+  --perception camera --segmenter bila_weights/segmenter/segmenter.pt --workers 10
+```
+
+A pool records how its first runs saw the rows (`PoolEntry.perception`), and `GapEnv` refuses a pool that
+saw them differently from itself. The training baseline and validation use the same eyes. Seeds 30000 and
+up are left for a final test.
+
+Each worker loads the segmenter once (~350 MB, ~1.2 GB on Metal). `LearnedSegmenter` picks CUDA, then
+Apple's Metal, then the CPU. On an M-series Mac one process segments an image in 0.57 s on Metal and
+2.05 s on one CPU core, but ten workers saturate the one GPU: rows took the same time either way (clear
+50.7 s on Metal and 49.7 s on the CPU, tight 70.4 s and 63.9 s). Rendering itself costs little (43.2 s
+a row with the simulation's masks, 41.1 s with `noisy`). `--segmenter-device` overrides the choice in
+the trainer and `eval_reshelve.py`.
+
+The env runs the script in a thread, and a rendered camera's OpenGL context on macOS (CGL) is locked to
+the thread that made it. So the thread makes the episode and its eyes, and closes them as it ends
+(`gap_env.run_script`): a camera made in the main thread would wait for ever at its first image.
+
+### Evaluation and diagnostics
+
+- `--eval-action-scale` is fixed across checkpoints, independently of the training action ramp.
+- `--val-scenes` counts distinct layouts per scenario. `--val-variants 0` (the default) evaluates all stored
+  variants of those layouts. A positive value limits the variants per layout.
+- The script and policy use the same exact geometry, perception and grasp seeds. Cases are selected by
+  identity, not by a changing index into successful preparations. The baseline is regenerated when training
+  starts, including on resume, so an old baseline is not reused after code or configuration changes.
+- A validation case that fails before the first controlled contact is recorded as `preparation_failed`.
+  It stays in the overall success denominator. `success_given_control` reports the conditional result once
+  PPO can act. An explicit `--phases` filter restricts this evaluation population too.
+- Random training resets try other cases when preparation fails, without permanently removing a variant.
+  Those failed attempts are recorded. If no case in the selected scenario reaches a controlled contact,
+  reset raises an error instead of looping indefinitely.
+- `runs/<name>/baseline.json` and `val_*.json` contain per-case outcomes. `val_recovered`, `val_lost` and
+  `val_success_delta` compare each checkpoint with the script on identical cases.
+- `episodes.jsonl` records completed training episodes with their seeds, applied grasp error and reward
+  totals. `log.jsonl` and TensorBoard include each reward component and returns grouped by outcome.
+  Reward components are unnormalised: gap, tilt, lift, force, action, time, gap bonus, insertion progress,
+  disturbance and terminal reward. Their totals sum to the episode return.
+- Insertion progress rewards reducing the spine's distance to the scorer's accepted placement region.
+  For `flush`, this is the 1 cm tolerance band on either side of the neighbour's spine, so overshooting
+  the band incurs negative progress. For `inside`, the spine must be at least 1 cm behind the shelf's
+  front edge. Moving within an accepted region earns no extra depth reward. Uprightness and release
+  remain required for terminal success. The critic's `to_go` feature uses this same distance.
+
+An exact case can be replayed through `GapEnv.reset(options={"scenario": "tight", "geometry_seed": 10000,
+"variant": 0, "perception_seed": 123, "grasp_seed": 456})`. Supplying seeds overrides only those errors.
+Explicit cases raise `PreparationFailed` if preparation fails, rather than silently trying another row.
+
+After insertion works, expand `--control-phases` to include gap creation. Checkpoints trained with
+`--perception camera` are already validated on the actual RGB-D pipeline. The cart and the standalone
+camera evaluator still need residual-checkpoint integration. This training mode does not add those connections.
+
 ## Settings (`ShelfConfig`)
 
 | Setting | Default | Meaning |
@@ -985,9 +1255,9 @@ Tests: `uv run pytest` (with `MUJOCO_GL=egl` in WSL for the rendering tests).
 | `static_other_levels` | `True` | Weld non-target books in place, for speed |
 | `spine_inset` | 10 to 30 mm | How far each spine sits behind the shelf's front edge |
 | `depth_clearance` | 30 mm | Every book is at least this much shallower than the shelf |
-| `book_meshes` | `False` | Draw the converted book covers (from `dae_to_obj.py`) on the boxes as non-colliding visuals |
+| `book_meshes` | `False` | Draw the converted book covers (from `bila/sim/dae_to_obj.py`) on the boxes as non-colliding visuals |
 | `book_pages` | `0` | Split every book's pages into this many sections hinged on the spine (0 or 1 = one rigid box) |
-| `catalogue` | `False` | Fill the rows with PBBM's real books (`shelf_scene.CATALOGUE`, `--catalogue`): each copy keeps the book's size, mass and own cover, the Voynich and Lagemann books are hinged into their real page sections, and the same book can appear more than once. Positions, order, friction and scenario stay random. The sampled size, density and `book_pages` settings are then unused |
+| `catalogue` | `False` | Fill the rows with PBBM's real books (`shelf_scene.CATALOGUE`, `--catalogue`): each copy keeps the book's size, mass and own cover, the Voynich and Lagemann books are hinged into their real page sections, and the same book can appear more than once. Positions, order, friction and scenario stay random. The sampled size and density settings are then unused, `thickness` only bounds the inserted book, and `book_pages` (> 1) cuts every other real book into that many equal sections too, each drawn as a slice of the book's own cover (spine, fore edge, top and bottom cut to its share, the covers on the outer sections, plain paper on the cuts; written once to `generated_assets/books/slices/`). Closed, a cut book renders as the whole one |
 | `robot_xy`, `robot_z_offset` | (0, 0.80), −0.40 m | Robot base position; its height follows the target board |
 | `lean_angle_deg` | 12° to 35° | Lean for leaning and collapsed rows (raised when a book needs more to stay down) |
 
@@ -1018,10 +1288,10 @@ and 0 to 14 per scenario with free filler books).
   instead, narrow `target_band` and set `robot_z_offset` accordingly. Don't lower `target_band` below 0.40 m
   without raising the base, or it ends up below the floor.
 - **Topple threshold.** Some settled books lean more than 45°. When scoring "no neighbour toppled", measure each
-  book's tilt *change* from its settled pose, not its absolute tilt (`insert_book.py` does this).
+  book's tilt *change* from its settled pose, not its absolute tilt (`bila/control/insert_book.py` does this).
 - **Two leaning neighbours** (one on each side of the gap) are not generated: pushing both at once made one fall
   flat. Use the collapsed scenario for several leaning books.
-- **Generated robot file.** `shelf_scene.py` writes `panda_shelf.xml` (Menagerie's Panda with the thin fingers,
+- **Generated robot file.** `bila/sim/shelf_scene.py` writes `panda_shelf.xml` (Menagerie's Panda with the thin fingers,
   wrist camera and F/T sensor) into `mujoco_menagerie/franka_emika_panda/` so the robot's mesh paths still work.
   The submodule is set to ignore untracked files, so this doesn't show as a change.
 - **Shelf width.** If you set the shelf very narrow, `sample_row` raises an error when fewer than 4 books fit.
