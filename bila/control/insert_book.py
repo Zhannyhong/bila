@@ -1760,22 +1760,41 @@ class Episode:
         run.move("back off", run.pos + self.ys * (tip_back - self.tip_y((run.pos, run.rot))))
         t_done, blocked, pushed, tip_goal = t_release, False, True, None
         for k in range(5):                                           # a push, then up to 3 more, as without eyes
-            self.look(placed_x=x_slot)
-            target = self.seat_target()[0]
-            book = self.est.book(0)
-            c = released if book is None else book.spine_corners
+            if k == 0:
+                # The first push goes before any look: from where the hand let go of it, to where the
+                # look before the insertion saw the neighbours' spines. Sliding it in only drags them
+                # deeper, so this never pushes it too far; the looks after it push on if they went back.
+                target, c = self.seat_target()[0], released
+            else:
+                self.look(placed_x=x_slot)
+                target = self.seat_target()[0]
+                book = self.est.book(0)
+                c = released if book is None else book.spine_corners
             x_book, spine = c[:, 0].mean(), c[:, 1].max()
             if spine <= target + 0.002:
+                if k == 0:
+                    continue                                         # (look, to be sure)
                 self.log("         it is in place")
                 break
             goal = max(target, self.push_limit(x_book, self.obstacles()))
-            if k == 4 or (k > 0 and (not pushed or goal >= tip_goal - 0.001)):   # stuck, or the hand can't go deeper
-                break
+            if k == 4 or (tip_goal is not None and (not pushed or goal >= tip_goal - 0.001)):   # stuck, or the hand
+                break                                                                            # can't go deeper
             tip_goal, blocked = goal, goal > target
             tip_back = max(self.D / 2 + 0.015, spine + 0.02)
-            sign = self.begin([(self.push_pose(s, x_book, tip_back),
-                                [self.push_pose(s, x_book, y) for y in np.linspace(tip_back, tip_goal, 30)], s)
-                               for s in (push_sign, -push_sign)])
+            sign = None
+            if k == 0:                                               # just let go: turn the hand where it is, if it can
+                self.ik.sync(self.d)
+                for s in (push_sign, -push_sign):
+                    _, ready, path = self.push_path((run.pos, run.rot), s, x_book, spine, tip_goal)
+                    _, worst, ok = self.ik.follow(run.q_cmd, path, allowed=frozenset())
+                    if ok and worst >= MIN_MARGIN:
+                        run.move("turn the hand to push", *ready)
+                        sign = s
+                        break
+            if sign is None:
+                sign = self.begin([(self.push_pose(s, x_book, tip_back),
+                                    [self.push_pose(s, x_book, y) for y in np.linspace(tip_back, tip_goal, 30)], s)
+                                   for s in (push_sign, -push_sign)])
             run.move("reach the spine", *self.push_pose(sign, x_book, spine + 0.005))
             what = "push it into place" if k == 0 else "push it further (the neighbours went back with it)"
             pushed = False
@@ -2692,7 +2711,8 @@ class Episode:
         # book turns: count a resistance YAW_LEVER behind the point.
         moment = YAW_LEVER * np.cross(-self.ys, direction)
         torque = np.abs(jacp[:, ik.dadr].T @ direction + jacr[:, ik.dadr].T @ moment)
-        return float(np.min(self.m.actuator_forcerange[:7, 1] / np.maximum(torque, 1e-9)))
+        arm = [self.m.actuator(f"panda/actuator{i}").id for i in range(1, 8)]   # (the cart's lift comes first)
+        return float(np.min(self.m.actuator_forcerange[arm, 1] / np.maximum(torque, 1e-9)))
 
     def choose_strong(self, candidates, allowed, finger, direction, point_hand, moving=frozenset()):
         """choose_arm for a push that has to be strong: of the configurations
@@ -2854,28 +2874,6 @@ def make_episode(cfg: ShelfConfig, scenario: str, rng, panda_xml: str, max_tries
     raise RuntimeError(f"No stable {scenario} row in {max_tries} tries")
 
 
-def make_eyes(model, row, seed, noise="realistic", segmenter=None, fiducials=True):
-    """The wrist camera's perception for --perception camera: with `noise`
-    realistic, a D405's stereo errors and a calibration error drawn per
-    episode; basic, only independent depth noise per pixel. A segmenter
-    (e.g. a LearnedSegmenter) replaces the simulation's masks, with the
-    robust spine fit learned masks need. With `fiducials`, every image's
-    camera pose is corrected from the shelf's markers (vision/fiducials.py)."""
-    from bila.vision.camera import CalibrationError, DepthNoise, WristCamera
-    from bila.vision.rgbd_perception import RGBDPerception                       # it imports this module
-    rng = np.random.default_rng(seed)
-    cam = (WristCamera(model, noise=DepthNoise.d405(), rng=rng, calibration=CalibrationError())
-           if noise == "realistic" else WristCamera(model, noise=DepthNoise(), rng=rng))
-    reference = None
-    if fiducials:
-        from bila.control.inspection import slot_x
-        from bila.vision.fiducials import FiducialReference
-        from bila.sim.shelf_scene import fiducials as shelf_markers
-        # ponytail: the map is rebuilt from the default ShelfConfig's board thickness, as every scene uses today
-        reference = FiducialReference(shelf_markers(ShelfConfig(), row), ShelfFrame(row), slot_x(row))
-    return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None, reference=reference)
-
-
 def make_noisy_eyes(model, row, seed, learned=False, scale=1.0):
     """--perception noisy / noisy-learned: no rendering, the ground truth with
     the camera's measured errors (perception.NoisyEyes), as gap_env trains on;
@@ -2886,11 +2884,12 @@ def make_noisy_eyes(model, row, seed, learned=False, scale=1.0):
     return NoisyEyes(model, row, np.random.default_rng([seed, 1]), scale, learned=learned)
 
 
-def eyes_for(perception, model, row, seed, camera_noise="realistic", segmenter=None, noise_scale=1.0):
+def eyes_for(perception, model, row, seed, camera_noise="realistic", segmenter=None, noise_scale=1.0, fiducials=True):
     """An Episode's eyes for a --perception choice (None: the simulation's
     truth). noise_scale: the noisy choices' spread (make_noisy_eyes)."""
     if perception == "camera":
-        return make_eyes(model, row, seed, camera_noise, segmenter)
+        from bila.vision.rgbd_perception import make_eyes                       # it imports this module
+        return make_eyes(model, row, seed, camera_noise, segmenter, fiducials)
     if perception in ("noisy", "noisy-learned"):
         return make_noisy_eyes(model, row, seed, learned=perception == "noisy-learned", scale=noise_scale)
     return None

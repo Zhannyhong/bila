@@ -16,8 +16,10 @@ stores the ground truth and three camera estimates side by side:
   perfect     exact depth, exact calibration;
   basic       independent depth noise per pixel (DepthNoise());
   realistic   a D405's stereo errors and depth offset (DepthNoise.d405()) and a
-              hand-eye / intrinsics calibration error (CalibrationError()),
-              as insert_book.py --perception camera uses.
+              hand-eye / intrinsics calibration error (CalibrationError());
+  fiducial    the realistic camera, same errors, with each image's pose
+              corrected from the shelf's markers (vision/fiducials.py), as
+              insert_book.py --perception camera uses.
 With `--segmenter segmenter.pt` it also stores, from the realistic camera's
 own images:
   learned     book masks from the learned segmenter (learned_segmenter.py)
@@ -62,7 +64,7 @@ from bila.vision.perception import (SYSTEMATIC_PARAMS, BookEstimate, ShelfEstima
 from bila import ROOT as HERE
 DEFAULT_PATH = os.path.join(HERE, "scenes", "perception_eval.pkl")
 OFFSET_BINS = {"neighbours (1)": (1, 1), "near (2-3)": (2, 3), "further (4-6)": (4, 6)}
-KINDS = ("perfect", "basic", "realistic", "robust", "learned")   # robust, learned: only with collect --segmenter
+KINDS = ("perfect", "basic", "realistic", "fiducial", "robust", "learned")   # robust, learned: only with collect --segmenter
 CALIBRATE_ON = "realistic"            # the camera NoisyPerception imitates
 COLLECT_SCENARIOS = ("clear", "tight", "leaning", "packed")   # collapsed is out of the project's scope
 FIRST_SEED = 1000                     # clear of the controllers' test seeds (0-49) and their training seeds
@@ -95,7 +97,7 @@ def learned_segmenter(weights: str):
 def collect_scene(task) -> Optional[SceneRecord]:
     """One scene's SceneRecord, or None if the arm reaches no view of it. Each
     camera kind gets its own camera, seeded with the scene's seed, as
-    insert_book.make_eyes makes one. task: (scenario, seed) or (scenario,
+    rgbd_perception.make_eyes makes one. task: (scenario, seed) or (scenario,
     seed, segmenter weights) to add the learned kind."""
     scenario, seed, *weights = task
     if weights:
@@ -119,9 +121,15 @@ def collect_scene(task) -> Optional[SceneRecord]:
                "basic": dict(noise=DepthNoise()),
                "realistic": dict(noise=DepthNoise.d405(), calibration=CalibrationError())}
     camera, truth_for = {}, {}
+    cameras["fiducial"] = None                     # realistic, with the shelf markers' pose correction
     for kind, errors in cameras.items():
-        cam = WristCamera(model, rng=np.random.default_rng(seed), **errors)
-        with RGBDPerception(model, row, camera=cam) as perception:
+        if errors is None:
+            from bila.vision.rgbd_perception import make_eyes
+            eyes = make_eyes(model, row, seed, "realistic")   # same seeded camera errors as realistic
+        else:
+            cam = WristCamera(model, rng=np.random.default_rng(seed), **errors)
+            eyes = RGBDPerception(model, row, camera=cam)
+        with eyes as perception:
             frames = []
             for _, (q, _) in views:
                 look_from(model, data, q)

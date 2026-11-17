@@ -141,5 +141,5 @@ def look_from(model: mujoco.MjModel, data: mujoco.MjData, q) -> None:
     jids = [model.joint(f"panda/joint{i}").id for i in range(1, 8)]
     data.qpos[model.jnt_qposadr[jids]] = q
     data.qvel[model.jnt_dofadr[jids]] = 0
-    data.ctrl[:7] = q                       # the arm's position actuators come first
+    data.ctrl[[model.actuator(f"panda/actuator{i}").id for i in range(1, 8)]] = q   # (the cart's lift comes first)
     mujoco.mj_forward(model, data)

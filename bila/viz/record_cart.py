@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 from bila.control import cart_demo
 
 W, H, FPS = 1280, 960, 30     # the scene's offscreen buffer is 1280x960 (shelf_scene)
-T_MAX = 300.0               # sim seconds: stop here even if the demo hasn't finished
+T_MAX = 600.0               # sim seconds: stop here even if the demo hasn't finished
 
 
 def record(out, scenario="tight", seed=0):
@@ -27,6 +27,7 @@ def record(out, scenario="tight", seed=0):
         def __init__(self, model, data):
             self.d, self.n = data, 0
             self.cam = mujoco.MjvCamera()            # main() aims this one; the recording uses its own
+            self.user_scn = mujoco.MjvScene(model, maxgeom=2000)   # Episode draws its estimate here (not recorded)
             self.r = mujoco.Renderer(model, H, W)
             self.scene = mujoco.MjvCamera()
             self.scene.lookat[:] = data.xpos[model.body("lift").id] + [0.2, 0, 0.3]
