@@ -60,12 +60,13 @@ import cv2
 import mujoco
 import numpy as np
 
-from bila.vision.camera import CameraFrame, WristCamera, project, robot_mask
+from bila.vision.camera import CalibrationError, CameraFrame, DepthNoise, WristCamera, project, robot_mask
+from bila.vision.fiducials import FiducialReference
 from bila.control.insert_book import ShelfFrame
 from bila.control.inspection import slot_x
 from bila.vision.perception import (DEPTH_PRIOR, DEPTH_CLEARANCE, GAP_HEIGHTS, BookEstimate, ShelfEstimate,
                         book_from_spine, gap_profile)
-from bila.sim.shelf_scene import Row
+from bila.sim.shelf_scene import Row, ShelfConfig, fiducials as shelf_markers
 
 FACING_COS = math.cos(math.radians(30))   # a point is on a spine if its surface faces within 30 deg of out of the shelf
 NORMAL_STEP = 2                           # px: normals from the points this far to each side
@@ -419,3 +420,20 @@ class RGBDPerception:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def make_eyes(model, row, seed, noise="realistic", segmenter=None, fiducials=True):
+    """The wrist camera's perception for --perception camera: with `noise`
+    realistic, a D405's stereo errors and a calibration error drawn per
+    episode; basic, only independent depth noise per pixel. A segmenter
+    (e.g. a LearnedSegmenter) replaces the simulation's masks, with the
+    robust spine fit learned masks need. With `fiducials`, every image's
+    camera pose is corrected from the shelf's markers (vision/fiducials.py)."""
+    rng = np.random.default_rng(seed)
+    cam = (WristCamera(model, noise=DepthNoise.d405(), rng=rng, calibration=CalibrationError())
+           if noise == "realistic" else WristCamera(model, noise=DepthNoise(), rng=rng))
+    reference = None
+    if fiducials:
+        # ponytail: the map is rebuilt from the default ShelfConfig's board thickness, as every scene uses today
+        reference = FiducialReference(shelf_markers(ShelfConfig(), row), ShelfFrame(row), slot_x(row))
+    return RGBDPerception(model, row, cam, segmenter=segmenter, robust_fit=segmenter is not None, reference=reference)

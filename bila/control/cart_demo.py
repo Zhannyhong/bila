@@ -864,10 +864,11 @@ def readers(model, row, tray, numbers, seed, weights=None, segmenter=None, noise
     and each book read sized from the library's catalogue). weights: label_reader's
     folder, to read the stickers from the images; None: the simulation's."""
     from bila.vision.call_numbers_seen import LearnedStickers, OracleStickers, ReadingEyes, catalogue
+    from bila.vision.rgbd_perception import make_eyes
     texts, database = catalogue(numbers, row.books + tray + [b for fl in row.filler_levels for b in fl.books])
     labels = LearnedLabels(model, weights, texts) if weights else OracleLabels(model, numbers)
     stickers = LearnedStickers(weights, texts) if weights else OracleStickers(model, numbers)
-    return labels, lambda n: ReadingEyes(insert_book.make_eyes(model, row, seed, noise, segmenter, fiducials), stickers, row, n,
+    return labels, lambda n: ReadingEyes(make_eyes(model, row, seed, noise, segmenter, fiducials), stickers, row, n,
                                          database=database)
 
 

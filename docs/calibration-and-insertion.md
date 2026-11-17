@@ -35,7 +35,7 @@ in section 3.
   sticker.
 - **The correction.** `vision/fiducials.py` finds the markers in each image
   with `cv2.aruco`. It takes the whole marker nearest the slot and removes that
-  marker's in-plane offset from the camera's position. `make_eyes` turns this
+  marker's in-plane offset from the camera's position. `rgbd_perception.make_eyes` turns this
   on by default. The live view logs every correction, and has
   `--no-fiducials` to switch it off.
 

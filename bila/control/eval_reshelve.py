@@ -75,7 +75,7 @@ def parse_seeds(text: str) -> list:
     return list(range(lo, hi))
 
 
-def _init(perception, segmenter, camera_noise, noise_scale=1.0, segmenter_device=None, scene=None):
+def _init(perception, segmenter, camera_noise, noise_scale=1.0, segmenter_device=None, scene=None, fiducials=True):
     import cv2
     cv2.setNumThreads(1)                     # (its thread pool per worker overloads the machine)
     seg = None
@@ -85,9 +85,9 @@ def _init(perception, segmenter, camera_noise, noise_scale=1.0, segmenter_device
         torch.set_num_threads(1)
         seg = LearnedSegmenter(os.path.expanduser(segmenter), device=segmenter_device)
     _worker.update(perception=perception, segmenter=seg, camera_noise=camera_noise, noise_scale=noise_scale,
-                   scene=scene or {},
+                   scene=scene or {}, fiducials=fiducials,
                    label={"perception": perception, "segmenter": segmenter or "", "camera_noise": camera_noise,
-                          "noise_scale": noise_scale, **(scene or {})})
+                          "noise_scale": noise_scale, "fiducials": fiducials, **(scene or {})})
 
 
 def run_row(job) -> dict:
@@ -101,7 +101,7 @@ def run_row(job) -> dict:
         model, data, row = make_episode(ShelfConfig(**_worker["scene"]), scenario, np.random.default_rng(seed),
                                         DEFAULT_PANDA)
         eyes = eyes_for(_worker["perception"], model, row, seed, _worker["camera_noise"], _worker["segmenter"],
-                        _worker["noise_scale"])
+                        _worker["noise_scale"], _worker["fiducials"])
         ep = Episode(model, data, row, None, lambda *_: None, eyes)
         try:
             res = ep.reshelve()
@@ -132,7 +132,7 @@ def run(a) -> None:
     scene = {k: v for k, v in (("catalogue", a.catalogue), ("book_pages", a.book_pages),
                                ("book_meshes", a.book_meshes)) if v}       # (the default scene: none, as before)
     with ctx.Pool(a.workers, _init, (a.perception, a.segmenter, a.camera_noise, a.noise_scale, a.segmenter_device,
-                                     scene),
+                                     scene, not a.no_fiducials),
                   maxtasksperchild=50) as pool, \
             open(a.out, "a") as f:
         for k, r in enumerate(pool.imap_unordered(run_row, todo), 1):
@@ -150,7 +150,8 @@ def name_of(rows, path) -> str:
     r = rows[0] if rows else {}
     seg = f" + {os.path.basename(r['segmenter'])}" if r.get("segmenter") else ""
     scale = f" x{r['noise_scale']:g}" if r.get("noise_scale", 1.0) != 1.0 else ""
-    books = (" real books" if r.get("catalogue") else "") + (f" {r['book_pages']} pages" if r.get("book_pages") else "")
+    fid = " no markers" if r.get("fiducials") is False else ""
+    books = fid + (" real books" if r.get("catalogue") else "") + (f" {r['book_pages']} pages" if r.get("book_pages") else "")
     return f"{r.get('perception', '?')}{scale}{seg}{books} ({os.path.basename(path)})"
 
 
@@ -193,6 +194,7 @@ def main():
     r.add_argument("--camera-noise", choices=("realistic", "basic"), default="realistic")
     r.add_argument("--noise-scale", type=float, default=1.0,
                    help="noisy, noisy-learned: the errors' spread (gap_env's noise_scale)")
+    r.add_argument("--no-fiducials", action="store_true", help="camera: no pose correction from the shelf's markers")
     r.add_argument("--catalogue", action="store_true", help="the repo's real books (ShelfConfig.catalogue)")
     r.add_argument("--book-pages", type=int, default=0, metavar="N",
                    help="cut every book into N page sections hinged on the spine (with --catalogue: every real "

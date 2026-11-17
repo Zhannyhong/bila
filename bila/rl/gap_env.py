@@ -38,7 +38,7 @@ Errors the policy has to make up for:
                      no rendering) behind the interface Episode uses for its
                      camera. The arm still moves to the views;
       noisy-learned  the same, imitating the learned masks' pipeline;
-      camera         the rendered wrist camera itself (insert_book.make_eyes:
+      camera         the rendered wrist camera itself (rgbd_perception.make_eyes:
                      a D405's stereo errors and a calibration error drawn per
                      episode), with the simulation's book masks or, with
                      segmenter=WEIGHTS, the learned ones (learned_segmenter.py,
@@ -148,7 +148,8 @@ import mujoco
 import numpy as np
 
 from bila.control.insert_book import (DEFAULT_PANDA, GAP_MARGIN, LEAN_MIN_DEG, PAD_Z, RESIDUAL_LIMITS, RESIDUAL_STEPS, Episode,
-                         axis_rot, build_model, make_episode, make_eyes, mat2quat)
+                         axis_rot, build_model, make_episode, mat2quat)
+from bila.vision.rgbd_perception import make_eyes
 from bila.rl.observation import TOOL_OFFSET, ObservationBuilder, Parts, book_names_by_offset, robot_state
 from bila.vision.perception import GroundTruthPerception, NoisyEyes  # (NoisyEyes: perception without rendering)
 from bila.sim.shelf_scene import ShelfConfig, book_tilt_deg

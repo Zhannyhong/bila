@@ -1,0 +1,415 @@
+200 rows to run (0 already in results/slide_check/truth.jsonl), 2 workers
+  1/200  clear 1: placed (23 s)
+  2/200  clear 0: placed (28 s)
+  3/200  clear 3: placed (15 s)
+  4/200  clear 2: placed (23 s)
+  5/200  clear 4: placed (26 s)
+  6/200  clear 5: placed (25 s)
+  7/200  clear 6: placed (22 s)
+  8/200  clear 7: placed (26 s)
+  9/200  clear 8: placed (16 s)
+  10/200  clear 9: placed (17 s)
+  11/200  clear 11: placed (15 s)
+  12/200  clear 10: placed (30 s)
+  13/200  clear 12: placed (16 s)
+  14/200  clear 14: placed (20 s)
+  15/200  clear 13: placed (32 s)
+  16/200  clear 15: placed (21 s)
+  17/200  clear 16: placed (22 s)
+  18/200  clear 17: placed (24 s)
+  19/200  clear 18: placed (26 s)
+  20/200  clear 19: placed (27 s)
+  21/200  clear 20: placed (34 s)
+  22/200  clear 21: placed (28 s)
+  23/200  clear 22: placed (22 s)
+  24/200  clear 23: placed (19 s)
+  25/200  clear 24: placed (18 s)
+  26/200  clear 25: placed (12 s)
+  27/200  clear 26: placed (22 s)
+  28/200  clear 27: placed (26 s)
+  29/200  clear 28: placed (19 s)
+  30/200  clear 29: placed (14 s)
+  31/200  clear 30: placed (22 s)
+  32/200  clear 31: placed (20 s)
+  33/200  clear 32: placed (24 s)
+  34/200  clear 33: placed (23 s)
+  35/200  clear 34: placed (19 s)
+  36/200  clear 35: placed (22 s)
+  37/200  clear 36: placed (20 s)
+  38/200  clear 37: placed (26 s)
+  39/200  clear 38: placed (20 s)
+  40/200  clear 40: placed (20 s)
+  41/200  clear 39: placed (33 s)
+  42/200  clear 41: placed (25 s)
+  43/200  clear 42: placed (26 s)
+  44/200  clear 43: placed (24 s)
+  45/200  clear 44: placed (25 s)
+  46/200  clear 45: placed (19 s)
+  47/200  clear 46: placed (25 s)
+  48/200  clear 47: placed (22 s)
+  49/200  clear 48: placed (19 s)
+  50/200  clear 49: placed (19 s)
+  51/200  tight 1: placed (41 s)
+  52/200  tight 2: placed (29 s)
+  53/200  tight 3: placed (28 s)
+  54/200  tight 0: placed (121 s)
+  55/200  tight 4: placed (31 s)
+  56/200  tight 5: placed (35 s)
+  57/200  tight 6: placed (51 s)
+  58/200  tight 7: placed (43 s)
+  59/200  tight 8: placed (32 s)
+  60/200  tight 10: placed (42 s)
+  61/200  tight 9: placed (72 s)
+  62/200  tight 12: placed (26 s)
+  63/200  tight 11: placed (31 s)
+  64/200  tight 14: placed (37 s)
+  65/200  tight 15: placed (29 s)
+  66/200  tight 16: placed (34 s)
+  67/200  tight 17: placed (27 s)
+  68/200  tight 18: placed (33 s)
+  69/200  tight 19: placed (37 s)
+  70/200  tight 20: placed (45 s)
+  71/200  tight 21: placed (21 s)
+  72/200  tight 13: placed (289 s)
+  73/200  tight 22: placed (36 s)
+  74/200  tight 23: placed (32 s)
+  75/200  tight 24: placed (43 s)
+  76/200  tight 25: placed (24 s)
+  77/200  tight 26: placed (36 s)
+  78/200  tight 27: placed (41 s)
+  79/200  tight 28: placed (42 s)
+  80/200  tight 29: placed (40 s)
+  81/200  tight 30: placed (51 s)
+  82/200  tight 31: placed (65 s)
+  83/200  tight 32: placed (43 s)
+  84/200  tight 34: placed (44 s)
+  85/200  tight 33: placed (79 s)
+  86/200  tight 36: placed (46 s)
+  87/200  tight 35: placed (80 s)
+  88/200  tight 37: placed (65 s)
+  89/200  tight 38: placed (55 s)
+  90/200  tight 40: placed (54 s)
+  91/200  tight 39: placed (82 s)
+  92/200  tight 41: placed (79 s)
+  93/200  tight 42: placed (70 s)
+  94/200  tight 44: placed (46 s)
+  95/200  tight 45: placed (53 s)
+  96/200  tight 43: placed (152 s)
+  97/200  tight 46: placed (89 s)
+  98/200  tight 47: placed (69 s)
+  99/200  tight 48: placed (60 s)
+  100/200  tight 49: placed (63 s)
+  101/200  leaning 0: placed (60 s)
+  102/200  leaning 1: placed (62 s)
+  103/200  leaning 3: placed (33 s)
+  104/200  leaning 2: placed (85 s)
+  105/200  leaning 5: placed (50 s)
+  106/200  leaning 4: placed (77 s)
+  107/200  leaning 6: placed (54 s)
+  108/200  leaning 7: placed (49 s)
+  109/200  leaning 9: not upright (48 s)
+  110/200  leaning 8: placed (78 s)
+  111/200  leaning 10: placed (75 s)
+  112/200  leaning 12: placed (66 s)
+  113/200  leaning 13: placed (55 s)
+  114/200  leaning 11: placed (197 s)
+  115/200  leaning 14: placed (40 s)
+  116/200  leaning 16: placed (102 s)
+  117/200  leaning 15: placed (119 s)
+  118/200  leaning 18: placed (40 s)
+  119/200  leaning 17: placed (48 s)
+  120/200  leaning 19: placed (38 s)
+  121/200  leaning 20: placed (76 s)
+  122/200  leaning 21: placed (53 s)
+  123/200  leaning 22: placed (40 s)
+  124/200  leaning 23: placed (35 s)
+  125/200  leaning 24: placed (40 s)
+  126/200  leaning 26: placed (40 s)
+  127/200  leaning 25: placed (84 s)
+  128/200  leaning 27: stopped: No collision-free joint move to the next arm configuration (43 s)
+  129/200  leaning 29: placed (24 s)
+  130/200  leaning 28: placed (64 s)
+  131/200  leaning 30: placed (32 s)
+  132/200  leaning 31: placed (47 s)
+  133/200  leaning 32: placed (35 s)
+  134/200  leaning 33: placed (56 s)
+  135/200  leaning 34: placed (48 s)
+  136/200  leaning 36: placed (36 s)
+  137/200  leaning 35: placed (54 s)
+  138/200  leaning 37: placed (62 s)
+  139/200  leaning 39: placed (44 s)
+  140/200  leaning 40: placed (47 s)
+  141/200  leaning 38: placed (154 s)
+  142/200  leaning 41: placed (63 s)
+  143/200  leaning 42: placed (49 s)
+  144/200  leaning 44: placed (64 s)
+  145/200  leaning 43: placed (71 s)
+  146/200  leaning 45: placed (57 s)
+  147/200  leaning 46: placed (65 s)
+  148/200  leaning 48: placed (33 s)
+  149/200  leaning 49: placed (43 s)
+  150/200  leaning 47: placed (131 s)
+  151/200  packed 0: placed (137 s)
+  152/200  packed 1: placed (328 s)
+  153/200  packed 2: placed (341 s)
+  154/200  packed 3: placed (137 s)
+  155/200  packed 5: placed (159 s)
+Process SpawnPoolWorker-3:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+Process SpawnPoolWorker-4:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 6 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+  5/45  packed 4: placed (339 s)
+  6/45  packed 6: placed (342 s)
+  7/45  packed 11: placed (160 s)
+  8/45  packed 12: placed (155 s)
+  9/45  packed 15: placed (75 s)
+  10/45  packed 13: placed (203 s)
+  11/45  packed 14: placed (163 s)
+  12/45  packed 16: placed (184 s)
+  13/45  packed 21: gave up: only -13 mm of the neighbour to pinch (26 s)
+  14/45  packed 17: placed (200 s)
+  15/45  packed 19: placed (138 s)
+  16/45  packed 18: placed (238 s)
+  17/45  packed 25: gave up: only -11 mm of the neighbour to pinch (14 s)
+  18/45  packed 20: left proud (231 s)
+  19/45  packed 23: placed (153 s)
+  20/45  packed 22: placed (155 s)
+  21/45  packed 29: placed (104 s)
+Process SpawnPoolWorker-3:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+Process SpawnPoolWorker-4:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+Process SpawnPoolWorker-1:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+Process SpawnPoolWorker-5:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+Process SpawnPoolWorker-2:
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 131, in worker
+    put((job, i, result))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/pool.py", line 136, in worker
+    put((job, i, (False, wrapped)))
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/queues.py", line 399, in put
+    self._writer.send_bytes(obj)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 200, in send_bytes
+    self._send_bytes(m[offset:offset + size])
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 427, in _send_bytes
+    self._send(header + buf)
+  File "/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/connection.py", line 384, in _send
+    n = write(self._handle, buf)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+BrokenPipeError: [Errno 32] Broken pipe
+/Users/yuhaopro/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 6 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
