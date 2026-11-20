@@ -28,3 +28,4 @@ MUJOCO_LOG.TXT
 
 # Residual training runs (train_residual.py): checkpoints and logs
 runs/
+AI-Researcher

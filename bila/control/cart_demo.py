@@ -517,7 +517,15 @@ def read_tray(labels, model, data, run, ik, tray, rng, log=print):
 # ---------------------------------------------------------------------------
 class CartEpisode(Episode):
     """insert_book's episode, with the book picked out of the tray instead of
-    handed over: take_book() is the only step that changes."""
+    handed over: take_book() is the only step that changes.
+
+    The robot knows the tray's layout, the shelf's depth and each book's size
+    (the catalogue), not where the simulation has put a book: it grasps a tray
+    book where its slot puts it, and believes the held book is where it closed
+    the hand on it, however it shifts on the way. PRIVILEGED = True reads both
+    from the simulation instead (the old behaviour, to compare)."""
+
+    PRIVILEGED = False
 
     def __init__(self, model, data, row, viewer=None, log=print, eyes=None):
         super().__init__(model, data, row, viewer, log, eyes)
@@ -565,9 +573,9 @@ class CartEpisode(Episode):
             run.move("take the hand out of the shelf", run.pos + self.ys * (self.D / 2 + 0.10 - tip))
 
         # The grasp in the tray, and a lift height from which it is reachable without hitting anything.
-        R_b = d.xmat[self.book_body].reshape(3, 3)
+        p_b, R_b = self.tray_pose(self.book_body)
         R_h = R_b @ hand_in_book
-        p_h = d.xpos[self.book_body] + R_b @ self.pad_in_book - R_h @ [0, 0, insert_book.PAD_Z]
+        p_h = p_b + R_b @ self.pad_in_book - R_h @ [0, 0, insert_book.PAD_Z]
         up = np.array([0.0, 0.0, 1.0])
         opening = self.t / 2 + OPEN_SPARE
         seeds = [goal_q] + [np.array(PANDA_HOME[:7]) + [a, 0, 0, 0, 0, 0, 0] for a in (0.8, 1.6, -0.8)]
@@ -575,8 +583,8 @@ class CartEpisode(Episode):
         # swing; the hand comes down onto it from that height, so check the arm there. Where that is out
         # of reach at every lift height, out less: the swing's collision check (joint_route) takes the
         # tray's books in.
-        floor = d.xpos[self.book_body][2] - self.depth / 2
-        spines = max(d.xpos[i][2] + d.xmat[i].reshape(3, 3)[2, 1] * self.m.geom_size[g][1] for i, g in self.tray_bodies)
+        floor = p_b[2] - self.depth / 2
+        spines = max(p[2] + R[2, 1] * self.m.geom_size[g][1] for i, g in self.tray_bodies for p, R in [self.tray_pose(i)])
         clear = spines - floor + 0.06
 
         def grasp_at(q_lift, rise):
@@ -624,7 +632,7 @@ class CartEpisode(Episode):
         run.wait("open just past the book's thickness", 0.4, grip=255.0 * opening / 0.04)
         run.move("lower onto its spine", p_h, R_h, speed=0.05)
         run.wait(name.replace("(the hand-over is not modelled)", "out of the tray"), 0.8, grip=GRIP_CLOSED)
-        self.measure_in_hand()
+        self.measure_in_hand(hand_in_book)
         run.move("lift it out of its slot", p_h + rise * up, R_h, speed=0.08)
         # From here on the book swings with the hand: check it for collisions too, and swing it gently.
         # The pads hold only its spine end, so a fast swing twists it in the grip.
@@ -656,9 +664,10 @@ class CartEpisode(Episode):
             self.carrying = False
         if posture is not None:
             ik.q_rest = posture                                      # and come back in to insert()'s configuration
-        # The book has shifted a little in the grip on the way: from here on place the book, not the
-        # hand (as insert_book does), so the hand tilts to hold it straight.
-        self.measure_in_hand()
+        # The book has shifted a little in the grip on the way; only PRIVILEGED knows by how much.
+        # From here on place the book, not the hand (as insert_book does).
+        if self.PRIVILEGED:
+            self.measure_in_hand()
         # Come in a little above where insert() holds it (HOVER over the board): carried in, the book is
         # held less exactly than handed over, and its back, caught on the board's front edge, turned it
         # nose-up in the grip.
@@ -667,7 +676,8 @@ class CartEpisode(Episode):
         run.move("bring it up to the slot", *self.hand_for_book(centre + [0, 0, above], yaw), speed=0.05)
         if above:
             run.move("lower it to just above the board", *self.hand_for_book(centre, yaw), speed=0.02)
-        self.measure_in_hand()
+        if self.PRIVILEGED:
+            self.measure_in_hand()
 
     def joint_route(self, q0, q):
         """Episode.joint_route, checked every CARRY_CHECK rad while the arm
@@ -694,7 +704,8 @@ class CartEpisode(Episode):
         return None
 
     def slip(self):
-        """(deg, mm) the held book has turned and moved in the hand since measure_in_hand."""
+        """(deg, mm) the held book has turned and moved in the hand from where the robot believes it is
+        (from the simulation: for scoring and checks, not for control)."""
         d, ik = self.d, self.ik
         R_h = d.xmat[ik.hand].reshape(3, 3)
         R = R_h.T @ d.xmat[self.book_body].reshape(3, 3)
@@ -704,8 +715,8 @@ class CartEpisode(Episode):
 
     def check_grip(self, run):
         """While carrying: stop if the book is slipping (SLIP_TURN_DEG, SLIP_MM). Read from the
-        simulation; a robot would compare its wrist torque with the book's expected twist instead."""
-        if run.d.time < self.next_grip_check:
+        simulation, so PRIVILEGED only; a robot would compare its wrist torque with the book's expected twist."""
+        if not self.PRIVILEGED or run.d.time < self.next_grip_check:
             return
         self.next_grip_check = run.d.time + 0.05
         turn, moved = self.slip()
@@ -713,7 +724,23 @@ class CartEpisode(Episode):
             raise RuntimeError(f"the book slipped in the grip on the way from the tray "
                                f"({turn:.1f} deg, {moved:.0f} mm): hand it to the librarian")
 
-    def measure_in_hand(self):
+    def tray_pose(self, body):
+        """(position, rotation) of a tray book: where the tray's layout puts it (its slot, from the
+        catalogue thicknesses, standing spine-up on the floor), as build() placed it. PRIVILEGED: now."""
+        if self.PRIVILEGED:
+            return self.d.xpos[body].copy(), self.d.xmat[body].reshape(3, 3).copy()
+        qa = self.m.jnt_qposadr[self.m.body_jntadr[body]]
+        R = np.zeros(9)
+        mujoco.mju_quat2Mat(R, self.m.qpos0[qa + 3:qa + 7])
+        return self.m.qpos0[qa:qa + 3].copy(), R.reshape(3, 3)
+
+    def measure_in_hand(self, hand_in_book=None):
+        """Where the held book is in the hand: as planned, the hand's pose in the book's frame when it
+        closed on it (the fingers centre it across its thickness). PRIVILEGED: its true pose now."""
+        if not self.PRIVILEGED:
+            self.in_hand_R = hand_in_book.T
+            self.in_hand_p = np.array([0.0, 0.0, insert_book.PAD_Z]) - hand_in_book.T @ self.pad_in_book
+            return
         d, ik = self.d, self.ik
         R_h = d.xmat[ik.hand].reshape(3, 3)
         self.in_hand_p = R_h.T @ (d.xpos[self.book_body] - d.xpos[ik.hand])

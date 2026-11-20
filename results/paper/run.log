@@ -1,0 +1,4 @@
+results/paper/run.sh: line 27:  6856 Terminated: 15          ( for s in 1 0.5 2;
+do
+    $ev --perception noisy-learned --noise-scale $s --workers 3 --out results/paper/noisy_x$s.jsonl;
+done ) > results/paper/noisy.log 2>&1

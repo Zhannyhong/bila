@@ -1,0 +1,54 @@
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+{'scenario': 'clear', 'seed': 1, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.57, 1.6]}
+{'scenario': 'clear', 'seed': 2, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.54, 3.5]}
+{'scenario': 'clear', 'seed': 0, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.67, 2.1]}
+{'scenario': 'tight', 'seed': 1, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.57, 1.6]}
+{'scenario': 'tight', 'seed': 2, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.47, 3.1]}
+{'scenario': 'packed', 'seed': 0, 'privileged': False, 'success': False, 'safe': False, 'why': 'RuntimeError: No collision-free joint move to the next arm configuration', 'belief_err_grasp_deg_mm': None, 'belief_err_release_deg_mm': None}
+{'scenario': 'packed', 'seed': 1, 'privileged': False, 'success': False, 'safe': False, 'why': 'RuntimeError: No collision-free joint move to the next arm configuration', 'belief_err_grasp_deg_mm': None, 'belief_err_release_deg_mm': None}
+{'scenario': 'leaning', 'seed': 1, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.34, 2.0]}
+{'scenario': 'tight', 'seed': 0, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.47, 1.6]}
+{'scenario': 'leaning', 'seed': 0, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.49, 1.9]}
+{'scenario': 'leaning', 'seed': 2, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.57, 3.2]}
+{'scenario': 'clear', 'seed': 1, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.03, 0.4]}
+{'scenario': 'clear', 'seed': 0, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.01, 0.2]}
+{'scenario': 'clear', 'seed': 2, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.02, 0.1]}
+{'scenario': 'tight', 'seed': 1, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.03, 0.3]}
+{'scenario': 'leaning', 'seed': 1, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.02, 0.1]}
+{'scenario': 'tight', 'seed': 2, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.01, 0.3]}
+{'scenario': 'leaning', 'seed': 0, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.03, 0.1]}
+{'scenario': 'tight', 'seed': 0, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.01, 0.0]}
+{'scenario': 'packed', 'seed': 1, 'privileged': True, 'success': False, 'safe': False, 'why': 'RuntimeError: No collision-free joint move to the next arm configuration', 'belief_err_grasp_deg_mm': None, 'belief_err_release_deg_mm': None}
+{'scenario': 'packed', 'seed': 0, 'privileged': True, 'success': False, 'safe': False, 'why': 'RuntimeError: No collision-free joint move to the next arm configuration', 'belief_err_grasp_deg_mm': None, 'belief_err_release_deg_mm': None}
+{'scenario': 'leaning', 'seed': 2, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.01, 0.2]}
+{'scenario': 'packed', 'seed': 2, 'privileged': False, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.6], 'belief_err_release_deg_mm': [0.54, 2.0]}
+{'scenario': 'packed', 'seed': 2, 'privileged': True, 'success': True, 'safe': True, 'why': '', 'belief_err_grasp_deg_mm': [0.0, 0.0], 'belief_err_release_deg_mm': [0.01, 0.1]}
+         read 22 call numbers: 018.5 goes between 018.0 and 019.0, at x = 134 mm
+         read 22 call numbers: 020.5 goes between 020.0 and 021.0, at x = -51 mm
+         read 27 call numbers: 022.5 goes between 022.0 and 023.0, at x = 61 mm
+         read 22 call numbers: 018.5 goes between 018.0 and 019.0, at x = 126 mm
+         read 27 call numbers: 018.5 goes between 018.0 and 019.0, at x = 91 mm
+         read 19 call numbers: 016.5 goes between 016.0 and 017.0, at x = 122 mm
+         read 24 call numbers: 022.5 goes between 022.0 and 023.0, at x = -4 mm
+         read 17 call numbers: 019.5 goes between 019.0 and 020.0, at x = -72 mm
+         read 22 call numbers: 018.5 goes between 018.0 and 019.0, at x = 134 mm
+         read 25 call numbers: 021.5 goes between 021.0 and 022.0, at x = 36 mm
+         read 27 call numbers: 022.5 goes between 022.0 and 023.0, at x = 61 mm
+         read 24 call numbers: 022.5 goes between 022.0 and 023.0, at x = -4 mm
+         read 17 call numbers: 019.5 goes between 019.0 and 020.0, at x = -72 mm
+         read 27 call numbers: 018.5 goes between 018.0 and 019.0, at x = 91 mm
+         read 25 call numbers: 021.5 goes between 021.0 and 022.0, at x = 36 mm
+         read 26 call numbers: 018.5 goes between 018.0 and 019.0, at x = 39 mm
+         read 22 call numbers: 020.5 goes between 020.0 and 021.0, at x = -51 mm
+         read 19 call numbers: 016.5 goes between 016.0 and 017.0, at x = 122 mm

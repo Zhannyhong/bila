@@ -1,0 +1,24 @@
+{"scenario": "clear", "seed": 1, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.57, 1.6]}
+{"scenario": "clear", "seed": 2, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.54, 3.5]}
+{"scenario": "clear", "seed": 0, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.67, 2.1]}
+{"scenario": "tight", "seed": 1, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.57, 1.6]}
+{"scenario": "tight", "seed": 2, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.47, 3.1]}
+{"scenario": "packed", "seed": 0, "privileged": false, "success": false, "safe": false, "why": "RuntimeError: No collision-free joint move to the next arm configuration", "belief_err_grasp_deg_mm": null, "belief_err_release_deg_mm": null}
+{"scenario": "packed", "seed": 1, "privileged": false, "success": false, "safe": false, "why": "RuntimeError: No collision-free joint move to the next arm configuration", "belief_err_grasp_deg_mm": null, "belief_err_release_deg_mm": null}
+{"scenario": "leaning", "seed": 1, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.34, 2.0]}
+{"scenario": "tight", "seed": 0, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.47, 1.6]}
+{"scenario": "leaning", "seed": 0, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.49, 1.9]}
+{"scenario": "leaning", "seed": 2, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.57, 3.2]}
+{"scenario": "clear", "seed": 1, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.03, 0.4]}
+{"scenario": "clear", "seed": 0, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.01, 0.2]}
+{"scenario": "clear", "seed": 2, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.02, 0.1]}
+{"scenario": "tight", "seed": 1, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.03, 0.3]}
+{"scenario": "leaning", "seed": 1, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.02, 0.1]}
+{"scenario": "tight", "seed": 2, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.01, 0.3]}
+{"scenario": "leaning", "seed": 0, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.03, 0.1]}
+{"scenario": "tight", "seed": 0, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.01, 0.0]}
+{"scenario": "packed", "seed": 1, "privileged": true, "success": false, "safe": false, "why": "RuntimeError: No collision-free joint move to the next arm configuration", "belief_err_grasp_deg_mm": null, "belief_err_release_deg_mm": null}
+{"scenario": "packed", "seed": 0, "privileged": true, "success": false, "safe": false, "why": "RuntimeError: No collision-free joint move to the next arm configuration", "belief_err_grasp_deg_mm": null, "belief_err_release_deg_mm": null}
+{"scenario": "leaning", "seed": 2, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.01, 0.2]}
+{"scenario": "packed", "seed": 2, "privileged": false, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.6], "belief_err_release_deg_mm": [0.54, 2.0]}
+{"scenario": "packed", "seed": 2, "privileged": true, "success": true, "safe": true, "why": "", "belief_err_grasp_deg_mm": [0.0, 0.0], "belief_err_release_deg_mm": [0.01, 0.1]}
