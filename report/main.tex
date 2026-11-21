@@ -5,7 +5,7 @@
 \usepackage[preprint]{neurips_2025}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[colorlinks=false, urlcolor=magenta, citecolor=blue, pdfborder={0 0 0}]{hyperref}
+\usepackage[pdfborder={0 0 0}]{hyperref}
 \usepackage{url}
 \usepackage{booktabs}
 \usepackage{amsfonts}
@@ -17,14 +17,15 @@
 \usepackage{amssymb}
 \usepackage{paralist}
 \usepackage{placeins}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
 
 \newcommand{\coderepo}{\url{https://github.com/Zhannyhong/bila}}
 
-\title{Making Room on the Shelf: Closed-Loop Gap Creation and Learned Corrections for Robotic Book Reshelving\\[4pt]
-\normalsize CS5478 Project}
+\title{Making Room on the Shelf: Closed-Loop Gap Creation and Learned Corrections for Robotic Book Reshelving}
 
 \author{%
-  Zhu Yu Hao\\ A0356892L \And Victor\\ A0258049W \And Zhan Hong\\ A0271539X
+  Zhu Yu Hao\\ A0356892L \And Victor Peng\\ A0258049W \And Lee Zhan Hong\\ A0271539X
 }
 
 \begin{document}
@@ -38,8 +39,8 @@ Franka Panda with a realistic wrist RGB-D camera. A closed-loop controller looks
 of four skills: stand up a leaning neighbour, widen the gap, shove a run of books into the row's free
 space, or insert. With exact perception it places 97.5\% of books across 800 clear, tight, leaning and
 packed rows, and 94.5\% of 200 rows of real books; with the camera and a learned spine segmenter it places
-79\%. Scaling the camera's measured errors from zero to twice their size lowers success from 94.5\% to
-49.5\% with the controller unchanged, so perception, not control, limits the system. Consistent with this,
+79\%. Adding a model of the camera's measured errors, scaled from zero to twice its size, lowers success
+from 94.5\% to 49.5\% with the controller unchanged, so perception, not control, limits the system. Consistent with this,
 neither a residual PPO policy for insertion nor a learned skill selector improves on the controller.
 Code and instructions: \coderepo.
 \end{abstract}
@@ -68,8 +69,8 @@ in~\citet{liu2026residual} or a learned skill selector, recovers the remaining f
         and an end-to-end book-return cart.
   \item A closed-loop controller over four skills (stand up, widen, shove, insert) that places 97.5\% of books
         across 800 rows with exact perception and 94.5\% of 200 rows of real books.
-  \item An error-source analysis: success falls from 94.5\% to 49.5\% as the camera's measured errors are
-        scaled from zero to twice their size, with the controller unchanged.
+  \item An error-source analysis: success falls from 94.5\% to 49.5\% as a model of the camera's measured
+        errors is scaled from zero to twice its size, with the controller unchanged.
   \item An evaluation of a residual PPO policy and a fitted-Q skill selector on top of the controller,
         showing why neither helps, and a design finding for residual actions: corrections expressed as
         increments drift to their bounds, while target corrections do not.
@@ -90,9 +91,10 @@ with a wrist camera, and evaluate over hundreds of randomized rows rather than a
 hand-designed controller, so learning starts from competent behaviour~\citep{johannink2019residual,
 silver2018residual}. \citet{liu2026residual} apply it to book insertion: a nominal controller aligns the
 book with the slot, and PPO adds bounded incremental corrections to position, yaw and pitch from a 12-D
-geometric state and learns when to release. It raises success from 27\% to 93\% in simulation and to 63\%
-on hardware, with gains largest where the nominal controller is weakest and none below 2\,mm of
-clearance. We follow its design (PPO, bounded task-space corrections, a progress reward) but our nominal
+geometric state and learns when to release. At 3\,mm of clearance it raises success from 27\% to 93\% on
+a fixed bank of simulated conditions (from 38\% to 98.5\% in simulation matched to their hardware), and from
+27\% to 63\% on hardware. Clearance is its main limit: in simulation success falls to 54\% at 2\,mm and 9\%
+at 1\,mm. We follow its design (PPO, bounded task-space corrections, a progress reward) but our nominal
 controller already succeeds on most insertions, our residual sees the camera's estimate rather than true
 geometry, and the neighbouring books are free bodies the insertion can push.
 
@@ -115,14 +117,41 @@ residual policy may correct the hand's target. After every skill the robot looks
 
 \begin{figure}[t]
 \centering
-\scriptsize
-\begin{verbatim}
- RGB-D views --> perception --> s_hat --> skill selector --> skill --> planned moves --> arm
-                                  ^                            |          ^ (contact moves)
-                                  |                            |          +-- residual pi(o_t) <-- s_hat, q, wrist F/T
-                                  +-------- look again <-------+
-\end{verbatim}
-\caption{The closed loop. The robot re-observes the row after every skill.}
+\begin{tikzpicture}[
+    font=\footnotesize, >={Stealth[length=5pt]}, line width=0.6pt,
+    box/.style={draw=black!70, fill=black!4, rounded corners=2pt, align=center,
+                minimum width=2.2cm, minimum height=1.4cm, inner sep=3pt},
+    learned/.style={box, draw=blue!60!black, fill=blue!6},
+    flow/.style={->, black!75}]
+  % top row: from images to a skill
+  \node[box]     (cam)   at (0,0)    {\textbf{Wrist camera}\\RGB-D views};
+  \node[box]     (perc)  at (2.8,0)  {\textbf{Perception}\\spine masks,\\plane fits, ArUco};
+  \node[box]     (est)   at (5.6,0)  {\textbf{Shelf estimate} $\hat{s}$\\spines, gap,\\free space};
+  \node[box]     (sel)   at (8.4,0)  {\textbf{Skill selector}\\rules or fitted Q};
+  \node[box]     (skill) at (11.2,0) {\textbf{Skill}\\stand up, widen,\\shove, insert};
+  % bottom row: from the skill's moves to the arm
+  \node[box]     (moves) at (11.2,-3) {\textbf{Planned moves}\\free and contact};
+  \node[draw=black!75, circle, inner sep=1.2pt] (sum) at (8.4,-3) {$+$};
+  \node[box]     (arm)   at (0,-3)   {\textbf{Franka Panda}\\on a lift};
+  \node[learned, minimum height=0.95cm] (res) at (8.4,-1.6)
+        {\textbf{Residual PPO} $\pi_\theta(o_t)$\\from $\hat{s}$, $q$, wrist F/T};
+
+  \draw[flow] (cam) -- (perc);
+  \draw[flow] (perc) -- (est);
+  \draw[flow] (est) -- (sel);
+  \draw[flow] (sel) -- (skill);
+  \draw[flow] (skill) -- (moves);
+  \draw[flow] (moves) -- (sum);
+  \draw[flow] (sum) -- node[above] {targets $+\,c_t$} (arm);
+  \draw[flow, blue!60!black] (res) -- node[left, align=right, text=blue!60!black, font=\scriptsize]
+        {$c_t$, insertion's\\contact moves only} (sum);
+  \draw[flow, dashed, blue!60!black] (est.south) |- (res.west);
+  \draw[flow] (arm) -- node[right, align=left] {look again\\after every skill} (cam);
+\end{tikzpicture}
+\caption{The closed loop. Perception turns wrist RGB-D views into a shelf estimate $\hat{s}$, the
+selector picks a skill, and the skill's planned moves drive the arm. During the insertion's contact moves
+a residual policy (blue) adds a bounded correction $c_t$ to the hand's target. The robot looks again
+after every skill.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -140,7 +169,9 @@ shelf, $z$ up.
 with fingers replaced by bars 10\,mm wide and 12\,cm long so they fit between books, a force/torque
 sensor at the flange and an RGB-D camera (modelled on the RealSense D405) on the wrist. Any arm contact
 with the shelf over 1\,N counts as a collision. The book is \emph{placed} if it ends upright, in place (its
-spine within 10\,mm of the more protruding neighbour's) and released.
+spine within 10\,mm of the more protruding neighbour's) and released. A collision does not void a placement,
+but collisions are rare: one of the 189 real-book rows placed with exact perception had one, and none of the
+158 placed with the camera.
 
 \subsection{Perception from a wrist camera}
 
@@ -154,7 +185,7 @@ $r_\pm = L_\pm - \sum_{i \in \pm} t_i$, with $L_\pm$ the length of that side.
 
 \paragraph{Camera errors and fiducial correction.} Depth follows the D405: noise growing with depth, edge
 spread and a small offset. The camera's mounting has a calibration error drawn per episode (about
-1.5\,mm and $0.3^\circ$ per axis), which shifts the whole estimate by up to 11\,mm (95th percentile); the edge
+1.5\,mm and $0.3^\circ$ per axis), which shifts the whole estimate by 11\,mm at the 95th percentile; the edge
 spread makes every book appear 2.4--3.8\,mm too thick. ArUco markers~\citep{garrido2014aruco} with known
 positions every 15\,cm along each board's front edge give the camera pose relative to the shelf in each
 image. Only the along-row and vertical components are corrected; a full 6-DoF PnP correction is poorly
@@ -199,9 +230,9 @@ c_t = \Pi_{[\ell,u]}\!\left(c_{t-1} + \operatorname{clip}(c^\ast_t - c_{t-1}, -\
 with rate limit $\delta = (3\,\text{mm}, 3\,\text{mm}, 3\,\text{mm}, 0.4^\circ, 0.4^\circ)$. The hand tracks the
 controller's pose offset by $c_t$; with the last layer initialised to zero, the untrained policy \emph{is}
 the controller. In the incremental form of~\citet{liu2026residual}, $c_t = c_{t-1} + a_t \odot \delta$, any
-mean action $\bar a$ makes the correction grow linearly, $\|c_t\| \approx t\,|\bar a|\,\delta$: over a slide of
-120--170 decisions a mean action of 0.1 drifts 6\,mm, more than a book's 5--7\,mm of clearance, whereas the
-target form holds 0.4\,mm. A fixed policy outputting 0.1 places 3 of 8 books with increments and 8 of 8 with
+mean action $\bar a$ makes the correction grow linearly, by $n\,|\bar a|\,\delta$ after $n$ decisions: a mean
+action of 0.1 adds 0.3\,mm per decision and passes a book's 5--7\,mm of clearance within about 20 decisions,
+a small part of a slide of 120--170, whereas the target form holds 0.4\,mm. A fixed policy outputting 0.1 places 3 of 8 books with increments and 8 of 8 with
 targets.
 
 \paragraph{Reward and training.} The reward pays $+1$ per cm of progress towards an accepted placement and
@@ -273,7 +304,7 @@ start. Real books with hinged pages change little. Neighbours move a few millime
 rows, where the shove moves a run of books by design (median 59\,mm). Most remaining failures are packed
 rows in which no collision-free arm configuration reaches the slot.
 
-The camera costs 16 points on real books: 33 rows are placed only with exact perception and 2 only with the
+The camera costs 15.5 points on real books: 33 rows are placed only with exact perception and 2 only with the
 camera ($p = 4 \times 10^{-8}$). The losses concentrate in packed rows (82\%\,$\to$\,52\%) and tight rows
 (100\%\,$\to$\,82\%). In packed rows the cause is systematic: every book appears 2.4--3.8\,mm too thick, so along
 a side of 10--15 books the free space is underestimated by 30--60\,mm and the controller declines a shove
@@ -283,7 +314,8 @@ catch a neighbour on the way in. The camera also takes 2--4 times longer, mostly
 \subsection{Where the errors come from}
 
 \paragraph{Fiducial correction.} With box books and the simulator's masks, correcting the camera pose raises
-tight-row success from 67\% to 87\% and clear rows from 95\% to 97\% (100 rows each; $p = 3 \times 10^{-5}$). With
+tight-row success from 67\% to 87\% and clear rows from 95\% to 97\% (seeds 0--99, 100 rows each;
+$p = 3 \times 10^{-5}$). With
 real books and the learned segmenter it does not help significantly (158 against 155 rows; $p = 0.58$): the
 learned masks' own errors, which a pose correction cannot remove, take a larger share of the error.
 
@@ -314,17 +346,20 @@ $k$ & Clear & Tight & Leaning & Packed & All \\
 
 \subsection{Learned components}
 
-\paragraph{Residual PPO.} Under the training conditions the controller fails only 2--6\% of the insertions
+\paragraph{Residual PPO.} Under the training conditions the controller fails only 2--7\% of the insertions
 it reaches (6 of 250 in clear rows, 11 of 241 in tight, 16 of 247 in leaning). On 20 validation cases
 balanced between failures and successes, the best checkpoint rescues 2 of the controller's 10 failures and
 loses none (12/20 against 10/20, $p = 0.5$), optimistic since these cases also selected it. On a held-out pool
 of 24 cases from unseen layouts (the controller's 12 failures among 355 labelled cases plus 12 successes),
-the controller places 15 and the residual places 15, rescuing one and losing one. The residual acts only
+the controller places 15 and the residual places 15, rescuing one and losing one. The controller's three
+extra placements are books labelled as inserted but not placed that were placed when the same case was run
+again, so these borderline outcomes are not exactly repeatable. The residual acts only
 during insertion, so it cannot fix an underestimated free space or a gap left too narrow, which is where
 the camera's losses occur. This is the main difference from~\citet{liu2026residual}, whose nominal
 controller fails 73\% of insertions.
 
-\paragraph{Learned skill selection.} On 25 rows per scenario with the noisy perception model, the learned
+\paragraph{Learned skill selection.} On 25 rows per scenario of box books with the noisy perception model at
+$k = 1$, the learned
 selector ties the rules at 76 of 100 rows ($p = 1$). It chooses differently on about half the rows, but its
 wins and losses cancel: it shoves before standing up when a leaning book is wedged and gives up less often,
 but it learned to skip some stand-ups, leaving a leaning book that later catches the inserted one.
@@ -333,8 +368,7 @@ but it learned to skip some stand-ups, leaving a leaning book that later catches
 the rules and the learned selector alike; both failures are packed scenes where the arm cannot reach the
 slot. Without privileged grasp information, the robot's belief about the held book is 1.6--3.5\,mm and
 0.3--0.7$^\circ$ off at release, and the result is the same 10 of 12 as when it was given the book's true pose,
-so the insertion tolerates a few millimetres of in-hand error. Recordings are in the repository
-(\texttt{runs/cart\_demo\_*.mp4}).
+so the insertion tolerates a few millimetres of in-hand error. Appendix~\ref{app:code} shows how to watch or record any of these scenes.
 
 % =====================================================================================================
 \section{Conclusion}
@@ -342,14 +376,14 @@ so the insertion tolerates a few millimetres of in-hand error. Recordings are in
 We studied robotic reshelving including the step prior work assumes away: making room for the book. A
 closed-loop controller over four gap-creation skills places 97.5\% of books across clear, tight, leaning and
 packed rows with exact perception, and 79\% of real-book rows from a wrist RGB-D camera with learned
-segmentation. Success follows the size of the perception error, from 94.5\% without it to 49.5\% at twice its
-measured size, and the errors that matter are systematic (a thickness bias summed along the row, a
-calibration shift) rather than random. Neither an insertion residual nor a different choice of skill can
+segmentation. Success follows the size of the perception error, from 94.5\% without it to 49.5\% at twice
+the error model's size, and the largest single loss, in packed rows, comes from a systematic error: a
+thickness bias summed along the row. Neither an insertion residual nor a different choice of skill can
 correct a wrong belief about the row, so both learned layers had little to fix: the reverse of
 \citet{liu2026residual}, where a weak nominal controller leaves most of the gain to learning.
 
-\paragraph{Limitations.} Everything is in simulation, and \citet{liu2026residual} report a drop from 98.5\% to
-63.3\% on hardware. Books are rigid apart from their hinged pages, so soft covers, a failure mode reported
+\paragraph{Limitations.} Everything is in simulation, and \citet{liu2026residual} report 98.5\% in simulation
+matched to their hardware but 63.3\% on the robot. Books are rigid apart from their hinged pages, so soft covers, a failure mode reported
 by~\citet{sygo2023pbbm}, are not modelled. The grasp's friction is not calibrated: the pads' sliding friction
 (1.0) suits rubber pads on matte covers, and their torsional friction is 3--5 times what a 10\,mm pad gives,
 so heavy books twist less in the grip than on hardware. Test sets for the learned layers are small (20
@@ -372,32 +406,43 @@ than for insertion, would act where most failures occur.
 The code is at \coderepo; its README describes the simulator, every component and the experiments in
 detail. Setup and the main commands (run from the repository root):
 \begin{verbatim}
-git clone --recurse-submodules https://github.com/Zhannyhong/bila && cd bila
-uv sync                                 # add --group rl for the segmenter and PPO (torch)
+git clone --recurse-submodules https://github.com/Zhannyhong/bila
+cd bila
+uv sync          # add --group rl for the segmenter and PPO (torch)
 
 # watch the book-return cart (macOS: mjpython; elsewhere: python)
 uv run mjpython -m bila.control.cart_demo --scenario tight --view
-uv run python -m bila.viz.live_view --scenario tight        # web page: wrist and scene cameras
+# the same on a web page, with the wrist and scene cameras
+uv run python -m bila.viz.live_view --scenario tight
+# record it to an mp4 (needs ffmpeg)
+uv run python -m bila.viz.record_cart cart_tight.mp4 --scenario tight
 
 # the controller on one row: clear | tight | leaning | packed
 uv run python -m bila.control.insert_book --scenario tight --seed 0
 
-# Table 1, real books, 50 rows per scenario (perception: truth | camera | noisy-learned)
-uv run python -m bila.control.eval_reshelve run --perception truth --catalogue --book-pages 4 \
-    --book-meshes --scenarios clear tight leaning packed --seeds 0:50 --out results/truth.jsonl
+# Table 1, real books, 50 rows per scenario
+# (perception: truth | camera | noisy-learned)
+uv run python -m bila.control.eval_reshelve run --perception truth \
+    --catalogue --book-pages 4 --book-meshes \
+    --scenarios clear tight leaning packed --seeds 0:50 \
+    --out results/slide_check/truth.jsonl
 \end{verbatim}
-The scripts behind every table are in \texttt{results/paper/run.sh}, and
-\texttt{notebooks/08\_paper\_draft.ipynb} recomputes the tables from the result files.
+The real-book rows of Tables~\ref{tab:main} and~\ref{tab:sweep} and the residual's held-out test are run by
+\texttt{results/paper/run.sh}, the residual's training pools and training by \texttt{results/find\_hard.sh}
+and \texttt{results/train\_mix.sh}, the skill selector by \texttt{results/hl.sh} and
+\texttt{results/hl\_eval.sh}, and the cart by \texttt{results/hl\_cart.sh}. Runs with the learned segmenter
+need its weights, which are not in the repository and are trained as the README describes.
+\texttt{notebooks/08\_paper\_draft.ipynb} recomputes these results from the result files.
 
 \section{Additional details}
 \label{app:details}
 
 \paragraph{Residual reward.} With $d_t$ the book's distance from an accepted placement (m), $D_t$ the summed
 displacement of the other books (m), $F_t$ the peak wrist force (N) and $\Delta_t$ the change of correction,
-\begin{equation*}
-r_t = 100\,(d_{t-1} - d_t) - 50\,(D_t - D_{t-1}) - 0.01\,[F_t - 60]_+ - 0.1\,\|\Delta_t / \delta\|^2 - 0.01
-+ \mathbb{1}_{\text{end}} \cdot \{+10,\ -5,\ -10\}.
-\end{equation*}
+\begin{multline*}
+r_t = 100\,(d_{t-1} - d_t) - 50\,(D_t - D_{t-1}) - 0.01\,[F_t - 60]_+ - 0.1\,\|\Delta_t / \delta\|^2 - 0.01 \\
++ \mathbf{1}_{\text{end}} \cdot \{+10,\ -5,\ -10\}.
+\end{multline*}
 PPO uses a clipped surrogate with $\epsilon = 0.2$, $\gamma = 0.99$, GAE $\lambda = 0.95$, and an action scale
 ramped from 0.25 to 1 over the first 50k decisions.
 
@@ -405,7 +450,7 @@ ramped from 0.25 to 1 over the first 50k decisions.
 10$\,mm), \texttt{shove}, \texttt{stand\_up\_left}, \texttt{stand\_up\_right}, \texttt{set\_aside} (back a
 jammed book out and look again) and \texttt{give\_up}. The 15 state features are the neighbours' leans, the
 gap's spare width against $t$ and $t + m$, the room for the fingers, the free space on each side, $t$, the
-counts of each skill taken, jams, steps, whether the last skill achieved anything, and whether a book is
+numbers of stand-ups, widenings and shoves taken, jams, steps, whether the last skill achieved anything, and whether a book is
 held. The reward is $-0.02$ per step and $+1$ for a placed book; $Q$ is an MLP (15--64--64--8) refitted for 8
 rounds of fitted Q iteration on episodes from seeds 5{,}000--5{,}059, and tested on seeds 0--24.
 
