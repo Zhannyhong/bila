@@ -9,4 +9,5 @@ for s in clear tight leaning; do
 done
 uv run --group rl python -m bila.rl.hard_cases label --pools clear_cand tight_cand leaning_cand --segmenter $W \
     --segmenter-device cpu --workers 12 --out results/slide_check/labels.jsonl
-uv run --group rl python -m bila.rl.hard_cases mix --labels results/slide_check/labels.jsonl --suffix _mix
+ls scenes/gap_pool_*_mix.pkl > /dev/null 2>&1 || \
+    uv run --group rl python -m bila.rl.hard_cases mix --labels results/slide_check/labels.jsonl --suffix _mix

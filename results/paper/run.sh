@@ -23,8 +23,9 @@ $ev --perception camera --segmenter $W --no-fiducials --workers 4 \
  done
  uv run --group rl python -m bila.rl.hard_cases label --pools clear_test tight_test leaning_test --segmenter $W \
      --workers 2 --out $out/labels_test.jsonl
- uv run --group rl python -m bila.rl.hard_cases mix --labels $out/labels_test.jsonl \
-     --pools clear=clear_test tight=tight_test leaning=leaning_test --suffix _test50 --val-fraction 0
+ ls scenes/gap_pool_*_test50.pkl > /dev/null 2>&1 || uv run --group rl python -m bila.rl.hard_cases mix \
+     --labels $out/labels_test.jsonl --pools clear=clear_test tight=tight_test leaning=leaning_test \
+     --suffix _test50 --val-fraction 0
  if [ -d runs/insertion_mix ]; then
    uv run --group rl python -m bila.rl.hard_cases test --run runs/insertion_mix --workers 2 \
        --out $out/residual_test.json
