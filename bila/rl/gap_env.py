@@ -839,14 +839,10 @@ class GapEnv(gym.Env):
         self.inserting = {"bodies": bodies, "pos": ep.d.xpos[bodies].copy(), "go": to_go(ep), "moved": 0.0}
         return GAP_BONUS if ep.at_insert["wide"] else 0.0
 
-    def insertion_reward(self) -> float:
-        """The insertion's part of this decision's reward: GAP_BONUS at the
-        first decision after the script turned to insert, and from there the
-        book's progress, less the other books moving."""
-        return float(sum(self.insertion_rewards().values()))
-
     def insertion_rewards(self) -> dict:
-        """Insertion shaping and the gap bonus, before reward normalisation."""
+        """The insertion's part of this decision's reward, before normalisation: GAP_BONUS at the first
+        decision after the script turned to insert, and from there the book's progress, less the other
+        books moving."""
         ep = self.ep
         if ep.at_insert is None:
             return {}

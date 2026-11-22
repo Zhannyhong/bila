@@ -1,7 +1,7 @@
 [project]
-name = "bookshelf"
+name = "bila"
 version = "0.1.0"
-description = "Add your description here"
+description = "BILA (Book Insertion Library Assistant): a simulated library robot that puts books back on the shelf"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,12 +15,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "matplotlib>=3.11.2",
     "pytest>=9.1.1",
 ]
 rl = [
     "gymnasium>=1.4.0",
-    "stable-baselines3>=2.9.2",
     "tensorboard>=2.21.0",
     "torch>=2.15.0",
     "torchvision>=0.29.2",
