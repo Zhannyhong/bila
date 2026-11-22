@@ -1,0 +1,529 @@
+{
+ "checkpoint": "runs/insertion_mix/best.pt",
+ "suffix": "_test50",
+ "script": {
+  "episodes": 24,
+  "success": 0.625,
+  "missed": 0.25,
+  "failure": 0.125,
+  "narrow": 0.0,
+  "truncated": 0.0,
+  "preparation_failed": 0.0,
+  "gap_gain_mm": 0.0,
+  "ended_per_episode": 0.0,
+  "return": 14.71000074950483,
+  "controlled_episodes": 24,
+  "preparation_attempts_failed": 0,
+  "success_given_control": 0.625,
+  "reward_action": 0.0,
+  "reward_disturbance": -1.3361584098249801,
+  "reward_force": -0.13825237041657726,
+  "reward_gap": 0.0,
+  "reward_gap_bonus": 0.0,
+  "reward_insertion_progress": 14.632485732309283,
+  "reward_lift": 0.0,
+  "reward_terminal": 3.75,
+  "reward_tilt": -0.5451575358962307,
+  "reward_time": -1.6529166666666668,
+  "return_failure": -22.245099574311272,
+  "return_missed": 6.365204376423594,
+  "return_success": 25.438939363500545,
+  "wide_at_insert": 0.875,
+  "success_clear": 0.6666666666666666,
+  "success_leaning": 0.5,
+  "success_tight": 0.6666666666666666
+ },
+ "policy": {
+  "episodes": 24,
+  "success": 0.625,
+  "missed": 0.25,
+  "failure": 0.125,
+  "narrow": 0.0,
+  "truncated": 0.0,
+  "preparation_failed": 0.0,
+  "gap_gain_mm": 0.0,
+  "ended_per_episode": 0.0,
+  "return": 13.431694964260174,
+  "controlled_episodes": 24,
+  "preparation_attempts_failed": 0,
+  "success_given_control": 0.625,
+  "reward_action": -0.2690255694291009,
+  "reward_disturbance": -1.7903626864768303,
+  "reward_force": -0.27518240399755056,
+  "reward_gap": 0.0,
+  "reward_gap_bonus": 0.0,
+  "reward_insertion_progress": 14.505086204018022,
+  "reward_lift": 0.0,
+  "reward_terminal": 3.75,
+  "reward_tilt": -0.8484039131877014,
+  "reward_time": -1.6404166666666662,
+  "return_failure": -26.163554225130166,
+  "return_missed": 3.6623963920443257,
+  "return_success": 25.258464231024583,
+  "wide_at_insert": 0.875,
+  "success_clear": 0.6666666666666666,
+  "success_leaning": 0.5,
+  "success_tight": 0.6666666666666666
+ },
+ "recovered": 1,
+ "lost": 1,
+ "success_delta": 0.0,
+ "cases": [
+  {
+   "case": {
+    "geometry_seed": 30003,
+    "grasp_seed": [
+     30003,
+     2
+    ],
+    "perception_seed": [
+     30003,
+     1
+    ],
+    "scenario": "leaning",
+    "variant": 0
+   },
+   "script": "failure",
+   "policy": "failure",
+   "script_offset_m": null,
+   "policy_offset_m": null
+  },
+  {
+   "case": {
+    "geometry_seed": 30003,
+    "grasp_seed": [
+     30003,
+     2
+    ],
+    "perception_seed": [
+     30003,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "missed",
+   "script_offset_m": 0.002493704751243331,
+   "policy_offset_m": 0.042924717835353676
+  },
+  {
+   "case": {
+    "geometry_seed": 30007,
+    "grasp_seed": [
+     30007,
+     2
+    ],
+    "perception_seed": [
+     30007,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.005189343047675737,
+   "policy_offset_m": 0.005217839641525349
+  },
+  {
+   "case": {
+    "geometry_seed": 30015,
+    "grasp_seed": [
+     30015,
+     2
+    ],
+    "perception_seed": [
+     30015,
+     1
+    ],
+    "scenario": "clear",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.004922139362942057,
+   "policy_offset_m": 0.0044371563347677945
+  },
+  {
+   "case": {
+    "geometry_seed": 30015,
+    "grasp_seed": [
+     30015,
+     2
+    ],
+    "perception_seed": [
+     30015,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "missed",
+   "policy": "missed",
+   "script_offset_m": 0.01178573712414814,
+   "policy_offset_m": 0.011731650836379268
+  },
+  {
+   "case": {
+    "geometry_seed": 30016,
+    "grasp_seed": [
+     30016,
+     2
+    ],
+    "perception_seed": [
+     30016,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.009235845486390365,
+   "policy_offset_m": 0.008884786530532207
+  },
+  {
+   "case": {
+    "geometry_seed": 30020,
+    "grasp_seed": [
+     30020,
+     2
+    ],
+    "perception_seed": [
+     30020,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.008175060344404766,
+   "policy_offset_m": 0.008143532113079499
+  },
+  {
+   "case": {
+    "geometry_seed": 30021,
+    "grasp_seed": [
+     30021,
+     2
+    ],
+    "perception_seed": [
+     30021,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.004179521082595422,
+   "policy_offset_m": 0.003724068228882993
+  },
+  {
+   "case": {
+    "geometry_seed": 30026,
+    "grasp_seed": [
+     30026,
+     2
+    ],
+    "perception_seed": [
+     30026,
+     1
+    ],
+    "scenario": "clear",
+    "variant": 0
+   },
+   "script": "failure",
+   "policy": "failure",
+   "script_offset_m": null,
+   "policy_offset_m": null
+  },
+  {
+   "case": {
+    "geometry_seed": 30035,
+    "grasp_seed": [
+     30035,
+     2
+    ],
+    "perception_seed": [
+     30035,
+     1
+    ],
+    "scenario": "clear",
+    "variant": 0
+   },
+   "script": "missed",
+   "policy": "missed",
+   "script_offset_m": 0.010575998508891932,
+   "policy_offset_m": 0.010530212326886085
+  },
+  {
+   "case": {
+    "geometry_seed": 30035,
+    "grasp_seed": [
+     30035,
+     2
+    ],
+    "perception_seed": [
+     30035,
+     1
+    ],
+    "scenario": "leaning",
+    "variant": 0
+   },
+   "script": "missed",
+   "policy": "missed",
+   "script_offset_m": 0.01069124466072413,
+   "policy_offset_m": 0.010463871235683514
+  },
+  {
+   "case": {
+    "geometry_seed": 30035,
+    "grasp_seed": [
+     30035,
+     2
+    ],
+    "perception_seed": [
+     30035,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "missed",
+   "policy": "success",
+   "script_offset_m": 0.01006899232397293,
+   "policy_offset_m": 0.009932330533793443
+  },
+  {
+   "case": {
+    "geometry_seed": 30038,
+    "grasp_seed": [
+     30038,
+     2
+    ],
+    "perception_seed": [
+     30038,
+     1
+    ],
+    "scenario": "leaning",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.0002964054717836395,
+   "policy_offset_m": 0.00028641789364600156
+  },
+  {
+   "case": {
+    "geometry_seed": 30040,
+    "grasp_seed": [
+     30040,
+     2
+    ],
+    "perception_seed": [
+     30040,
+     1
+    ],
+    "scenario": "clear",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.0004641725143398334,
+   "policy_offset_m": 0.0002735436218833376
+  },
+  {
+   "case": {
+    "geometry_seed": 30057,
+    "grasp_seed": [
+     30057,
+     2
+    ],
+    "perception_seed": [
+     30057,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.0028702501331852315,
+   "policy_offset_m": 0.0025876124932491945
+  },
+  {
+   "case": {
+    "geometry_seed": 30060,
+    "grasp_seed": [
+     30060,
+     2
+    ],
+    "perception_seed": [
+     30060,
+     1
+    ],
+    "scenario": "leaning",
+    "variant": 0
+   },
+   "script": "failure",
+   "policy": "failure",
+   "script_offset_m": null,
+   "policy_offset_m": null
+  },
+  {
+   "case": {
+    "geometry_seed": 30070,
+    "grasp_seed": [
+     30070,
+     2
+    ],
+    "perception_seed": [
+     30070,
+     1
+    ],
+    "scenario": "clear",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": -0.00021913550695651374,
+   "policy_offset_m": -0.0002500301928745341
+  },
+  {
+   "case": {
+    "geometry_seed": 30084,
+    "grasp_seed": [
+     30084,
+     2
+    ],
+    "perception_seed": [
+     30084,
+     1
+    ],
+    "scenario": "leaning",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.00729794206254486,
+   "policy_offset_m": 0.007106020313956865
+  },
+  {
+   "case": {
+    "geometry_seed": 30084,
+    "grasp_seed": [
+     30084,
+     2
+    ],
+    "perception_seed": [
+     30084,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.009296833546653949,
+   "policy_offset_m": 0.009209059466458253
+  },
+  {
+   "case": {
+    "geometry_seed": 30091,
+    "grasp_seed": [
+     30091,
+     2
+    ],
+    "perception_seed": [
+     30091,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "missed",
+   "policy": "missed",
+   "script_offset_m": 0.011239206987129602,
+   "policy_offset_m": 0.011274782332245978
+  },
+  {
+   "case": {
+    "geometry_seed": 30100,
+    "grasp_seed": [
+     30100,
+     2
+    ],
+    "perception_seed": [
+     30100,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.006737525020812693,
+   "policy_offset_m": 0.006228532417095298
+  },
+  {
+   "case": {
+    "geometry_seed": 30102,
+    "grasp_seed": [
+     30102,
+     2
+    ],
+    "perception_seed": [
+     30102,
+     1
+    ],
+    "scenario": "tight",
+    "variant": 0
+   },
+   "script": "missed",
+   "policy": "missed",
+   "script_offset_m": 0.0924151082497003,
+   "policy_offset_m": 0.09238112648541917
+  },
+  {
+   "case": {
+    "geometry_seed": 30104,
+    "grasp_seed": [
+     30104,
+     2
+    ],
+    "perception_seed": [
+     30104,
+     1
+    ],
+    "scenario": "clear",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.006087109740270269,
+   "policy_offset_m": 0.005855238700659043
+  },
+  {
+   "case": {
+    "geometry_seed": 30104,
+    "grasp_seed": [
+     30104,
+     2
+    ],
+    "perception_seed": [
+     30104,
+     1
+    ],
+    "scenario": "leaning",
+    "variant": 0
+   },
+   "script": "success",
+   "policy": "success",
+   "script_offset_m": 0.005044064077832089,
+   "policy_offset_m": 0.004724715140165675
+  }
+ ]
+}

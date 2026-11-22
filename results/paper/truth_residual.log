@@ -1,0 +1,160 @@
+24 rows to run (176 already in results/slide_check/truth.jsonl), 2 workers
+  1/24  packed 26: placed (241 s)
+  2/24  packed 24: placed (283 s)
+  3/24  packed 28: placed (308 s)
+  4/24  packed 30: gave up: only -11 mm of the neighbour to pinch (18 s)
+  5/24  packed 27: placed (517 s)
+  6/24  packed 32: gave up: only -12 mm of the neighbour to pinch (20 s)
+  7/24  packed 31: placed (441 s)
+  8/24  packed 34: placed (166 s)
+  9/24  packed 33: stopped: No arm configuration does the whole sequence without nearing a joint limit or running into the shelf (612 s)
+  10/24  packed 35: placed (440 s)
+  11/24  packed 36: placed (370 s)
+  12/24  packed 37: placed (83367 s)
+  13/24  packed 38: placed (83338 s)
+  14/24  packed 39: stopped: No arm configuration does the whole sequence without nearing a joint limit or running into the shelf (225 s)
+  15/24  packed 41: gave up: only -7 mm of the neighbour to pinch (28 s)
+  16/24  packed 40: placed (267 s)
+  17/24  packed 42: placed (152 s)
+  18/24  packed 43: placed (249 s)
+  19/24  packed 44: placed (241 s)
+  20/24  packed 45: placed (1553 s)
+  21/24  packed 46: placed (1611 s)
+  22/24  packed 48: placed (324 s)
+  23/24  packed 49: placed (1047 s)
+  24/24  packed 47: placed (2582 s)
+119 cases to label (236 already in results/labels_test.jsonl)
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+  1/119 leaning 30002: success 
+  2/119 leaning 30000: success 
+  3/119 leaning 30003: failure a book tilted 28 deg
+  4/119 leaning 30005: success 
+  5/119 leaning 30004: success 
+  6/119 leaning 30006: success 
+  7/119 leaning 30007: success 
+  8/119 leaning 30008: success 
+  9/119 leaning 30009: success 
+  10/119 leaning 30010: success 
+  11/119 leaning 30011: success 
+  12/119 leaning 30013: success 
+  13/119 leaning 30014: success 
+  14/119 leaning 30015: success 
+  15/119 leaning 30012: success 
+  16/119 leaning 30016: success 
+  17/119 leaning 30017: success 
+  18/119 leaning 30019: success 
+  19/119 leaning 30018: success 
+  20/119 leaning 30021: success 
+  21/119 leaning 30022: success 
+  22/119 leaning 30020: success 
+  23/119 leaning 30023: success 
+  24/119 leaning 30025: success 
+  25/119 leaning 30024: success 
+  26/119 leaning 30026: success 
+  27/119 leaning 30027: success 
+  28/119 leaning 30029: success 
+  29/119 leaning 30028: success 
+  30/119 leaning 30031: success 
+  31/119 leaning 30030: success 
+  32/119 leaning 30032: success 
+  33/119 leaning 30033: success 
+  34/119 leaning 30035: missed 
+  35/119 leaning 30034: success 
+  36/119 leaning 30036: success 
+  37/119 leaning 30037: success 
+  38/119 leaning 30038: success 
+  39/119 leaning 30039: success 
+  40/119 leaning 30041: success 
+  41/119 leaning 30040: success 
+  42/119 leaning 30042: success 
+  43/119 leaning 30043: success 
+  44/119 leaning 30045: success 
+  45/119 leaning 30044: success 
+  46/119 leaning 30046: success 
+  47/119 leaning 30047: success 
+  48/119 leaning 30048: success 
+  49/119 leaning 30049: success 
+  50/119 leaning 30051: success 
+  51/119 leaning 30050: success 
+  52/119 leaning 30052: success 
+  53/119 leaning 30053: success 
+  54/119 leaning 30054: success 
+  55/119 leaning 30055: success 
+  56/119 leaning 30056: success 
+  57/119 leaning 30057: success 
+  58/119 leaning 30058: success 
+  59/119 leaning 30059: success 
+  60/119 leaning 30061: success 
+  61/119 leaning 30060: failure a book tilted 62 deg
+  62/119 leaning 30062: success 
+  63/119 leaning 30063: success 
+  64/119 leaning 30065: success 
+  65/119 leaning 30064: success 
+  66/119 leaning 30066: success 
+  67/119 leaning 30068: success 
+  68/119 leaning 30067: success 
+  69/119 leaning 30070: success 
+  70/119 leaning 30069: success 
+  71/119 leaning 30071: success 
+  72/119 leaning 30072: success 
+  73/119 leaning 30074: success 
+  74/119 leaning 30073: success 
+  75/119 leaning 30075: success 
+  76/119 leaning 30076: success 
+  77/119 leaning 30077: success 
+  78/119 leaning 30078: success 
+  79/119 leaning 30079: success 
+  80/119 leaning 30080: success 
+  81/119 leaning 30081: success 
+  82/119 leaning 30083: success 
+  83/119 leaning 30082: success 
+  84/119 leaning 30085: success 
+  85/119 leaning 30084: success 
+  86/119 leaning 30087: success 
+  87/119 leaning 30088: success 
+  88/119 leaning 30086: success 
+  89/119 leaning 30089: success 
+  90/119 leaning 30090: success 
+  91/119 leaning 30091: success 
+  92/119 leaning 30092: success 
+  93/119 leaning 30094: success 
+  94/119 leaning 30093: success 
+  95/119 leaning 30095: success 
+  96/119 leaning 30096: success 
+  97/119 leaning 30097: success 
+  98/119 leaning 30099: success 
+  99/119 leaning 30098: success 
+  100/119 leaning 30101: success 
+  101/119 leaning 30100: success 
+  102/119 leaning 30103: success 
+  103/119 leaning 30102: success 
+  104/119 leaning 30104: success 
+  105/119 leaning 30106: success 
+  106/119 leaning 30105: success 
+  107/119 leaning 30107: success 
+  108/119 leaning 30109: success 
+  109/119 leaning 30108: success 
+  110/119 leaning 30110: success 
+  111/119 leaning 30111: success 
+  112/119 leaning 30113: success 
+  113/119 leaning 30112: success 
+  114/119 leaning 30114: success 
+  115/119 leaning 30115: success 
+  116/119 leaning 30117: success 
+  117/119 leaning 30116: preparation_failed before the first controlled contact: gave_up: the neighbour fell back into the slot
+  118/119 leaning 30118: success 
+  119/119 leaning 30119: success 
+clear_test50: 6 cases (3 the script fails) -> /Users/yuhaopro/Projects/bila/scenes/gap_pool_clear_test50.pkl
+  clear: 3 failures {'missed': 3, 'failure': 0, 'truncated': 0} + 3 successes, of 118 labelled (0 never reached the slide)
+leaning_test50: 6 cases (3 the script fails) -> /Users/yuhaopro/Projects/bila/scenes/gap_pool_leaning_test50.pkl
+  leaning: 3 failures {'missed': 1, 'failure': 2, 'truncated': 0} + 3 successes, of 120 labelled (1 never reached the slide)
+tight_test50: 12 cases (6 the script fails) -> /Users/yuhaopro/Projects/bila/scenes/gap_pool_tight_test50.pkl
+  tight: 6 failures {'missed': 6, 'failure': 0, 'truncated': 0} + 6 successes, of 117 labelled (6 never reached the slide)
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+WARNING: ARB_clip_control unavailable while mjDEPTH_ZEROFAR requested, depth accuracy will be limited
+
+24 test cases: script 0.62, policy 0.62; recovered 1, lost 1 -> results/residual_test.json
