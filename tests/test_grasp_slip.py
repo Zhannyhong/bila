@@ -111,8 +111,11 @@ def test_cart_carries_the_heaviest_allowed_book():
     assert cart_insert(MAX_KG)["success"]
 
 
-def test_cart_stops_when_the_book_slips():
-    """3 kg on pads of torsion 0.01 (7 deg of creep on the way): the slip watch stops it."""
+def test_cart_stops_when_the_book_slips(monkeypatch):
+    """3 kg on pads of torsion 0.01 (7 deg of creep on the way): the slip watch stops it. The watch
+    reads the slip from the simulation, so it runs only with CartEpisode.PRIVILEGED."""
+    from bila.control import cart_demo as cd
+    monkeypatch.setattr(cd.CartEpisode, "PRIVILEGED", True)
     with pytest.raises(RuntimeError, match="slipped in the grip"):
         cart_insert(3.0, torsion=0.01)
 
