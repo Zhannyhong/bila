@@ -432,9 +432,9 @@ and Table 2 the same controller on 50 rows per scenario with the real PBBM books
 """)
 
 code(r"""
-# Table 2: real books, 4 page sections, learned segmenter (results/slide_check)
-cols = {f: by_row(load(path)) for f, path in (("truth", "results/slide_check/truth.jsonl"),
-                                               ("camera", "results/slide_check/camera.jsonl"),
+# Table 2: real books, 4 page sections, learned segmenter (results/paper)
+cols = {f: by_row(load(path)) for f, path in (("truth", "results/paper/truth.jsonl"),
+                                               ("camera", "results/paper/camera.jsonl"),
                                                ("camera, no fid.", "results/paper/camera_nofid.jsonl"))}
 T = cols["truth"]
 print("Table 2. Real books. Placed [95% CI]; median time to seat (rows truth also placed); median shift of the most-moved neighbour\n")
@@ -502,7 +502,7 @@ measured errors (the learned-mask pipeline's error model, no rendering), scaled 
 
 
 code(r"""
-cols3 = {"x0 (truth)": by_row(load("results/slide_check/truth.jsonl"))} | {
+cols3 = {"x0 (truth)": by_row(load("results/paper/truth.jsonl"))} | {
     f"x{s}": by_row(load(f"results/paper/noisy_x{s}.jsonl")) for s in ("0.5", "1", "2")}
 print("Table 3b. Placed [95% CI], real books, truth plus the camera's measured errors scaled by x\n")
 print(f"{'':9}" + "".join(f"{c:28}" for c in cols3))

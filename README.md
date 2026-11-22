@@ -72,6 +72,15 @@ curl -L -O https://github.com/Zhannyhong/bila/releases/download/weights-v1/bila_
 unzip bila_weights.zip
 ```
 
+Reproducing the report: the commands in its Appendix A and the scripts it names (`results/paper/run.sh`,
+`results/find_hard.sh`, `results/train_mix.sh`, `results/hl.sh`, `results/hl_eval.sh`, `results/hl_cart.sh`)
+write their rows to `results/slide_check/` and skip rows already there, so an interrupted run continues where it
+stopped. The rows the report's tables were computed from stay as recorded, in `results/paper/` and `results/`, and
+`notebooks/08_paper_draft.ipynb` reads them from there. The full tables take days of CPU time (Table 1 alone is
+about 140 CPU-hours), so `--seeds 0:1` is a quick check. Rows that shove books can come out a little differently
+from the recorded ones on another machine: contact through a run of books is sensitive to the smallest numerical
+difference.
+
 On macOS, anything with `--view` must run under `mjpython` instead of `python`
 (for example `uv run mjpython -m bila.control.insert_book --scenario leaning --seed 0 --view`), because the passive viewer needs it.
 With a uv-installed Python, `mjpython` can fail with `Library not loaded: @rpath/libpython3.12.dylib`. Link the
