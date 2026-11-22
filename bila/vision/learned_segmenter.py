@@ -9,8 +9,8 @@ reading of the simulation's object ids.
 
     # in WSL, on the dataset make_vision_dataset.py writes (needs `uv sync --group rl`)
     MUJOCO_GL=egl uv run python -m bila.vision.learned_segmenter train --data ~/bila_data/train --val ~/bila_data/val \
-        --out ~/bila_data/segmenter
-    uv run python -m bila.vision.learned_segmenter eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
+        --out bila_weights/segmenter
+    uv run python -m bila.vision.learned_segmenter eval --data ~/bila_data/val --weights bila_weights/segmenter/segmenter.pt
 
 It sees only the colour image (depth comes in afterwards, in RGBDPerception's
 spine fits), so the COCO-pretrained backbone is used as it is. There is one

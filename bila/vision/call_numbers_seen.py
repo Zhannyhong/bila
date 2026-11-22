@@ -5,7 +5,7 @@ its own, as a librarian finds it), and each book's size and mass, looked up
 in the library's catalogue by its number.
 
     texts, database = catalogue(numbers, books)       # what the library knows: every book's sticker text and record
-    reader = OracleStickers(model, numbers)           # or LearnedStickers("~/bila_data/labels", texts)
+    reader = OracleStickers(model, numbers)           # or LearnedStickers("bila_weights/labels", texts)
     eyes = ReadingEyes(make_eyes(model, row, seed), reader, row, number, database=database)
     CartEpisode(model, data, row, eyes=eyes).reshelve()   # its first look reads the row and picks the slot
 

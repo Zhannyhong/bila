@@ -9,7 +9,7 @@ often, and in the same ways, as the camera pipeline it stands in for.
     uv run python -m bila.control.eval_reshelve run --perception noisy --out results/noisy.jsonl
     MUJOCO_GL=egl uv run python -m bila.control.eval_reshelve run --perception camera --out results/camera.jsonl
     MUJOCO_GL=egl uv run --group rl python -m bila.control.eval_reshelve run --perception camera \
-        --segmenter ~/bila_data/segmenter/segmenter.pt --out results/camera-learned.jsonl
+        --segmenter bila_weights/segmenter/segmenter.pt --out results/camera-learned.jsonl
     uv run python -m bila.control.eval_reshelve compare results/camera-learned.jsonl results/noisy-learned.jsonl ...
 
 run: every scenario's seeds (--seeds, default 0:200, the rows insert_book.py's

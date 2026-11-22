@@ -526,6 +526,15 @@ git clone --recurse-submodules https://github.com/Zhannyhong/bila
 cd bila
 uv sync          # add --group rl for the segmenter and PPO (torch)
 
+# trained perception weights (spine segmenter, call-number reader)
+curl -L -O https://github.com/Zhannyhong/bila/releases/\
+download/weights-v1/bila_weights.zip
+unzip bila_weights.zip    # bila_weights/{segmenter,labels}/
+
+# real book covers from the PBBM submodule (for --book-meshes)
+uv run python -m bila.sim.dae_to_obj \
+    --src PBBM-robot-librarian/librarian_common/tams_books_world/meshes
+
 # watch the book-return cart (macOS: mjpython; elsewhere: python)
 uv run mjpython -m bila.control.cart_demo --scenario tight --view
 # the same on a web page, with the wrist and scene cameras
@@ -536,19 +545,28 @@ uv run python -m bila.viz.record_cart cart_tight.mp4 --scenario tight
 # the controller on one row: clear | tight | leaning | packed
 uv run python -m bila.control.insert_book --scenario tight --seed 0
 
-# Table 1, real books, 50 rows per scenario
-# (perception: truth | camera)
+# Table 1, real books, 50 rows per scenario: truth, then camera
 uv run python -m bila.control.eval_reshelve run --perception truth \
     --catalogue --book-pages 4 --book-meshes \
     --scenarios clear tight leaning packed --seeds 0:50 \
     --out results/slide_check/truth.jsonl
+uv run --group rl python -m bila.control.eval_reshelve run \
+    --perception camera \
+    --segmenter bila_weights/segmenter/segmenter.pt \
+    --catalogue --book-pages 4 --book-meshes \
+    --scenarios clear tight leaning packed --seeds 0:50 \
+    --out results/slide_check/camera.jsonl
 \end{verbatim}
 Table~\ref{tab:main} and the residual's held-out test are run by
 \texttt{results/paper/run.sh}, the residual's training pools and training by \texttt{results/find\_hard.sh}
 and \texttt{results/train\_mix.sh}, the skill selector by \texttt{results/hl.sh} and
-\texttt{results/hl\_eval.sh}, and the cart by \texttt{results/hl\_cart.sh}. Runs with the learned segmenter
-need its weights, which are not in the repository and are trained as the README describes.
-\texttt{notebooks/08\_paper\_draft.ipynb} recomputes these results from the result files.
+\texttt{results/hl\_eval.sh}, and the cart by \texttt{results/hl\_cart.sh}. Those that use the
+trained weights read them from \texttt{bila\_weights/}, where the download above puts them. Only the perception weights are
+released. The residual policy
+(\texttt{runs/insertion\_mix}) and the skill selector (\texttt{runs/hl/q.npz}) must be retrained with the
+scripts above before their tests are run. The selector is fitted from \texttt{results/hl.sh}'s episodes with
+\texttt{bila.control.high\_level fit}. \texttt{notebooks/08\_paper\_draft.ipynb} recomputes these results
+from the result files.
 
 \clearpage
 \section{Row states}

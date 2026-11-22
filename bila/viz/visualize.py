@@ -10,7 +10,7 @@ And what the wrist camera sees, with the estimate drawn over its image.
     uv run python -m bila.viz.visualize --scenario leaning --seed 0 --camera   # wrist camera image -> scenes/camera_*.png
     uv run python -m bila.viz.view_scene --scenario leaning --seed 0 --show-estimate   # the same in 3D, in the viewer
 
-What the trained models see (`uv sync --group rl`, weights in ~/bila_data; ~1-2 min, MUJOCO_GL=egl in WSL):
+What the trained models see (`uv sync --group rl`, weights in bila_weights/; ~1-2 min, MUJOCO_GL=egl in WSL):
 
     uv run python -m bila.viz.visualize --scenario leaning --seed 3 --learned          # scenes/learned_*.png, estimate_learned_*.png
     uv run python -m bila.viz.visualize --scenario tight --seed 1 --learned --cart     # scenes/stickers_*.png
@@ -264,7 +264,7 @@ def plot_frame(frame: CameraFrame, est: Optional[ShelfEstimate] = None, model: O
 # ---------------------------------------------------------------------------
 # 4. What the learned models see (--learned)
 # ---------------------------------------------------------------------------
-WEIGHTS = "~/bila_data"            # segmenter/segmenter.pt, labels/finder.pt and labels/reader.pt (see README)
+WEIGHTS = os.path.join(HERE, "bila_weights")   # segmenter/segmenter.pt, labels/finder.pt and labels/reader.pt (see README)
 MISSED_RGBA = (0.95, 0.1, 0.1, 1.0)       # red: a book (or sticker) the model missed
 EXTRA_RGBA = (0.9, 0.2, 0.9, 1.0)         # magenta: a mask (or sticker) that is no book
 READ_RIGHT_RGBA = (0.1, 0.85, 0.2, 1.0)   # green

@@ -4,8 +4,8 @@ camera sees, with the books the robot recognised drawn over it, next to a
 scene camera.
 
     uv run python -m bila.viz.live_view --scenario leaning --seed 0          # opens http://localhost:8000
-    uv run python -m bila.viz.live_view --scenario tight --segmenter ~/bila_data/segmenter/segmenter.pt
-    uv run python -m bila.viz.live_view --scenario tight --label-weights ~/bila_data/labels   # read stickers with label_reader
+    uv run python -m bila.viz.live_view --scenario tight --segmenter bila_weights/segmenter/segmenter.pt
+    uv run python -m bila.viz.live_view --scenario tight --label-weights bila_weights/labels   # read stickers with label_reader
     uv run python -m bila.viz.live_view --scenario clear --seed 0 --no-fiducials   # the calibration error uncorrected: it jams
 
 The episode is cart_demo's, started when the page is first opened: the Panda

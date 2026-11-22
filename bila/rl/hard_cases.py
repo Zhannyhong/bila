@@ -6,7 +6,7 @@ correction), then keep every failure the residual could act on and as many
 successes, split by layout into training and validation pools.
 
     uv run --group rl python -m bila.rl.hard_cases label --pools clear_cand tight_cand --perception camera \
-        --segmenter ~/bila_data/segmenter/segmenter.pt --segmenter-device cpu --workers 10 --out results/labels.jsonl
+        --segmenter bila_weights/segmenter/segmenter.pt --segmenter-device cpu --workers 10 --out results/labels.jsonl
     uv run --group rl python -m bila.rl.hard_cases mix --labels results/labels.jsonl --suffix _mix
     # -> scenes/gap_pool_<scenario>_mix.pkl and _mix_val.pkl, for train_residual --train-suffix _mix --val-suffix _mix_val
     # a test set: other layouts (seeds 30000 and up), labelled the same way, all in one pool

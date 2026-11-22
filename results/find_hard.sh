@@ -1,5 +1,5 @@
 set -e
-W=~/bila_data/segmenter/segmenter.pt
+W=bila_weights/segmenter/segmenter.pt
 for s in clear tight leaning; do
   [ -f scenes/gap_pool_${s}_cand.pkl ] || uv run --group rl python -m bila.rl.gap_env pool --scenario $s --seeds 250 \
       --first-seed 10000 --perception camera --segmenter $W --segmenter-device cpu --name ${s}_cand --workers 12

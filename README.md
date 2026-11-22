@@ -62,6 +62,16 @@ git -C /tmp/pbbm sparse-checkout set librarian_common/tams_books_world
 uv run python -m bila.sim.dae_to_obj --src /tmp/pbbm/librarian_common/tams_books_world/meshes
 ```
 
+Optional, once, for the learned perception: the trained spine segmenter and call-number reader are in the
+[weights-v1 release](https://github.com/Zhannyhong/bila/releases/tag/weights-v1). Unzip them in the repo root, where
+every command and script here expects them (`bila_weights/segmenter/segmenter.pt`, `bila_weights/labels/`). They need
+`uv sync --group rl`.
+
+```bash
+curl -L -O https://github.com/Zhannyhong/bila/releases/download/weights-v1/bila_weights.zip
+unzip bila_weights.zip
+```
+
 On macOS, anything with `--view` must run under `mjpython` instead of `python`
 (for example `uv run mjpython -m bila.control.insert_book --scenario leaning --seed 0 --view`), because the passive viewer needs it.
 With a uv-installed Python, `mjpython` can fail with `Library not loaded: @rpath/libpython3.12.dylib`. Link the
@@ -962,16 +972,17 @@ uv run python -m bila.vision.eval_perception validate                # NoisyPerc
 
 **Learned book masks** (`bila/vision/learned_segmenter.py`): the camera estimate's one cheat is step 1, reading book masks
 off the simulation's object ids (`OracleSegmenter`, still the default). `LearnedSegmenter` finds them in the
-colour image instead, with Mask R-CNN (torchvision, fine-tuned from COCO, one class "book"):
+colour image instead, with Mask R-CNN (torchvision, fine-tuned from COCO, one class "book"). The trained weights
+are in the weights-v1 release (see [Quick start](#quick-start)). The commands below train them again:
 
 ```bash
 uv sync --group rl                                                      # torch, torchvision
 # training data (WSL; ~1.8 h on 5 workers, 3.3 GB): shelf and cart scenes, seeds from 2000
 MUJOCO_GL=egl uv run python -m bila.vision.make_vision_dataset --out ~/bila_data/train --first-seed 2000 --scenes 670 --workers 5
 MUJOCO_GL=egl uv run python -m bila.vision.make_vision_dataset --out ~/bila_data/val --first-seed 9000 --scenes 70 --workers 5
-uv run python -m bila.vision.learned_segmenter train --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/segmenter
-uv run python -m bila.vision.learned_segmenter eval --data ~/bila_data/val --weights ~/bila_data/segmenter/segmenter.pt
-MUJOCO_GL=egl uv run python -m bila.vision.eval_perception collect --workers 3 --segmenter ~/bila_data/segmenter/segmenter.pt \
+uv run python -m bila.vision.learned_segmenter train --data ~/bila_data/train --val ~/bila_data/val --out bila_weights/segmenter
+uv run python -m bila.vision.learned_segmenter eval --data ~/bila_data/val --weights bila_weights/segmenter/segmenter.pt
+MUJOCO_GL=egl uv run python -m bila.vision.eval_perception collect --workers 3 --segmenter bila_weights/segmenter/segmenter.pt \
     --path ~/bila_data/perception_eval_learned.pkl                     # adds "robust" and "learned" kinds
 ```
 
@@ -1001,7 +1012,7 @@ with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robu
   leaning on each other are still the weak point. Neighbours' thickness, 95% within 4.3 mm (3.6).
 - Learned masks carry no label; `OracleLabelled` gives each the id of the oracle book it overlaps most, only so
   the evaluations can match books.
-- To see what the models see in one scene (~1.5 min each; weights in `~/bila_data`, `--weights` otherwise):
+- To see what the models see in one scene (~1.5 min each; weights in `bila_weights/`, `--weights` otherwise):
 
   ```bash
   MUJOCO_GL=egl uv run python -m bila.viz.visualize --scenario leaning --seed 3 --learned          # scenes/learned_*.png
@@ -1023,13 +1034,14 @@ with RGBDPerception(model, row, segmenter=LearnedSegmenter("segmenter.pt"), robu
   more from the slot a place off (the camera with the simulation's masks: none, 0.3%).
 
 **Reading call-number stickers** (`bila/vision/label_reader.py`): `bila/control/cart_demo.py` reads the stickers' numbers off the
-simulation by default; `--labels learned` reads them from the camera images.
+simulation by default; `--labels learned` reads them from the camera images. The trained finder and reader are in the
+weights-v1 release (see [Quick start](#quick-start)), and the first three commands below train them again.
 
 ```bash
-uv run python -m bila.vision.label_reader train-finder --data ~/bila_data/train --out ~/bila_data/labels   # ~17 min
-uv run python -m bila.vision.label_reader train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels --epochs 10
-uv run python -m bila.vision.label_reader eval --data ~/bila_data/val --weights ~/bila_data/labels
-MUJOCO_GL=egl uv run python -m bila.control.cart_demo --scenario tight --labels learned    # weights from ~/bila_data/labels
+uv run python -m bila.vision.label_reader train-finder --data ~/bila_data/train --out bila_weights/labels   # ~17 min
+uv run python -m bila.vision.label_reader train-reader --data ~/bila_data/train --val ~/bila_data/val --out bila_weights/labels --epochs 10
+uv run python -m bila.vision.label_reader eval --data ~/bila_data/val --weights bila_weights/labels
+MUJOCO_GL=egl uv run python -m bila.control.cart_demo --scenario tight --labels learned    # weights from bila_weights/labels
 ```
 
 - Find: a small segmentation network (LR-ASPP MobileNetV3, from COCO) marks the middle 60% of each sticker, so

@@ -1,6 +1,6 @@
 # Paper experiments. Resumable: rerun to continue (rows already in an --out are skipped).
 # Same setting for every row: real books (catalogue), 4 page sections, covers drawn, seeds 0-49 per scenario.
-W=~/bila_data/segmenter/segmenter.pt
+W=bila_weights/segmenter/segmenter.pt
 common="--catalogue --book-pages 4 --book-meshes --scenarios clear tight leaning packed --seeds 0:50"
 ev="uv run --group rl python -m bila.control.eval_reshelve run $common"
 

@@ -7,7 +7,7 @@ on its spine.
     uv run python -m bila.control.cart_demo --scenario tight             # headless: prints each step and the score
     uv run mjpython -m bila.control.cart_demo --scenario tight --view    # watch it (macOS needs mjpython)
     uv run python -m bila.control.cart_demo --scenario leaning --seed 3  # clear, tight, leaning or packed
-    uv run python -m bila.control.cart_demo --scenario tight --segmenter ~/bila_data/segmenter/segmenter.pt   # learned book masks
+    uv run python -m bila.control.cart_demo --scenario tight --segmenter bila_weights/segmenter/segmenter.pt   # learned book masks
     uv run python -m bila.control.cart_demo --scenario tight --policy runs/hl/q.npz   # learned high-level steps (high_level.py)
 
 What the robot does, as a librarian would, with one camera, on its wrist:
@@ -847,7 +847,8 @@ def main():
     ap.add_argument("--view", action="store_true", help="watch in the MuJoCo viewer (run with mjpython on macOS)")
     ap.add_argument("--labels", choices=("oracle", "learned"), default="oracle",
                     help="read call numbers from the simulation (oracle) or the camera images (learned; label_reader.py)")
-    ap.add_argument("--label-weights", default="~/bila_data/labels", help="folder with label_reader's finder.pt and reader.pt")
+    ap.add_argument("--label-weights", default=os.path.join(HERE, "bila_weights", "labels"),
+                    help="folder with label_reader's finder.pt and reader.pt")
     ap.add_argument("--policy", help="a fitted high-level policy (high_level.py fit's q.npz) instead of the rules")
     ap.add_argument("--segmenter", help="learned segmenter weights (segmenter.pt) for the book masks; "
                                         "default: the simulation's (notebooks/04_train_segmenter.ipynb trains one)")

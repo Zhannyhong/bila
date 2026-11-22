@@ -4,14 +4,14 @@ its two lines (the Dewey class, e.g. "031.0", over the author mark, "PDP"),
 and match what was read to the catalogue, or say it can't be read.
 
     from bila.vision.label_reader import LabelReader
-    reader = LabelReader("~/bila_data/labels/finder.pt", "~/bila_data/labels/reader.pt", catalogue=texts)
+    reader = LabelReader("bila_weights/labels/finder.pt", "bila_weights/labels/reader.pt", catalogue=texts)
     for r in reader.read(rgb):        # Reading: corners (px), text (a catalogue entry or None), confidence
         ...
 
     # in WSL, on make_vision_dataset.py's images (needs `uv sync --group rl`)
-    uv run python -m bila.vision.label_reader train-finder --data ~/bila_data/train --out ~/bila_data/labels
-    uv run python -m bila.vision.label_reader train-reader --data ~/bila_data/train --val ~/bila_data/val --out ~/bila_data/labels
-    uv run python -m bila.vision.label_reader eval --data ~/bila_data/val --weights ~/bila_data/labels
+    uv run python -m bila.vision.label_reader train-finder --data ~/bila_data/train --out bila_weights/labels
+    uv run python -m bila.vision.label_reader train-reader --data ~/bila_data/train --val ~/bila_data/val --out bila_weights/labels
+    uv run python -m bila.vision.label_reader eval --data ~/bila_data/val --weights bila_weights/labels
 
 Three steps, each a plain function of the image:
   1. Find (StickerFinder): a small segmentation network (torchvision's
