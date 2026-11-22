@@ -28,7 +28,21 @@ MUJOCO_LOG.TXT
 
 # Residual training runs (train_residual.py): checkpoints and logs
 runs/
-AI-Researcher
+
+# Reruns of the report's experiments (the recorded rows are in results/paper/ and results/)
+results/slide_check/
+
 # Trained weights (published as the weights-v1 GitHub release, too big for git)
 bila_weights/
 bila_weights.zip
+
+# LaTeX build files
+out/
+report/*.aux
+report/*.bbl
+report/*.blg
+report/*.fdb_latexmk
+report/*.fls
+report/*.log
+report/*.out
+report/*.synctex.gz
