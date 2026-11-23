@@ -15,6 +15,9 @@ scenes/
 # IDE settings (per developer)
 .idea/
 
+# Claude Code instructions for this repo (local only)
+CLAUDE.md
+
 # macOS, and iCloud Drive placeholders for offloaded files
 .DS_Store
 *.icloud
